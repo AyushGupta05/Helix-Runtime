@@ -1,0 +1,33 @@
+# Core runtime
+langgraph
+langgraph-checkpoint-sqlite
+langchain
+langchain-anthropic
+langchain-aws
+langchain-mcp-adapters
+langchain-openai
+openai
+
+# Configuration and schemas
+pydantic
+pydantic-settings
+python-dotenv
+
+# Persistence, orchestration, and repo state
+GitPython
+networkx
+numpy
+orjson
+filelock
+psutil
+
+# Trust boundary, tool routing, and HTTP
+httpx
+mcp
+tenacity
+
+# CLI, logging, and operator experience
+typer
+rich
+structlog
+anyio

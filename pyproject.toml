@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arbiter-runtime"
+version = "0.1.0"
+description = "Arbiter autonomous mission runner"
+readme = "README.md"
+requires-python = ">=3.13,<3.15"
+dependencies = []
+
+[project.scripts]
+arbiter = "arbiter.cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
