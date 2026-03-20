@@ -82,6 +82,8 @@ class RuntimeConfig(BaseSettings):
     max_file_churn: int = Field(default=8, alias="ARBITER_MAX_FILE_CHURN")
     max_recovery_rounds: int = Field(default=3, alias="ARBITER_MAX_RECOVERY_ROUNDS")
     replay_mode: Literal["off", "record", "replay"] = Field(default="off", alias="ARBITER_REPLAY_MODE")
+    require_real_provider_bidding: bool = Field(default=True, alias="ARBITER_REQUIRE_REAL_PROVIDER_BIDDING")
+    allow_degraded_bid_fallback: bool = Field(default=False, alias="ARBITER_ALLOW_DEGRADED_BID_FALLBACK")
 
     def _lane_model(self, provider: Literal["bedrock", "openai", "anthropic"], lane: str) -> str:
         return getattr(self, f"{provider}_model_{lane}")

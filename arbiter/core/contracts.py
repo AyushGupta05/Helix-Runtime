@@ -81,6 +81,16 @@ class PolicyState(str, Enum):
     BLOCKED = "blocked"
 
 
+class GenerationMode(str, Enum):
+    PROVIDER_MODEL = "provider_model"
+    DETERMINISTIC_FALLBACK = "deterministic_fallback"
+    MOCK = "mock"
+    REPLAY = "replay"
+
+
+BidGenerationMode = GenerationMode
+
+
 class BidStatus(str, Enum):
     GENERATED = "generated"
     REJECTED = "rejected"
@@ -119,6 +129,11 @@ class ApprovalPolicy(BaseModel):
     mode: ApprovalMode = ApprovalMode.HARD_POLICY_ONLY
 
 
+class BiddingPolicy(BaseModel):
+    require_provider_backed_bids: bool = True
+    allow_degraded_fallback: bool = False
+
+
 class SuccessCriteria(BaseModel):
     description: str
     required_validators: list[str] = Field(default_factory=list)
@@ -154,6 +169,7 @@ class MissionSpec(BaseModel):
     stop_policy: StopPolicy = Field(default_factory=StopPolicy)
     risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
     approval_policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
+    bidding_policy: BiddingPolicy = Field(default_factory=BiddingPolicy)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -187,6 +203,7 @@ class MissionSummary(BaseModel):
     current_risk_score: float = 0.0
     stop_reason: str | None = None
     civic_audit_ids: list[str] = Field(default_factory=list)
+    bidding_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommandResult(BaseModel):
@@ -271,9 +288,11 @@ class Bid(BaseModel):
     bid_id: str
     task_id: str
     role: str
-    provider: str = "system"
+    provider: str | None = None
     lane: str | None = None
     model_id: str | None = None
+    invocation_id: str | None = None
+    invocation_kind: Literal["bid_generation"] = "bid_generation"
     variant_id: str
     strategy_family: str
     strategy_summary: str
@@ -297,14 +316,16 @@ class Bid(BaseModel):
     search_score: float | None = None
     search_reward: float | None = None
     search_summary: str | None = None
-    token_usage: dict[str, int] = Field(default_factory=dict)
-    cost_usage: dict[str, float] = Field(default_factory=dict)
+    token_usage: dict[str, int] | None = None
+    cost_usage: dict[str, float] | None = None
+    usage_unavailable_reason: str | None = None
     prompt_preview: str | None = None
     response_preview: str | None = None
     selection_reason: str | None = None
     rejection_reason: str | None = None
     can_be_standby: bool = True
     promotion_hints: list[str] = Field(default_factory=list)
+    generation_mode: GenerationMode = GenerationMode.DETERMINISTIC_FALLBACK
     status: BidStatus = BidStatus.GENERATED
 
 
@@ -426,14 +447,29 @@ class ModelInvocation(BaseModel):
     model_id: str | None = None
     invocation_kind: Literal["bid_generation", "proposal_generation", "simulation"]
     status: Literal["started", "completed", "failed"]
+    generation_mode: GenerationMode = GenerationMode.PROVIDER_MODEL
     started_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     prompt_preview: str | None = None
     response_preview: str | None = None
     raw_usage: dict[str, Any] = Field(default_factory=dict)
-    token_usage: dict[str, int] = Field(default_factory=dict)
-    cost_usage: dict[str, float] = Field(default_factory=dict)
+    token_usage: dict[str, int] | None = None
+    cost_usage: dict[str, float] | None = None
+    usage_unavailable_reason: str | None = None
     error: str | None = None
+
+
+class BiddingState(BaseModel):
+    generation_mode: GenerationMode = GenerationMode.PROVIDER_MODEL
+    require_provider_backed_bids: bool = True
+    allow_degraded_fallback: bool = False
+    degraded: bool = False
+    warning: str | None = None
+    architecture_violation: str | None = None
+    total_provider_invocations: int = 0
+    round_provider_invocations: int = 0
+    active_provider_bids: int = 0
+    active_fallback_bids: int = 0
 
 
 class TraceEntry(BaseModel):
@@ -477,6 +513,7 @@ class ArbiterState(BaseModel):
     summary: MissionSummary = Field(default_factory=lambda: MissionSummary(mission_id=""))
     control: MissionControlState = Field(default_factory=MissionControlState)
     governance: GovernanceSnapshot = Field(default_factory=GovernanceSnapshot)
+    bidding_state: BiddingState = Field(default_factory=BiddingState)
     active_phase: ActivePhase = ActivePhase.IDLE
     active_bid_round: int = 0
     active_bids: list[Bid] = Field(default_factory=list)
@@ -512,6 +549,7 @@ class ArbiterState(BaseModel):
         self.summary.decision_history = list(self.decision_history)
         self.summary.runtime_seconds = self.runtime_seconds
         self.summary.outcome = self.outcome
+        self.summary.bidding_state = self.bidding_state.model_dump(mode="json")
         if self.last_civic_audit and self.last_civic_audit.audit_id not in self.summary.civic_audit_ids:
             self.summary.civic_audit_ids.append(self.last_civic_audit.audit_id)
         return self

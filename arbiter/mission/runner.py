@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -12,7 +13,9 @@ from arbiter.core.contracts import (
     ActionIntent,
     ActivePhase,
     ArbiterState,
+    BidGenerationMode,
     BidStatus,
+    BiddingState,
     ExecutionStep,
     FailureContext,
     MissionControlState,
@@ -87,7 +90,19 @@ class MissionRuntime:
         self.state.summary.repo_path = spec.repo_path
         self.state.summary.objective = spec.objective
         self.state.summary.branch_name = self.branch_name
+        self.state.bidding_state = BiddingState(
+            generation_mode=self._backend_bidding_mode(),
+            require_provider_backed_bids=spec.bidding_policy.require_provider_backed_bids,
+            allow_degraded_fallback=spec.bidding_policy.allow_degraded_fallback,
+        )
         self.failed_families: dict[str, set[str]] = {}
+        self._invocation_lock = threading.RLock()
+        self._provider_invocations_seen: set[str] = {
+            row["id"]
+            for row in self.store.fetch_model_invocations(spec.mission_id)
+            if (row["generation_mode"] or json.loads(row["payload_json"]).get("generation_mode")) == BidGenerationMode.PROVIDER_MODEL.value
+        }
+        self.state.bidding_state.total_provider_invocations = len(self._provider_invocations_seen)
 
     def emit(self, event_type: str, message: str, refresh_view: bool = False, **payload) -> None:
         event = MissionEvent(event_type=event_type, mission_id=self.spec.mission_id, message=message, payload=payload)
@@ -108,25 +123,80 @@ class MissionRuntime:
         )
 
     def _record_model_invocation(self, payload: dict) -> None:
-        invocation_id = self.persistence.save_model_invocation(payload)
-        self.trace(
-            f"provider.invocation.{payload['status']}",
-            title=f"Provider {payload['status']}",
-            message=f"{payload.get('provider', 'unknown')} {payload.get('invocation_kind', 'invocation')} {payload['status']}.",
-            status="danger" if payload["status"] == "failed" else "info" if payload["status"] == "started" else "success",
-            task_id=payload.get("task_id"),
-            bid_id=payload.get("bid_id"),
-            provider=payload.get("provider"),
-            lane=payload.get("lane"),
-            invocation_id=invocation_id,
-            model_id=payload.get("model_id"),
-            prompt_preview=payload.get("prompt_preview"),
-            response_preview=payload.get("response_preview"),
-            raw_usage=payload.get("raw_usage", {}),
-            token_usage=payload.get("token_usage", {}),
-            cost_usage=payload.get("cost_usage", {}),
-            error=payload.get("error"),
+        with self._invocation_lock:
+            invocation_id = self.persistence.save_model_invocation(payload)
+            generation_mode = payload.get("generation_mode")
+            if generation_mode is not None and not isinstance(generation_mode, BidGenerationMode):
+                generation_mode = BidGenerationMode(generation_mode)
+            if generation_mode == BidGenerationMode.PROVIDER_MODEL and invocation_id not in self._provider_invocations_seen:
+                self._provider_invocations_seen.add(invocation_id)
+                self.state.bidding_state.total_provider_invocations = len(self._provider_invocations_seen)
+            self.trace(
+                f"model.invocation.{payload['status']}",
+                title=f"Model invocation {payload['status']}",
+                message=f"{payload.get('provider', 'unknown')} {payload.get('invocation_kind', 'invocation')} {payload['status']}.",
+                status="danger" if payload["status"] == "failed" else "info" if payload["status"] == "started" else "success",
+                task_id=payload.get("task_id"),
+                bid_id=payload.get("bid_id"),
+                provider=payload.get("provider"),
+                lane=payload.get("lane"),
+                invocation_id=invocation_id,
+                model_id=payload.get("model_id"),
+                generation_mode=payload.get("generation_mode"),
+                prompt_preview=payload.get("prompt_preview"),
+                response_preview=payload.get("response_preview"),
+                raw_usage=payload.get("raw_usage", {}),
+                token_usage=payload.get("token_usage"),
+                cost_usage=payload.get("cost_usage"),
+                usage_unavailable_reason=payload.get("usage_unavailable_reason"),
+                error=payload.get("error"),
+            )
+
+    def _backend_bidding_mode(self) -> BidGenerationMode:
+        if hasattr(self.strategy_backend, "market_generation_mode"):
+            return self.strategy_backend.market_generation_mode()
+        return BidGenerationMode.DETERMINISTIC_FALLBACK
+
+    def _update_bidding_state(self, *, generation_mode: BidGenerationMode, warning: str | None = None, architecture_violation: str | None = None) -> None:
+        self.state.bidding_state.generation_mode = generation_mode
+        self.state.bidding_state.degraded = generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK
+        self.state.bidding_state.warning = warning
+        self.state.bidding_state.architecture_violation = architecture_violation
+        self.state.bidding_state.total_provider_invocations = len(self._provider_invocations_seen)
+
+    def _set_bidding_metrics(self, bids: list, provider_invocation_ids: list[str] | None = None) -> None:
+        if provider_invocation_ids is not None:
+            self.state.bidding_state.round_provider_invocations = len({item for item in provider_invocation_ids if item})
+        self.state.bidding_state.total_provider_invocations = len(self._provider_invocations_seen)
+        self.state.bidding_state.active_provider_bids = sum(
+            1 for bid in bids if bid.generation_mode == BidGenerationMode.PROVIDER_MODEL
         )
+        self.state.bidding_state.active_fallback_bids = sum(
+            1 for bid in bids if bid.generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK
+        )
+
+    def _fail_bidding_round(self, task_id: str, reason: str) -> dict:
+        self._update_bidding_state(generation_mode=self.state.bidding_state.generation_mode, architecture_violation=reason)
+        self._set_bidding_metrics([])
+        self.emit(
+            "bidding.architecture_violation",
+            "Bidding architecture violation detected.",
+            task_id=task_id,
+            reason=reason,
+            refresh_view=True,
+        )
+        self.trace(
+            "bidding.architecture_violation",
+            "Architecture violation",
+            reason,
+            task_id=task_id,
+            status="danger",
+            refresh_view=True,
+        )
+        self.state.outcome = MissionOutcome.FAILED_EXECUTION
+        self.state.governance.stop_reason = reason
+        self.state.no_valid_contenders = True
+        return {"status": ActivePhase.FINALIZE.value}
 
     def _refresh_worktree_state(self, reason: str | None = None) -> None:
         state = self.toolset.worktree_state()
@@ -146,12 +216,12 @@ class MissionRuntime:
         if not files:
             return -1.0
         score = 1.0
-        if candidate.provider == bid.provider and bid.provider != "system":
+        if candidate.provider == bid.provider and bid.provider not in {None, "system"}:
             score += 0.15
         if len(files) <= max(1, len(bid.touched_files or task.candidate_files or files)):
             score += 0.2
         score -= max(0, len(files) - task.risk_level * 10) * 0.03
-        score += min(0.25, len(candidate.invocation.token_usage) * 0.02)
+        score += min(0.25, len(candidate.invocation.token_usage or {}) * 0.02)
         return score
 
     def _sync_state(self, status: str) -> None:
@@ -163,6 +233,7 @@ class MissionRuntime:
         self.state.summary.decision_history = list(self.state.decision_history)
         self.state.summary.runtime_seconds = self.state.runtime_seconds
         self.state.summary.outcome = self.state.outcome
+        self.state.summary.bidding_state = self.state.bidding_state.model_dump(mode="json")
         control_row = self.store.fetch_control_state(self.spec.mission_id)
         run_state = self.state.control.run_state.value
         requested_action = self.state.control.requested_action
@@ -199,6 +270,7 @@ class MissionRuntime:
             current_risk_score=self.state.governance.current_risk_score,
             simulation_summary=self.state.simulation_summary,
             worktree_state=self.state.worktree_state,
+            bidding_state=self.state.bidding_state.model_dump(mode="json"),
             latest_validation_task_id=self.state.validation_report.task_id if self.state.validation_report else None,
             latest_failure_task_id=self.state.failure_context.task_id if self.state.failure_context else None,
             accepted_checkpoint_id=self.state.accepted_checkpoint.checkpoint_id if self.state.accepted_checkpoint else None,
@@ -391,27 +463,115 @@ class MissionRuntime:
         self.state.active_bid_round += 1
         failed = self.failed_families.setdefault(task.task_id, set())
         self.trace("market.opened", "Market opened", f"Competitive market opened for {task.task_id}.", task_id=task.task_id, status="info", round=self.state.active_bid_round, providers=self.config.enabled_providers)
-        bids = self.simulation.generate(task, self.state.repo_snapshot)
+        batch = self.simulation.generate(task, self.state.repo_snapshot, allow_fallback=self.spec.bidding_policy.allow_degraded_fallback)
+        bids = batch.bids
         self._merge_usage(self.simulation.market_token_usage, self.simulation.market_cost_usage)
+        self._update_bidding_state(generation_mode=batch.generation_mode, warning=batch.degraded_reason)
+        self._set_bidding_metrics([], provider_invocation_ids=batch.provider_invocation_ids)
+        if batch.generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK:
+            self.emit(
+                "bidding.degraded_mode_entered",
+                "Bidding entered explicit degraded fallback mode.",
+                task_id=task.task_id,
+                reason=batch.degraded_reason,
+                provider_errors=batch.provider_errors,
+                generation_mode=batch.generation_mode.value,
+                refresh_view=True,
+            )
+            self.trace(
+                "bidding.degraded_mode_entered",
+                "Degraded bidding mode",
+                batch.degraded_reason or "Bidding entered deterministic fallback mode.",
+                task_id=task.task_id,
+                status="warning",
+                generation_mode=batch.generation_mode.value,
+                provider_errors=batch.provider_errors,
+                refresh_view=True,
+            )
+        if self.spec.bidding_policy.require_provider_backed_bids and batch.generation_mode != BidGenerationMode.PROVIDER_MODEL:
+            if not (batch.generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK and self.spec.bidding_policy.allow_degraded_fallback and bids):
+                reason = batch.degraded_reason or f"Expected provider-backed bidding, but market ran in {batch.generation_mode.value} mode."
+                return self._fail_bidding_round(task.task_id, reason)
+
         valid: list = []
         for bid in bids:
+            if bid.generation_mode == BidGenerationMode.PROVIDER_MODEL and not bid.invocation_id:
+                return self._fail_bidding_round(task.task_id, f"Provider-backed bid {bid.bid_id} is missing an invocation reference.")
             decision = self.governance.evaluate_bid(task, bid, self.spec, failed)
             bid.policy_feasibility = decision
             if not decision.allowed:
                 bid.rejection_reason = "; ".join(decision.reasons)
                 bid.status = BidStatus.REJECTED
                 self._save_bid(bid, self.state.active_bid_round)
-                self.emit("bid.rejected", f"Bid {bid.bid_id} rejected.", bid_id=bid.bid_id, task_id=task.task_id, reason=bid.rejection_reason)
+                self.emit(
+                    "bid.rejected",
+                    f"Bid {bid.bid_id} rejected.",
+                    bid_id=bid.bid_id,
+                    task_id=task.task_id,
+                    reason=bid.rejection_reason,
+                    role=bid.role,
+                    provider=bid.provider,
+                    lane=bid.lane,
+                    model_id=bid.model_id,
+                    invocation_id=bid.invocation_id,
+                    generation_mode=bid.generation_mode.value,
+                    token_usage=bid.token_usage,
+                    cost_usage=bid.cost_usage,
+                    usage_unavailable_reason=bid.usage_unavailable_reason,
+                )
                 self.trace("bid.retired", "Bid rejected", f"{bid.bid_id} was rejected before scoring.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="danger", reason=bid.rejection_reason)
                 continue
             bid.score = score_bid(bid)
             valid.append(bid)
         self.state.active_bids = cluster_and_select(valid, per_family=1, max_candidates=7)
+        self._set_bidding_metrics(self.state.active_bids, provider_invocation_ids=batch.provider_invocation_ids)
         for bid in self.state.active_bids:
             self._save_bid(bid, self.state.active_bid_round)
-            self.emit("bid.submitted", f"Bid {bid.bid_id} submitted.", bid_id=bid.bid_id, task_id=task.task_id, role=bid.role, score=bid.score, strategy_family=bid.strategy_family)
-            self.trace("bid.generated", "Bid generated", f"{bid.bid_id} entered the active market.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="success", score=bid.score, strategy_family=bid.strategy_family, model_id=bid.model_id)
+            self.emit(
+                "bid.submitted",
+                f"Bid {bid.bid_id} submitted.",
+                bid_id=bid.bid_id,
+                task_id=task.task_id,
+                role=bid.role,
+                score=bid.score,
+                strategy_family=bid.strategy_family,
+                provider=bid.provider,
+                lane=bid.lane,
+                model_id=bid.model_id,
+                invocation_id=bid.invocation_id,
+                invocation_kind=bid.invocation_kind,
+                generation_mode=bid.generation_mode.value,
+                token_usage=bid.token_usage,
+                cost_usage=bid.cost_usage,
+                usage_unavailable_reason=bid.usage_unavailable_reason,
+                estimated_runtime_seconds=bid.estimated_runtime_seconds,
+                touched_files=bid.touched_files,
+                validator_plan=bid.validator_plan,
+                rollback_plan=bid.rollback_plan,
+                risk=bid.risk,
+                cost=bid.cost,
+                confidence=bid.confidence,
+            )
+            self.trace(
+                "bid.generated",
+                "Bid generated",
+                f"{bid.bid_id} entered the active market.",
+                task_id=task.task_id,
+                bid_id=bid.bid_id,
+                provider=bid.provider,
+                lane=bid.lane,
+                status="success",
+                score=bid.score,
+                strategy_family=bid.strategy_family,
+                model_id=bid.model_id,
+                invocation_id=bid.invocation_id,
+                generation_mode=bid.generation_mode.value,
+                usage_unavailable_reason=bid.usage_unavailable_reason,
+            )
         if not self.state.active_bids:
+            reason = batch.degraded_reason or "Market produced no valid contenders."
+            if self.spec.bidding_policy.require_provider_backed_bids:
+                return self._fail_bidding_round(task.task_id, reason)
             self.state.no_valid_contenders = True
             return {"status": ActivePhase.FINALIZE.value}
         return {"status": ActivePhase.SIMULATE.value}
@@ -487,12 +647,62 @@ class MissionRuntime:
         self.state.standby_bid_id = standby.bid_id if standby else None
         winner.selection_reason = "highest_scored_valid_contender"
         self._save_bid(winner, self.state.active_bid_round)
-        self.emit("bid.won", f"Bid {winner.bid_id} won.", task_id=winner.task_id, bid_id=winner.bid_id, role=winner.role, score=winner.score)
-        self.trace("bid.won", "Winner selected", f"{winner.bid_id} selected as the winner.", task_id=winner.task_id, bid_id=winner.bid_id, provider=winner.provider, lane=winner.lane, status="success", score=winner.score)
+        self.emit(
+            "bid.won",
+            f"Bid {winner.bid_id} won.",
+            task_id=winner.task_id,
+            bid_id=winner.bid_id,
+            role=winner.role,
+            score=winner.score,
+            provider=winner.provider,
+            lane=winner.lane,
+            model_id=winner.model_id,
+            invocation_id=winner.invocation_id,
+            generation_mode=winner.generation_mode.value,
+        )
+        self.trace(
+            "bid.won",
+            "Winner selected",
+            f"{winner.bid_id} selected as the winner.",
+            task_id=winner.task_id,
+            bid_id=winner.bid_id,
+            provider=winner.provider,
+            lane=winner.lane,
+            status="success",
+            score=winner.score,
+            model_id=winner.model_id,
+            invocation_id=winner.invocation_id,
+            generation_mode=winner.generation_mode.value,
+        )
         if standby:
             self._save_bid(standby, self.state.active_bid_round)
-            self.emit("standby.selected", f"Standby selected for {winner.task_id}.", task_id=winner.task_id, bid_id=standby.bid_id, role=standby.role, score=standby.score)
-            self.trace("standby.selected", "Standby selected", f"{standby.bid_id} is ready as an alternate.", task_id=winner.task_id, bid_id=standby.bid_id, provider=standby.provider, lane=standby.lane, status="info", score=standby.score)
+            self.emit(
+                "standby.selected",
+                f"Standby selected for {winner.task_id}.",
+                task_id=winner.task_id,
+                bid_id=standby.bid_id,
+                role=standby.role,
+                score=standby.score,
+                provider=standby.provider,
+                lane=standby.lane,
+                model_id=standby.model_id,
+                invocation_id=standby.invocation_id,
+                generation_mode=standby.generation_mode.value,
+            )
+            self.trace(
+                "standby.selected",
+                "Standby selected",
+                f"{standby.bid_id} is ready as an alternate.",
+                task_id=winner.task_id,
+                bid_id=standby.bid_id,
+                provider=standby.provider,
+                lane=standby.lane,
+                status="info",
+                score=standby.score,
+                model_id=standby.model_id,
+                invocation_id=standby.invocation_id,
+                generation_mode=standby.generation_mode.value,
+            )
         return {"status": ActivePhase.EXECUTE.value}
 
     def node_execute(self) -> dict:
@@ -755,10 +965,10 @@ class MissionRuntime:
                 return task
         raise KeyError(task_id)
 
-    def _merge_usage(self, token_usage: dict, cost_usage: dict) -> None:
-        for key, value in token_usage.items():
+    def _merge_usage(self, token_usage: dict | None, cost_usage: dict | None) -> None:
+        for key, value in (token_usage or {}).items():
             self.state.token_usage[key] = self.state.token_usage.get(key, 0) + int(value)
-        for key, value in cost_usage.items():
+        for key, value in (cost_usage or {}).items():
             self.state.cost_usage[key] = self.state.cost_usage.get(key, 0.0) + float(value)
 
 
@@ -775,11 +985,35 @@ def build_mission_spec(repo: str, objective: str, constraints: list[str] | None 
         benchmark_requirement=benchmark_requirement,
         protected_paths=protected_paths or [],
         public_api_surface=public_api_surface or [],
+        bidding_policy={
+            "require_provider_backed_bids": config.require_real_provider_bidding and config.replay_mode == "off",
+            "allow_degraded_fallback": config.allow_degraded_bid_fallback,
+        },
     )
 
 
+def _adjust_bidding_policy_for_backend(spec: MissionSpec, strategy_backend) -> MissionSpec:
+    if strategy_backend and hasattr(strategy_backend, "market_generation_mode"):
+        if strategy_backend.market_generation_mode() != BidGenerationMode.PROVIDER_MODEL:
+            spec.bidding_policy.require_provider_backed_bids = False
+    return spec
+
+
 def start_mission(repo: str, objective: str, constraints: list[str] | None = None, preferences: list[str] | None = None, max_runtime: int | None = None, benchmark_requirement: str | None = None, protected_paths: list[str] | None = None, public_api_surface: list[str] | None = None, strategy_backend=None, mission_id: str | None = None) -> ArbiterState:
-    spec = build_mission_spec(repo=repo, objective=objective, constraints=constraints, preferences=preferences, max_runtime=max_runtime, benchmark_requirement=benchmark_requirement, protected_paths=protected_paths, public_api_surface=public_api_surface, mission_id=mission_id)
+    spec = _adjust_bidding_policy_for_backend(
+        build_mission_spec(
+            repo=repo,
+            objective=objective,
+            constraints=constraints,
+            preferences=preferences,
+            max_runtime=max_runtime,
+            benchmark_requirement=benchmark_requirement,
+            protected_paths=protected_paths,
+            public_api_surface=public_api_surface,
+            mission_id=mission_id,
+        ),
+        strategy_backend,
+    )
     paths = build_mission_paths(spec.repo_path, spec.mission_id)
     Path(paths.metadata_path).write_text(json.dumps(spec.model_dump(mode="json"), indent=2), encoding="utf-8")
     runtime = MissionRuntime(spec, paths, strategy_backend=strategy_backend)

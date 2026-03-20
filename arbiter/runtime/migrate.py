@@ -81,6 +81,8 @@ def migrate_legacy_mission(paths, mission_id: str) -> None:
             policy_state=PolicyState.CLEAR.value,
             current_risk_score=summary.get("current_risk_score", 0.0),
             simulation_summary=None,
+            worktree_state={},
+            bidding_state=summary.get("bidding_state", {}),
             latest_validation_task_id=validation.get("task_id"),
             latest_failure_task_id=failure.get("task_id"),
             accepted_checkpoint_id=None,

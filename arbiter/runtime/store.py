@@ -34,6 +34,9 @@ class MissionStore:
         self.connection.execute("PRAGMA foreign_keys = ON")
         self._init_schema()
         self._ensure_column("mission_runtime", "worktree_state_json", "TEXT")
+        self._ensure_column("mission_runtime", "bidding_state_json", "TEXT")
+        self._ensure_column("model_invocations", "generation_mode", "TEXT")
+        self._ensure_column("model_invocations", "usage_unavailable_reason", "TEXT")
 
     def _init_schema(self) -> None:
         self.connection.executescript(
@@ -65,6 +68,7 @@ class MissionStore:
                 current_risk_score REAL NOT NULL DEFAULT 0,
                 simulation_summary_json TEXT,
                 worktree_state_json TEXT,
+                bidding_state_json TEXT,
                 latest_validation_task_id TEXT,
                 latest_failure_task_id TEXT,
                 accepted_checkpoint_id TEXT,
@@ -191,6 +195,8 @@ class MissionStore:
                 raw_usage_json TEXT NOT NULL,
                 token_usage_json TEXT NOT NULL,
                 cost_usage_json TEXT NOT NULL,
+                generation_mode TEXT,
+                usage_unavailable_reason TEXT,
                 error TEXT,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
@@ -243,15 +249,15 @@ class MissionStore:
         )
         self.connection.commit()
 
-    def upsert_runtime(self, mission_id: str, *, active_phase: str, active_task_id: str | None, active_bid_round: int, simulation_round: int, recovery_round: int, winner_bid_id: str | None, standby_bid_id: str | None, latest_diff_summary: str, stop_reason: str | None, policy_state: str, current_risk_score: float, simulation_summary: SimulationSummary | None, worktree_state: dict[str, Any] | None, latest_validation_task_id: str | None, latest_failure_task_id: str | None, accepted_checkpoint_id: str | None) -> None:
+    def upsert_runtime(self, mission_id: str, *, active_phase: str, active_task_id: str | None, active_bid_round: int, simulation_round: int, recovery_round: int, winner_bid_id: str | None, standby_bid_id: str | None, latest_diff_summary: str, stop_reason: str | None, policy_state: str, current_risk_score: float, simulation_summary: SimulationSummary | None, worktree_state: dict[str, Any] | None, bidding_state: dict[str, Any] | None, latest_validation_task_id: str | None, latest_failure_task_id: str | None, accepted_checkpoint_id: str | None) -> None:
         self.connection.execute(
             """
             INSERT INTO mission_runtime (
                 mission_id, active_phase, active_task_id, active_bid_round, simulation_round, recovery_round,
                 winner_bid_id, standby_bid_id, latest_diff_summary, stop_reason, policy_state, current_risk_score,
-                simulation_summary_json, worktree_state_json, latest_validation_task_id, latest_failure_task_id, accepted_checkpoint_id, updated_at
+                simulation_summary_json, worktree_state_json, bidding_state_json, latest_validation_task_id, latest_failure_task_id, accepted_checkpoint_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mission_id) DO UPDATE SET
                 active_phase=excluded.active_phase,
                 active_task_id=excluded.active_task_id,
@@ -266,6 +272,7 @@ class MissionStore:
                 current_risk_score=excluded.current_risk_score,
                 simulation_summary_json=excluded.simulation_summary_json,
                 worktree_state_json=excluded.worktree_state_json,
+                bidding_state_json=excluded.bidding_state_json,
                 latest_validation_task_id=excluded.latest_validation_task_id,
                 latest_failure_task_id=excluded.latest_failure_task_id,
                 accepted_checkpoint_id=excluded.accepted_checkpoint_id,
@@ -286,6 +293,7 @@ class MissionStore:
                 current_risk_score,
                 simulation_summary.model_dump_json() if simulation_summary else None,
                 _dump(worktree_state or {}),
+                _dump(bidding_state or {}),
                 latest_validation_task_id,
                 latest_failure_task_id,
                 accepted_checkpoint_id,
@@ -397,15 +405,15 @@ class MissionStore:
         )
         self.connection.commit()
 
-    def save_model_invocation(self, mission_id: str, invocation: BaseModel, *, invocation_id: str, task_id: str | None, bid_id: str | None, provider: str, lane: str, model_id: str | None, invocation_kind: str, status: str, started_at: str | None, completed_at: str | None, prompt_preview: str | None, response_preview: str | None, raw_usage: dict[str, Any], token_usage: dict[str, int], cost_usage: dict[str, float], error: str | None) -> None:
+    def save_model_invocation(self, mission_id: str, invocation: BaseModel, *, invocation_id: str, task_id: str | None, bid_id: str | None, provider: str, lane: str, model_id: str | None, invocation_kind: str, status: str, generation_mode: str = "provider_model", started_at: str | None = None, completed_at: str | None = None, prompt_preview: str | None = None, response_preview: str | None = None, raw_usage: dict[str, Any] | None = None, token_usage: dict[str, int] | None = None, cost_usage: dict[str, float] | None = None, usage_unavailable_reason: str | None = None, error: str | None = None) -> None:
         self.connection.execute(
             """
             INSERT INTO model_invocations (
                 id, mission_id, task_id, bid_id, provider, lane, model_id, invocation_kind, status,
                 started_at, completed_at, prompt_preview, response_preview, raw_usage_json, token_usage_json,
-                cost_usage_json, error, payload_json
+                cost_usage_json, generation_mode, usage_unavailable_reason, error, payload_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 task_id=excluded.task_id,
                 bid_id=excluded.bid_id,
@@ -421,6 +429,8 @@ class MissionStore:
                 raw_usage_json=excluded.raw_usage_json,
                 token_usage_json=excluded.token_usage_json,
                 cost_usage_json=excluded.cost_usage_json,
+                generation_mode=excluded.generation_mode,
+                usage_unavailable_reason=excluded.usage_unavailable_reason,
                 error=excluded.error,
                 payload_json=excluded.payload_json
             """,
@@ -438,9 +448,11 @@ class MissionStore:
                 completed_at,
                 prompt_preview,
                 response_preview,
-                _dump(raw_usage),
+                _dump(raw_usage or {}),
                 _dump(token_usage),
                 _dump(cost_usage),
+                generation_mode,
+                usage_unavailable_reason,
                 error,
                 invocation.model_dump_json(),
             ),
@@ -581,20 +593,20 @@ class MissionStore:
         by_lane: dict[str, dict[str, Any]] = {}
         invocations: list[dict[str, Any]] = []
         for row in rows:
-            token_usage = json.loads(row["token_usage_json"])
-            cost_usage = json.loads(row["cost_usage_json"])
-            for key, value in token_usage.items():
+            token_usage = json.loads(row["token_usage_json"]) if row["token_usage_json"] else None
+            cost_usage = json.loads(row["cost_usage_json"]) if row["cost_usage_json"] else None
+            for key, value in (token_usage or {}).items():
                 mission_tokens[key] = mission_tokens.get(key, 0) + int(value)
                 if row["task_id"] and row["task_id"] == active_task_id:
                     active_tokens[key] = active_tokens.get(key, 0) + int(value)
-            for key, value in cost_usage.items():
+            for key, value in (cost_usage or {}).items():
                 mission_costs[key] = mission_costs.get(key, 0.0) + float(value)
                 if row["task_id"] and row["task_id"] == active_task_id:
                     active_costs[key] = active_costs.get(key, 0.0) + float(value)
             provider_bucket = by_provider.setdefault(row["provider"], {"provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
             lane_bucket = by_lane.setdefault(row["lane"], {"lane": row["lane"], "provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
-            total_tokens = sum(int(value) for value in token_usage.values())
-            total_cost = sum(float(value) for value in cost_usage.values())
+            total_tokens = sum(int(value) for value in (token_usage or {}).values())
+            total_cost = sum(float(value) for value in (cost_usage or {}).values())
             provider_bucket["total_tokens"] += total_tokens
             provider_bucket["total_cost"] += total_cost
             provider_bucket["invocation_count"] += 1
@@ -602,9 +614,9 @@ class MissionStore:
             lane_bucket["total_cost"] += total_cost
             lane_bucket["invocation_count"] += 1
             for bucket in (provider_bucket, lane_bucket):
-                for key, value in token_usage.items():
+                for key, value in (token_usage or {}).items():
                     bucket["token_usage"][key] = bucket["token_usage"].get(key, 0) + int(value)
-                for key, value in cost_usage.items():
+                for key, value in (cost_usage or {}).items():
                     bucket["cost_usage"][key] = bucket["cost_usage"].get(key, 0.0) + float(value)
             invocations.append(
                 {
@@ -623,6 +635,8 @@ class MissionStore:
                     "raw_usage": json.loads(row["raw_usage_json"]),
                     "token_usage": token_usage,
                     "cost_usage": cost_usage,
+                    "generation_mode": row["generation_mode"] or json.loads(row["payload_json"]).get("generation_mode"),
+                    "usage_unavailable_reason": row["usage_unavailable_reason"] or json.loads(row["payload_json"]).get("usage_unavailable_reason"),
                     "error": row["error"],
                     "total_tokens": total_tokens,
                     "total_cost": total_cost,
@@ -646,6 +660,26 @@ class MissionStore:
             "by_lane": by_lane,
             "invocations": invocations,
         }
+
+    def _bidding_state_for_view(
+        self,
+        summary: dict[str, Any],
+        runtime: sqlite3.Row | None,
+        usage_summary: dict[str, Any],
+        bids: list[dict[str, Any]],
+        active_task_id: str | None,
+    ) -> dict[str, Any]:
+        state = dict(summary.get("bidding_state", {}))
+        if runtime and runtime["bidding_state_json"]:
+            state.update(json.loads(runtime["bidding_state_json"]))
+        active_bids = [bid for bid in bids if bid.get("task_id") == active_task_id]
+        state["total_provider_invocations"] = sum(
+            1 for invocation in usage_summary.get("invocations", []) if invocation.get("generation_mode") == "provider_model"
+        )
+        state["active_provider_bids"] = sum(1 for bid in active_bids if bid.get("generation_mode") == "provider_model")
+        state["active_fallback_bids"] = sum(1 for bid in active_bids if bid.get("generation_mode") == "deterministic_fallback")
+        state["degraded"] = bool(state.get("degraded") or state.get("generation_mode") == "deterministic_fallback")
+        return state
 
     def _provider_market_summary(self, bids: list[dict[str, Any]], active_task_id: str | None, winner_bid_id: str | None, standby_bid_id: str | None) -> dict[str, Any]:
         active_bids = [bid for bid in bids if bid.get("task_id") == active_task_id]
@@ -677,6 +711,13 @@ class MissionStore:
         bids = [json.loads(row["payload_json"]) for row in self.fetch_ordered("bids", "updated_at ASC", mission_id)]
         active_task = next((task for task in tasks if task["task_id"] == (runtime["active_task_id"] if runtime else None)), None)
         usage_summary = self._usage_summary(mission_id, runtime["active_task_id"] if runtime else None)
+        bidding_state = self._bidding_state_for_view(
+            summary,
+            runtime,
+            usage_summary,
+            bids,
+            runtime["active_task_id"] if runtime else None,
+        )
         payload = {
             "mission_id": mission["id"],
             "repo_path": mission["repo_path"],
@@ -707,6 +748,7 @@ class MissionStore:
             "guardrail_state": {"policy_state": runtime["policy_state"] if runtime else PolicyState.CLEAR.value, "current_risk_score": runtime["current_risk_score"] if runtime else 0.0},
             "recovery_state": {"recovery_round": runtime["recovery_round"] if runtime else 0, "last_failure_task_id": runtime["latest_failure_task_id"] if runtime else None},
             "stop_state": {"stop_reason": runtime["stop_reason"] if runtime else None},
+            "bidding_state": bidding_state,
             "civic_audit_summary": summary.get("audit_summary", {}),
             "provider_market_summary": self._provider_market_summary(bids, runtime["active_task_id"] if runtime else None, runtime["winner_bid_id"] if runtime else None, runtime["standby_bid_id"] if runtime else None),
             "usage_summary": usage_summary,
@@ -723,20 +765,6 @@ class MissionStore:
         return payload
 
     def get_mission_view(self, mission_id: str) -> dict[str, Any]:
-        row = self.connection.execute("SELECT * FROM mission_view_cache WHERE mission_id = ?", (mission_id,)).fetchone()
-        if row:
-            cache_updated_at = row["updated_at"]
-            source_updated_at = [
-                mission_row["updated_at"]
-                for mission_row in (
-                    self.fetch_mission(mission_id),
-                    self.fetch_runtime(mission_id),
-                    self.fetch_control_state(mission_id),
-                )
-                if mission_row and mission_row["updated_at"]
-            ]
-            if not source_updated_at or max(source_updated_at) <= cache_updated_at:
-                return json.loads(row["payload_json"])
         return self.refresh_mission_view(mission_id)
 
     def rebuild_state(self, mission_id: str) -> ArbiterState:
@@ -766,6 +794,7 @@ class MissionStore:
                 "failure_context": json.loads(failure["payload_json"]) if failure else None,
                 "simulation_summary": json.loads(runtime["simulation_summary_json"]) if runtime["simulation_summary_json"] else None,
                 "worktree_state": json.loads(runtime["worktree_state_json"]) if runtime["worktree_state_json"] else {},
+                "bidding_state": json.loads(runtime["bidding_state_json"]) if runtime["bidding_state_json"] else json.loads(mission["summary_json"]).get("bidding_state", {}),
             }
         )
         if checkpoint:

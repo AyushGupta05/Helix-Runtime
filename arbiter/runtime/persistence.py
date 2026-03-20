@@ -41,13 +41,15 @@ class PersistenceCoordinator:
             model_id=payload.get("model_id"),
             invocation_kind=payload["invocation_kind"],
             status=payload["status"],
+            generation_mode=payload.get("generation_mode", "provider_model"),
             started_at=payload.get("started_at"),
             completed_at=payload.get("completed_at"),
             prompt_preview=payload.get("prompt_preview"),
             response_preview=payload.get("response_preview"),
             raw_usage=payload.get("raw_usage", {}),
-            token_usage=payload.get("token_usage", {}),
-            cost_usage=payload.get("cost_usage", {}),
+            token_usage=payload.get("token_usage"),
+            cost_usage=payload.get("cost_usage"),
+            usage_unavailable_reason=payload.get("usage_unavailable_reason"),
             error=payload.get("error"),
         )
         self.store.save_model_invocation(
@@ -61,6 +63,7 @@ class PersistenceCoordinator:
             model_id=invocation.model_id,
             invocation_kind=invocation.invocation_kind,
             status=invocation.status,
+            generation_mode=invocation.generation_mode.value,
             started_at=invocation.started_at,
             completed_at=invocation.completed_at,
             prompt_preview=invocation.prompt_preview,
@@ -68,6 +71,7 @@ class PersistenceCoordinator:
             raw_usage=invocation.raw_usage,
             token_usage=invocation.token_usage,
             cost_usage=invocation.cost_usage,
+            usage_unavailable_reason=invocation.usage_unavailable_reason,
             error=invocation.error,
         )
         if refresh_view:

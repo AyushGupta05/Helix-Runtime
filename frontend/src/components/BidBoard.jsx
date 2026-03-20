@@ -1,4 +1,13 @@
-import { formatCurrency, formatInteger, formatNumber, humanizeToken, summarizeProvider } from "../lib/format";
+import {
+  formatCurrency,
+  formatInteger,
+  formatNumber,
+  humanizeGenerationMode,
+  humanizeToken,
+  isDeterministicFallbackBid,
+  summarizeBidOrigin,
+  summarizeProvider
+} from "../lib/format";
 
 function humanizeStrategy(value) {
   return String(value || "untitled strategy")
@@ -15,6 +24,37 @@ function riskLabel(value) {
   if (numeric >= 0.66) return "High";
   if (numeric >= 0.33) return "Med";
   return "Low";
+}
+
+function providerLabelForBid(bid) {
+  if (isDeterministicFallbackBid(bid)) {
+    return "System";
+  }
+  if (bid.generation_mode === "mock") {
+    return "Mock";
+  }
+  if (bid.generation_mode === "replay") {
+    return "Replay";
+  }
+  if (bid.provider) {
+    return summarizeProvider(bid.provider);
+  }
+  return "Unknown";
+}
+
+function bidModeTone(generationMode) {
+  switch (generationMode) {
+    case "provider_model":
+      return "provider";
+    case "deterministic_fallback":
+      return "fallback";
+    case "mock":
+      return "mock";
+    case "replay":
+      return "replay";
+    default:
+      return "unknown";
+  }
 }
 
 function bidStatusFor(bid, winnerBidId, standbyBidId, activePhase) {
@@ -37,23 +77,29 @@ function BidCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
   const status = bidStatusFor(bid, winnerBidId, standbyBidId, activePhase);
   const totalTokens = metricTotal(bid.token_usage);
   const totalCost = metricTotal(bid.cost_usage);
+  const modeTone = bidModeTone(bid.generation_mode);
 
   return (
     <article
-      className={`leaderboard-card leaderboard-card-${status.tone}`}
+      className={`leaderboard-card leaderboard-card-${status.tone} leaderboard-card-${modeTone}`}
       style={{ animationDelay: `${Math.min(index * 45, 240)}ms` }}
     >
       <div className="leaderboard-card-head">
         <div>
-          <strong>{humanizeStrategy(bid.strategy_family || bid.role)}</strong>
-          <p className="leaderboard-card-provider">{summarizeProvider(bid.provider)}</p>
+          <strong>{bid.role || humanizeStrategy(bid.strategy_family)}</strong>
+          <p className="leaderboard-card-provider">{providerLabelForBid(bid)}</p>
         </div>
         <span className={`leaderboard-status leaderboard-status-${status.tone}`}>{status.label}</span>
       </div>
+      <p className="leaderboard-card-origin">{summarizeBidOrigin(bid)}</p>
       <div className="leaderboard-line">
         <span>Score {formatNumber(bid.score)}</span>
         <span>Conf {formatNumber(bid.confidence)}</span>
         <span>Risk {riskLabel(bid.risk)}</span>
+      </div>
+      <div className="leaderboard-line">
+        <span>Model {bid.model_id || "n/a"}</span>
+        <span>Mode {humanizeGenerationMode(bid.generation_mode || "unknown")}</span>
       </div>
       <div className="leaderboard-line leaderboard-line-strong">
         <span>{formatInteger(totalTokens)} tok</span>
@@ -61,6 +107,8 @@ function BidCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
       </div>
       {bid.rejection_reason ? (
         <p className="leaderboard-note">{bid.rejection_reason}</p>
+      ) : bid.usage_unavailable_reason ? (
+        <p className="leaderboard-note">{bid.usage_unavailable_reason}</p>
       ) : bid.model_id ? (
         <p className="leaderboard-note">{bid.model_id}</p>
       ) : null}
@@ -76,6 +124,7 @@ export default function BidBoard({
   activePhase,
   activeBidRound,
   simulationRound,
+  biddingState,
   usageSummary
 }) {
   const activeBids = bids.filter((bid) => bid.task_id === activeTaskId);
@@ -89,7 +138,7 @@ export default function BidBoard({
     activeBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0);
   const providerSpend = Object.values(
     activeBids.reduce((accumulator, bid) => {
-      const provider = summarizeProvider(bid.provider);
+      const provider = providerLabelForBid(bid);
       const next = accumulator[provider] ?? { provider, tokens: 0, cost: 0 };
       next.tokens += metricTotal(bid.token_usage);
       next.cost += metricTotal(bid.cost_usage);
@@ -105,6 +154,31 @@ export default function BidBoard({
     }
     return Number(right.score ?? -1) - Number(left.score ?? -1);
   });
+  const biddingMode = biddingState?.generation_mode ?? activeBids[0]?.generation_mode ?? null;
+  const biddingBanner =
+    biddingState?.architecture_violation ||
+    biddingState?.warning ||
+    biddingMode === "deterministic_fallback" ||
+    biddingState?.degraded
+      ? {
+          label:
+            biddingState?.architecture_violation
+              ? "Architecture violation"
+              : biddingMode === "deterministic_fallback" || biddingState?.degraded
+                ? "Degraded bidding mode"
+                : "Bidding notice",
+          message:
+            biddingState?.architecture_violation ??
+            biddingState?.warning ??
+            "This round is running without normal provider-backed bidding.",
+          tone:
+            biddingState?.architecture_violation
+              ? "rejected"
+              : biddingMode === "deterministic_fallback" || biddingState?.degraded
+                ? "standby"
+                : "shortlisted"
+        }
+      : null;
 
   return (
     <div className="arena-shell">
@@ -130,6 +204,12 @@ export default function BidBoard({
           <p>{formatCurrency(roundCost)}</p>
         </div>
       </div>
+      {biddingBanner ? (
+        <div className={`arena-bidding-banner arena-bidding-banner-${biddingBanner.tone}`}>
+          <strong>{biddingBanner.label}</strong>
+          <p>{biddingBanner.message}</p>
+        </div>
+      ) : null}
       <div className="arena-provider-strip">
         {providerSpend.map((entry) => (
           <span key={entry.provider} className="provider-spend-chip">
@@ -159,12 +239,12 @@ export default function BidBoard({
         <div className="arena-pinned">
           {winner ? (
             <span className="arena-pinned-item">
-              Winner: {humanizeStrategy(winner.strategy_family)} ({summarizeProvider(winner.provider)})
+              Winner: {summarizeBidOrigin(winner)}
             </span>
           ) : null}
           {standby ? (
             <span className="arena-pinned-item">
-              Standby: {humanizeStrategy(standby.strategy_family)} ({summarizeProvider(standby.provider)})
+              Standby: {summarizeBidOrigin(standby)}
             </span>
           ) : null}
         </div>

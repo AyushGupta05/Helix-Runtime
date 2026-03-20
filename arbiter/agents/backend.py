@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from arbiter.core.contracts import Bid, ReplayRecord, TaskNode, utc_now
+from arbiter.core.contracts import Bid, BidGenerationMode, ReplayRecord, TaskNode, utc_now
 from arbiter.runtime.config import RuntimeConfig
 from arbiter.runtime.replay import ReplayManager
 
@@ -27,12 +27,15 @@ class EditProposal(BaseModel):
 
 class ModelInvocationResult(BaseModel):
     content: str
+    invocation_id: str | None = None
     provider: str | None = None
     model_id: str | None = None
     lane: str | None = None
+    generation_mode: BidGenerationMode = BidGenerationMode.PROVIDER_MODEL
     raw_usage: dict[str, Any] = Field(default_factory=dict)
-    token_usage: dict[str, int] = Field(default_factory=dict)
-    cost_usage: dict[str, float] = Field(default_factory=dict)
+    token_usage: dict[str, int] | None = None
+    cost_usage: dict[str, float] | None = None
+    usage_unavailable_reason: str | None = None
     prompt_preview: str | None = None
     response_preview: str | None = None
     started_at: str | None = None
@@ -78,6 +81,35 @@ def _normalize_usage_metadata(usage: dict[str, Any] | None) -> dict[str, int]:
         else:
             continue
     return normalized
+
+
+def _extract_cost_usage(value: Any, prefix: str = "") -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            nested_prefix = f"{prefix}.{key}" if prefix else key
+            lowered = key.lower()
+            if isinstance(nested, (int, float)) and not isinstance(nested, bool):
+                if any(token in lowered for token in ("cost", "price", "billing", "usd", "amount")):
+                    normalized[nested_prefix] = float(nested)
+            else:
+                normalized.update(_extract_cost_usage(nested, nested_prefix))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            nested_prefix = f"{prefix}.{index}" if prefix else str(index)
+            normalized.update(_extract_cost_usage(item, nested_prefix))
+    return normalized
+
+
+def _usage_reason(token_usage: dict[str, int] | None, cost_usage: dict[str, float] | None, generation_mode: BidGenerationMode) -> str | None:
+    if generation_mode == BidGenerationMode.REPLAY:
+        return None
+    reasons: list[str] = []
+    if token_usage is None:
+        reasons.append("token usage unavailable: provider response did not include token metadata")
+    if cost_usage is None:
+        reasons.append("cost usage unavailable: provider response did not include billing metadata")
+    return "; ".join(reasons) or None
 
 
 class BedrockModelRouter:
@@ -143,7 +175,8 @@ class BedrockModelRouter:
         if self.replay.mode == "replay":
             recorded = self.replay.load(prompt)
             if recorded:
-                return ModelInvocationResult.model_validate(recorded)
+                return ModelInvocationResult.model_validate({**recorded, "generation_mode": BidGenerationMode.REPLAY})
+            raise RuntimeError("Replay mode is active but no recorded response exists for this prompt.")
         started_at = utc_now().isoformat()
         model, lane_config = self._get_model(lane)
         messages = [
@@ -153,27 +186,45 @@ class BedrockModelRouter:
         response = model.invoke(messages)
         content = response.content if isinstance(response.content, str) else json.dumps(response.content)
         raw_usage = getattr(response, "usage_metadata", {}) or {}
+        response_metadata = getattr(response, "response_metadata", {}) or {}
+        if response_metadata:
+            raw_usage = {
+                "usage_metadata": raw_usage,
+                "response_metadata": response_metadata,
+            }
+        token_usage = _normalize_usage_metadata(raw_usage) or None
+        cost_usage = _extract_cost_usage(raw_usage) or None
         result = ModelInvocationResult(
             content=content,
             provider=lane_config.provider,
             model_id=lane_config.model_id,
             lane=lane,
+            generation_mode=BidGenerationMode.PROVIDER_MODEL,
             raw_usage=raw_usage,
-            token_usage=_normalize_usage_metadata(raw_usage),
-            cost_usage={},
+            token_usage=token_usage,
+            cost_usage=cost_usage,
+            usage_unavailable_reason=_usage_reason(token_usage, cost_usage, BidGenerationMode.PROVIDER_MODEL),
             prompt_preview=_preview_text(prompt["user"]),
             response_preview=_preview_text(content),
             started_at=started_at,
             completed_at=utc_now().isoformat(),
         )
         if self.replay.mode in {"record", "off"}:
-            self.replay.record(lane=lane, prompt=prompt, response=result.model_dump())
+            self.replay.record(lane=lane, prompt=prompt, response=result.model_dump(mode="json"))
         return result
 
 
 class DefaultStrategyBackend:
     def __init__(self, router: BedrockModelRouter) -> None:
         self.router = router
+
+    def market_generation_mode(self) -> BidGenerationMode:
+        if self.router.replay.mode == "replay":
+            return BidGenerationMode.REPLAY
+        return BidGenerationMode.PROVIDER_MODEL
+
+    def supports_provider_bid_generation(self) -> bool:
+        return True
 
     @staticmethod
     def lane_for_task(task: TaskNode) -> str:
@@ -196,7 +247,15 @@ class DefaultStrategyBackend:
     ) -> list[ProposalCandidate]:
         del preview
         if not candidate_files:
-            fallback = ModelInvocationResult(content="{}", token_usage={}, cost_usage={}, prompt_preview="", response_preview="")
+            fallback = ModelInvocationResult(
+                content="{}",
+                generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
+                token_usage=None,
+                cost_usage=None,
+                usage_unavailable_reason="No provider call was made because there were no candidate files to plan against.",
+                prompt_preview="",
+                response_preview="",
+            )
             return [
                 ProposalCandidate(
                     candidate_id=uuid4().hex,
@@ -232,12 +291,17 @@ class DefaultStrategyBackend:
         def run_provider(provider: str) -> ProposalCandidate | None:
             started_at = utc_now().isoformat()
             lane_key = f"{lane}.{provider}"
+            invocation_id = uuid4().hex
+            lane_config = self.router.config.model_lanes.get(lane_key) or self.router.config.model_lanes[lane]
             if on_invocation:
                 on_invocation(
                     {
+                        "invocation_id": invocation_id,
                         "provider": provider,
                         "lane": lane_key,
+                        "model_id": lane_config.model_id,
                         "invocation_kind": "proposal_generation",
+                        "generation_mode": self.market_generation_mode(),
                         "status": "started",
                         "task_id": task.task_id,
                         "bid_id": bid.bid_id,
@@ -248,23 +312,27 @@ class DefaultStrategyBackend:
             try:
                 result = self.router.invoke(lane=lane_key, prompt={"system": system, "user": user})
                 proposal = self._parse_edit_proposal(result.content)
+                result.invocation_id = invocation_id
                 if on_invocation:
                     on_invocation(
                         {
-                            "provider": result.provider,
+                            "invocation_id": invocation_id,
+                            "provider": result.provider or provider,
                             "lane": result.lane or lane_key,
                             "model_id": result.model_id,
                             "invocation_kind": "proposal_generation",
+                            "generation_mode": result.generation_mode,
                             "status": "completed",
                             "task_id": task.task_id,
                             "bid_id": bid.bid_id,
-                            "started_at": result.started_at,
+                            "started_at": result.started_at or started_at,
                             "completed_at": result.completed_at,
                             "prompt_preview": result.prompt_preview,
                             "response_preview": result.response_preview,
                             "raw_usage": result.raw_usage,
                             "token_usage": result.token_usage,
                             "cost_usage": result.cost_usage,
+                            "usage_unavailable_reason": result.usage_unavailable_reason,
                         }
                     )
                 return ProposalCandidate(
@@ -281,9 +349,12 @@ class DefaultStrategyBackend:
                 if on_invocation:
                     on_invocation(
                         {
+                            "invocation_id": invocation_id,
                             "provider": provider,
                             "lane": lane_key,
+                            "model_id": lane_config.model_id,
                             "invocation_kind": "proposal_generation",
+                            "generation_mode": self.market_generation_mode(),
                             "status": "failed",
                             "task_id": task.task_id,
                             "bid_id": bid.bid_id,
@@ -334,6 +405,12 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         self.scripted = scripted
         self.index = 0
 
+    def market_generation_mode(self) -> BidGenerationMode:
+        return BidGenerationMode.MOCK
+
+    def supports_provider_bid_generation(self) -> bool:
+        return False
+
     def generate_edit_proposal(
         self,
         task: TaskNode,
@@ -346,7 +423,18 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         proposal = self.scripted[self.index]
         if not preview:
             self.index = min(self.index + 1, len(self.scripted) - 1)
-        return proposal, ModelInvocationResult(content=proposal.model_dump_json(), provider="scripted", model_id="scripted", lane="scripted", token_usage={"input_tokens": 0, "output_tokens": 0}, cost_usage={"usd": 0.0}, prompt_preview="", response_preview=proposal.summary)
+        return proposal, ModelInvocationResult(
+            content=proposal.model_dump_json(),
+            provider="scripted",
+            model_id="scripted",
+            lane="scripted",
+            generation_mode=BidGenerationMode.MOCK,
+            token_usage=None,
+            cost_usage=None,
+            usage_unavailable_reason="Mock strategy backend generated this proposal without a provider call.",
+            prompt_preview="",
+            response_preview=proposal.summary,
+        )
 
     def generate_edit_proposals(
         self,
@@ -362,12 +450,16 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         del mission_objective, candidate_files, failure_context, providers
         proposal, invocation = self.generate_edit_proposal(task, bid, "scripted", {}, preview=preview)
         if on_invocation:
+            invocation_id = uuid4().hex
+            invocation.invocation_id = invocation_id
             on_invocation(
                 {
+                    "invocation_id": invocation_id,
                     "provider": "scripted",
                     "lane": "scripted",
                     "model_id": "scripted",
                     "invocation_kind": "proposal_generation",
+                    "generation_mode": BidGenerationMode.MOCK,
                     "status": "completed",
                     "task_id": task.task_id,
                     "bid_id": bid.bid_id,
@@ -378,6 +470,7 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
                     "raw_usage": {},
                     "token_usage": invocation.token_usage,
                     "cost_usage": invocation.cost_usage,
+                    "usage_unavailable_reason": invocation.usage_unavailable_reason,
                 }
             )
         return [
