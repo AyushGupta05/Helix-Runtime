@@ -77,15 +77,16 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.get("/api/missions/{mission_id}/events")
-    async def mission_events(mission_id: str, request: Request):
+    async def mission_events(mission_id: str, request: Request, after_id: int | None = None):
         try:
             snapshot = service.snapshot(mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
         last_event_id = request.headers.get("last-event-id")
-        last_seen = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
-        if last_seen == 0 and snapshot.events:
-            last_seen = snapshot.events[-1].id
+        if after_id is not None:
+            last_seen = after_id
+        else:
+            last_seen = int(last_event_id) if last_event_id and last_event_id.isdigit() else snapshot.latest_event_id
 
         async def event_generator():
             nonlocal last_seen

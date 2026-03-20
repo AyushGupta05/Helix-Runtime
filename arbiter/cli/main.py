@@ -5,9 +5,11 @@ import time
 from pathlib import Path
 
 import typer
+import uvicorn
 
 from arbiter.mission.runner import mission_status, resume_mission, start_mission
 from arbiter.runtime.paths import build_mission_paths
+from arbiter.server.app import create_app
 
 app = typer.Typer(add_completion=False)
 mission_app = typer.Typer(add_completion=False)
@@ -81,10 +83,17 @@ def events(
             return
 
 
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+) -> None:
+    uvicorn.run(create_app(), host=host, port=port)
+
+
 def main() -> None:
     app()
 
 
 if __name__ == "__main__":
     main()
-

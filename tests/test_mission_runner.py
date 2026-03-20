@@ -46,8 +46,8 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     mission_root = python_bug_repo / ".arbiter" / state.mission.mission_id
     assert (mission_root / "events.jsonl").exists()
     events = (mission_root / "events.jsonl").read_text(encoding="utf-8")
-    assert "standby_promoted" in events
-    assert "checkpoint_accepted" in events
+    assert "standby.promoted" in events
+    assert "checkpoint.accepted" in events
 
     status = mission_status(state.mission.mission_id, str(python_bug_repo))
     assert status["outcome"] == "success"

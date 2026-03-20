@@ -67,6 +67,7 @@ class MissionView(BaseModel):
     active_bid_round: int
     branch_name: str | None = None
     head_commit: str | None = None
+    latest_event_id: int = 0
     latest_diff_summary: str = ""
     winner_bid_id: str | None = None
     standby_bid_id: str | None = None
@@ -88,4 +89,3 @@ class MissionHistoryEntry(BaseModel):
     status: str
     outcome: str | None = None
     branch_name: str | None = None
-

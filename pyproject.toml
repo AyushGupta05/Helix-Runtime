@@ -8,7 +8,35 @@ version = "0.1.0"
 description = "Arbiter autonomous mission runner"
 readme = "README.md"
 requires-python = ">=3.13,<3.15"
-dependencies = []
+dependencies = [
+    "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "langchain",
+    "langchain-anthropic",
+    "langchain-aws",
+    "langchain-mcp-adapters",
+    "langchain-openai",
+    "openai",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "GitPython",
+    "networkx",
+    "numpy",
+    "orjson",
+    "filelock",
+    "psutil",
+    "httpx",
+    "mcp",
+    "tenacity",
+    "fastapi",
+    "uvicorn",
+    "sse-starlette",
+    "typer",
+    "rich",
+    "structlog",
+    "anyio",
+]
 
 [project.scripts]
 arbiter = "arbiter.cli.main:main"

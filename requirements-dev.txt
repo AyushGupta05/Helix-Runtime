@@ -3,5 +3,6 @@
 pytest
 pytest-asyncio
 pytest-cov
+playwright
 ruff
 mypy

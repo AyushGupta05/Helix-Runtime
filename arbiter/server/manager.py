@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-from arbiter.core.contracts import RunState, utc_now
+from arbiter.core.contracts import MissionSummary, RunState, utc_now
 from arbiter.mission.runner import build_mission_spec, resume_mission, start_mission
 from arbiter.runtime.paths import build_mission_paths
 from arbiter.runtime.store import MissionStore
@@ -53,6 +53,30 @@ class MissionService:
             )
             paths = build_mission_paths(spec.repo_path, spec.mission_id)
             now = utc_now().isoformat()
+            store = MissionStore(paths.db_path)
+            try:
+                store.upsert_mission(
+                    mission_id=spec.mission_id,
+                    status="queued",
+                    repo_path=spec.repo_path,
+                    branch_name=f"codex/arbiter-{spec.mission_id}",
+                    outcome=None,
+                    spec=spec,
+                    summary=MissionSummary(
+                        mission_id=spec.mission_id,
+                        repo_path=spec.repo_path,
+                        objective=spec.objective,
+                    ),
+                )
+                store.upsert_control_state(
+                    mission_id=spec.mission_id,
+                    run_state=RunState.RUNNING.value,
+                    requested_action=None,
+                    reason=None,
+                    updated_at=now,
+                )
+            finally:
+                store.close()
             self.registry.upsert(
                 mission_id=spec.mission_id,
                 repo_path=spec.repo_path,

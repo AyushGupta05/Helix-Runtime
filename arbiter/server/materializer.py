@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from arbiter.core.contracts import ArbiterState, Bid, TaskNode
+from arbiter.core.contracts import ArbiterState, Bid, MissionControlState, MissionSummary, RunState, TaskNode
 from arbiter.runtime.paths import build_mission_paths
 from arbiter.runtime.store import MissionStore
 from arbiter.server.schemas import BidView, MissionView, TaskView, TimelineEventView
@@ -16,11 +16,27 @@ def materialize_mission_view(repo_path: str, mission_id: str) -> MissionView:
         if mission_row is None:
             raise ValueError(f"Mission {mission_id} not found.")
         checkpoint = store.fetch_latest_checkpoint()
+        control_row = store.fetch_control_state(mission_id)
         if checkpoint:
             state = ArbiterState.model_validate_json(checkpoint["state_json"])
         else:
             spec = json.loads(mission_row["spec_json"])
-            state = ArbiterState.model_validate({"mission": spec, "summary": {"mission_id": mission_id}})
+            state = ArbiterState.model_validate(
+                {
+                    "mission": spec,
+                    "summary": MissionSummary(
+                        mission_id=mission_id,
+                        repo_path=spec["repo_path"],
+                        objective=spec["objective"],
+                    ).model_dump(mode="json"),
+                }
+            )
+        if control_row:
+            state.control = MissionControlState(
+                run_state=RunState(control_row["run_state"]),
+                requested_action=control_row["requested_action"],
+                reason=control_row["reason"],
+            )
         bids_rows = store.fetch_all("bids")
         bids = []
         for row in bids_rows:
@@ -64,6 +80,7 @@ def materialize_mission_view(repo_path: str, mission_id: str) -> MissionView:
             )
             for row in reversed(event_rows[:200])
         ]
+        latest_event_id = events[-1].id if events else 0
         validation_report = state.validation_report.model_dump(mode="json") if state.validation_report else None
         return MissionView(
             mission_id=mission_id,
@@ -75,6 +92,7 @@ def materialize_mission_view(repo_path: str, mission_id: str) -> MissionView:
             active_bid_round=state.active_bid_round,
             branch_name=state.summary.branch_name,
             head_commit=state.summary.head_commit,
+            latest_event_id=latest_event_id,
             latest_diff_summary=state.latest_diff_summary,
             winner_bid_id=state.winner_bid_id,
             standby_bid_id=state.standby_bid_id,

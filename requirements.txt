@@ -25,6 +25,9 @@ psutil
 httpx
 mcp
 tenacity
+fastapi
+uvicorn
+sse-starlette
 
 # CLI, logging, and operator experience
 typer
