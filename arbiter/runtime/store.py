@@ -128,7 +128,7 @@ class MissionStore:
     def append_event(self, event_type: str, payload: dict[str, Any], created_at: str) -> None:
         self.connection.execute(
             "INSERT INTO events (event_type, payload_json, created_at) VALUES (?, ?, ?)",
-            (event_type, json.dumps(payload), created_at),
+            (event_type, json.dumps(payload, default=str), created_at),
         )
         self.connection.commit()
 
@@ -169,4 +169,3 @@ class MissionStore:
         return self.connection.execute(
             "SELECT * FROM mission_state_checkpoints ORDER BY id DESC LIMIT 1"
         ).fetchone()
-

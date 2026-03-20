@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -119,7 +120,7 @@ class RepoStateCollector:
         return results
 
     def _detect_capabilities(self) -> CapabilitySet:
-        if (self.repo / "pyproject.toml").exists() or any(self.repo.glob("**/conftest.py")):
+        if (self.repo / "pyproject.toml").exists() or (self.repo / "tests").exists() or any(self.repo.rglob("test_*.py")):
             return self._detect_python()
         if (self.repo / "package.json").exists():
             return self._detect_tsjs()
@@ -130,14 +131,15 @@ class RepoStateCollector:
         lint_commands: list[list[str]] = []
         static_commands: list[list[str]] = []
         benchmark_commands: list[list[str]] = []
+        python = sys.executable
         if (self.repo / "tests").exists() or any(self.repo.glob("test_*.py")):
-            test_commands.append(["python", "-m", "pytest"])
+            test_commands.append([python, "-m", "pytest"])
         if (self.repo / "ruff.toml").exists() or (self.repo / "pyproject.toml").exists():
-            lint_commands.append(["python", "-m", "ruff", "check", "."])
+            lint_commands.append([python, "-m", "ruff", "check", "."])
         if (self.repo / "mypy.ini").exists() or (self.repo / "pyproject.toml").exists():
-            static_commands.append(["python", "-m", "mypy", "."])
+            static_commands.append([python, "-m", "mypy", "."])
         if (self.repo / "benchmarks").exists():
-            benchmark_commands.append(["python", "-m", "pytest", "benchmarks"])
+            benchmark_commands.append([python, "-m", "pytest", "benchmarks"])
         return CapabilitySet(
             runtime="python",
             test_commands=test_commands,
@@ -168,4 +170,3 @@ class RepoStateCollector:
             benchmark_commands=benchmark_commands,
             is_single_package_tsjs=True,
         )
-
