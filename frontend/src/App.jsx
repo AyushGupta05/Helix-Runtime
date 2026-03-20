@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Route,
   Routes,
@@ -27,7 +27,7 @@ import BidBoard from "./components/BidBoard";
 import ArtifactsPanel from "./components/ArtifactsPanel";
 import EventStrip from "./components/EventStrip";
 
-function HomePanel() {
+function HomePanel({ activeMission, onOpenActiveMission }) {
   return (
     <div className="home-stack">
       <section className="hero-panel">
@@ -56,6 +56,22 @@ function HomePanel() {
           </article>
         </div>
       </section>
+      {activeMission ? (
+        <section className="hero-panel hero-panel-compact">
+          <div className="hero-active-head">
+            <div>
+              <p className="eyebrow">Live Mission</p>
+              <h2>{activeMission.objective}</h2>
+            </div>
+            <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
+              Open live room
+            </button>
+          </div>
+          <p className="hero-hint">
+            A mission is already running. It will stay secondary until you open it explicitly.
+          </p>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -206,16 +222,6 @@ function Shell() {
     navigate(`/missions/${mission.mission_id}?repo=${encodeURIComponent(repoScope || mission.repo_path || "")}`);
   };
 
-  useEffect(() => {
-    if (!activeMission || location.pathname !== "/") {
-      return;
-    }
-    navigate(
-      `/missions/${activeMission.mission_id}?repo=${encodeURIComponent(repoScope || activeMission.repo_path || "")}`,
-      { replace: true }
-    );
-  }, [activeMission, location.pathname, navigate, repoScope]);
-
   const createMutation = useMutation({
     mutationFn: createMission,
     onSuccess: (response, variables) => {
@@ -257,7 +263,10 @@ function Shell() {
       ) : null}
       <main className={`main-stage ${isMissionView ? "main-stage-mission" : ""}`}>
         <Routes>
-          <Route path="/" element={<HomePanel />} />
+          <Route
+            path="/"
+            element={<HomePanel activeMission={activeMission} onOpenActiveMission={openMission} />}
+          />
           <Route path="/missions/:missionId" element={<MissionRoute />} />
         </Routes>
       </main>
