@@ -5,8 +5,11 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from arbiter.agents.backend import EditProposal, FileUpdate, ScriptedStrategyBackend
 from arbiter.mission.runner import mission_status, start_mission
+from arbiter.repo.worktree import WorktreeSetupError
 
 
 def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> None:
@@ -59,3 +62,17 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     assert mission_cp >= 1
     assert repo_cp >= 1
     connection.close()
+
+
+def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
+    repo = tmp_path / "no_commit_repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), check=True, capture_output=True, text=True)
+
+    with pytest.raises(WorktreeSetupError, match="at least one commit"):
+        start_mission(
+            repo=str(repo),
+            objective="Fix failing tests",
+            strategy_backend=ScriptedStrategyBackend([]),
+        )

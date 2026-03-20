@@ -328,11 +328,13 @@ def start_mission(
     Path(paths.metadata_path).write_text(json.dumps(spec.model_dump(mode="json"), indent=2), encoding="utf-8")
     runtime = MissionRuntime(spec, paths, strategy_backend=strategy_backend)
     started = time.perf_counter()
-    state = runtime.run()
-    state.runtime_seconds = time.perf_counter() - started
-    runtime.persist("finished")
-    runtime.store.close()
-    return state
+    try:
+        state = runtime.run()
+        state.runtime_seconds = time.perf_counter() - started
+        runtime.persist("finished")
+        return state
+    finally:
+        runtime.store.close()
 
 
 def resume_mission(mission_id: str, repo: str, strategy_backend=None) -> ArbiterState:
@@ -348,9 +350,10 @@ def resume_mission(mission_id: str, repo: str, strategy_backend=None) -> Arbiter
     runtime = MissionRuntime(spec, paths, strategy_backend=strategy_backend)
     if checkpoint:
         runtime.state = ArbiterState.model_validate_json(checkpoint["state_json"])
-    state = runtime.run()
-    runtime.store.close()
-    return state
+    try:
+        return runtime.run()
+    finally:
+        runtime.store.close()
 
 
 def mission_status(mission_id: str, repo: str) -> dict:
