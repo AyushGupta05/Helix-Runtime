@@ -58,8 +58,16 @@ test.beforeEach(async ({ page }) => {
     window.__emitMissionEvent = (eventType, payload, id = Date.now()) => {
       for (const source of eventSources) {
         const event = new Event(eventType);
-        event.data = JSON.stringify(payload);
-        event.lastEventId = String(id);
+        Object.defineProperty(event, "data", {
+          configurable: true,
+          enumerable: true,
+          value: JSON.stringify(payload)
+        });
+        Object.defineProperty(event, "lastEventId", {
+          configurable: true,
+          enumerable: true,
+          value: String(id)
+        });
         source.dispatchEvent(event);
       }
     };
@@ -97,6 +105,7 @@ test("launches a mission and renders live event updates", async ({ page }) => {
   await page.getByRole("button", { name: "Launch mission" }).click();
 
   await expect(page.getByText("Fix checkout tests")).toBeVisible();
+  await page.waitForTimeout(150);
   await page.evaluate(() =>
     window.__emitMissionEvent(
       "standby.promoted",

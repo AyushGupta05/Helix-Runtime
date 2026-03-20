@@ -35,7 +35,13 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    service: MissionService = app.state.mission_service
+
+    def get_service() -> MissionService:
+        service = getattr(app.state, "mission_service", None)
+        if service is None:
+            service = MissionService(strategy_backend_factory=strategy_backend_factory)
+            app.state.mission_service = service
+        return service
 
     @app.get("/api/health")
     def health() -> dict:
@@ -43,6 +49,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
     @app.post("/api/missions")
     def create_mission(payload: MissionCreateRequest):
+        service = get_service()
         try:
             return service.start(payload)
         except MissionConflictError as exc:
@@ -50,10 +57,12 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
     @app.get("/api/missions")
     def list_missions():
+        service = get_service()
         return service.list_history()
 
     @app.get("/api/missions/{mission_id}")
     def get_mission(mission_id: str):
+        service = get_service()
         try:
             return service.snapshot(mission_id)
         except MissionNotFoundError as exc:
@@ -61,6 +70,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
     @app.post("/api/missions/{mission_id}/pause")
     def pause_mission(mission_id: str):
+        service = get_service()
         try:
             return service.pause(mission_id)
         except MissionNotFoundError as exc:
@@ -68,6 +78,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
     @app.post("/api/missions/{mission_id}/resume")
     def resume_mission(mission_id: str):
+        service = get_service()
         try:
             return service.resume(mission_id)
         except MissionConflictError as exc:
@@ -77,6 +88,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
     @app.post("/api/missions/{mission_id}/cancel")
     def cancel_mission(mission_id: str):
+        service = get_service()
         try:
             return service.cancel(mission_id)
         except MissionNotFoundError as exc:
@@ -84,6 +96,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
     @app.get("/api/missions/{mission_id}/events")
     async def mission_events(mission_id: str, request: Request, after_id: int | None = None):
+        service = get_service()
         try:
             snapshot = service.snapshot(mission_id)
         except MissionNotFoundError as exc:
