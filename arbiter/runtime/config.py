@@ -27,6 +27,7 @@ class RuntimeConfig(BaseSettings):
         default="bedrock",
         alias="MODEL_PROVIDER",
     )
+    enabled_providers_raw: str | None = Field(default=None, alias="ARBITER_ENABLED_PROVIDERS")
     bedrock_region: str = Field(default="us-east-1", validation_alias=AliasChoices("BEDROCK_REGION", "AWS_REGION"))
     bedrock_profile: str | None = Field(default=None, validation_alias=AliasChoices("BEDROCK_PROFILE", "AWS_PROFILE"))
     bedrock_access_key_id: str | None = Field(default=None, validation_alias=AliasChoices("BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"))
@@ -82,22 +83,39 @@ class RuntimeConfig(BaseSettings):
     max_recovery_rounds: int = Field(default=3, alias="ARBITER_MAX_RECOVERY_ROUNDS")
     replay_mode: Literal["off", "record", "replay"] = Field(default="off", alias="ARBITER_REPLAY_MODE")
 
-    def _lane_model(self, lane: str) -> str:
-        if self.model_provider == "bedrock":
-            return getattr(self, f"bedrock_model_{lane}")
-        if self.model_provider == "openai":
-            return getattr(self, f"openai_model_{lane}")
-        return getattr(self, f"anthropic_model_{lane}")
+    def _lane_model(self, provider: Literal["bedrock", "openai", "anthropic"], lane: str) -> str:
+        return getattr(self, f"{provider}_model_{lane}")
+
+    @cached_property
+    def enabled_providers(self) -> list[Literal["bedrock", "openai", "anthropic"]]:
+        if self.enabled_providers_raw:
+            parsed = [item.strip() for item in self.enabled_providers_raw.split(",") if item.strip()]
+            ordered = [provider for provider in ("bedrock", "openai", "anthropic") if provider in parsed]
+            return ordered or [self.model_provider]
+        providers: list[Literal["bedrock", "openai", "anthropic"]] = []
+        if self.bedrock_profile or self.bedrock_access_key_id or self.bedrock_secret_access_key or self.bedrock_session_token or self.model_provider == "bedrock":
+            providers.append("bedrock")
+        if self.openai_api_key:
+            providers.append("openai")
+        if self.anthropic_api_key:
+            providers.append("anthropic")
+        if not providers:
+            providers.append(self.model_provider)
+        return providers
+
+    @cached_property
+    def default_provider(self) -> Literal["bedrock", "openai", "anthropic"]:
+        return self.enabled_providers[0]
 
     @cached_property
     def model_lanes(self) -> dict[str, ModelLaneConfig]:
-        return {
-            "triage": ModelLaneConfig(name="triage", provider=self.model_provider, model_id=self._lane_model("triage")),
-            "bid_fast": ModelLaneConfig(name="bid_fast", provider=self.model_provider, model_id=self._lane_model("bid_fast")),
-            "bid_deep": ModelLaneConfig(name="bid_deep", provider=self.model_provider, model_id=self._lane_model("bid_deep")),
-            "test_gen": ModelLaneConfig(name="test_gen", provider=self.model_provider, model_id=self._lane_model("test_gen")),
-            "perf_reason": ModelLaneConfig(name="perf_reason", provider=self.model_provider, model_id=self._lane_model("perf_reason")),
-        }
+        lanes: dict[str, ModelLaneConfig] = {}
+        for lane in ("triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"):
+            lanes[lane] = ModelLaneConfig(name=lane, provider=self.default_provider, model_id=self._lane_model(self.default_provider, lane))
+            for provider in self.enabled_providers:
+                key = f"{lane}.{provider}"
+                lanes[key] = ModelLaneConfig(name=key, provider=provider, model_id=self._lane_model(provider, lane))
+        return lanes
 
 
 def load_runtime_config() -> RuntimeConfig:

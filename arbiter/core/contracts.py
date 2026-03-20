@@ -271,6 +271,9 @@ class Bid(BaseModel):
     bid_id: str
     task_id: str
     role: str
+    provider: str = "system"
+    lane: str | None = None
+    model_id: str | None = None
     variant_id: str
     strategy_family: str
     strategy_summary: str
@@ -294,6 +297,11 @@ class Bid(BaseModel):
     search_score: float | None = None
     search_reward: float | None = None
     search_summary: str | None = None
+    token_usage: dict[str, int] = Field(default_factory=dict)
+    cost_usage: dict[str, float] = Field(default_factory=dict)
+    prompt_preview: str | None = None
+    response_preview: str | None = None
+    selection_reason: str | None = None
     rejection_reason: str | None = None
     can_be_standby: bool = True
     promotion_hints: list[str] = Field(default_factory=list)
@@ -408,6 +416,39 @@ class AcceptedCheckpoint(BaseModel):
     rollback_pointer: str | None = None
 
 
+class ModelInvocation(BaseModel):
+    invocation_id: str
+    mission_id: str
+    task_id: str | None = None
+    bid_id: str | None = None
+    provider: str
+    lane: str
+    model_id: str | None = None
+    invocation_kind: Literal["bid_generation", "proposal_generation", "simulation"]
+    status: Literal["started", "completed", "failed"]
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    prompt_preview: str | None = None
+    response_preview: str | None = None
+    raw_usage: dict[str, Any] = Field(default_factory=dict)
+    token_usage: dict[str, int] = Field(default_factory=dict)
+    cost_usage: dict[str, float] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class TraceEntry(BaseModel):
+    trace_type: str
+    title: str
+    message: str
+    status: str = "info"
+    task_id: str | None = None
+    bid_id: str | None = None
+    provider: str | None = None
+    lane: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class MissionEvent(BaseModel):
     event_type: str
     mission_id: str
@@ -458,6 +499,7 @@ class ArbiterState(BaseModel):
     cost_usage: dict[str, float] = Field(default_factory=dict)
     decision_history: list[str] = Field(default_factory=list)
     latest_diff_summary: str = ""
+    worktree_state: dict[str, Any] = Field(default_factory=dict)
     no_valid_contenders: bool = False
     outcome: MissionOutcome | None = None
 
@@ -465,6 +507,11 @@ class ArbiterState(BaseModel):
     def sync_summary(self) -> ArbiterState:
         self.summary.current_risk_score = self.governance.current_risk_score
         self.summary.stop_reason = self.governance.stop_reason
+        self.summary.token_usage = dict(self.token_usage)
+        self.summary.cost_usage = dict(self.cost_usage)
+        self.summary.decision_history = list(self.decision_history)
+        self.summary.runtime_seconds = self.runtime_seconds
+        self.summary.outcome = self.outcome
         if self.last_civic_audit and self.last_civic_audit.audit_id not in self.summary.civic_audit_ids:
             self.summary.civic_audit_ids.append(self.last_civic_audit.audit_id)
         return self

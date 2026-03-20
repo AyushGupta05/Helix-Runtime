@@ -33,6 +33,7 @@ class MissionStore:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self._init_schema()
+        self._ensure_column("mission_runtime", "worktree_state_json", "TEXT")
 
     def _init_schema(self) -> None:
         self.connection.executescript(
@@ -63,6 +64,7 @@ class MissionStore:
                 policy_state TEXT NOT NULL DEFAULT 'clear',
                 current_risk_score REAL NOT NULL DEFAULT 0,
                 simulation_summary_json TEXT,
+                worktree_state_json TEXT,
                 latest_validation_task_id TEXT,
                 latest_failure_task_id TEXT,
                 accepted_checkpoint_id TEXT,
@@ -172,9 +174,51 @@ class MissionStore:
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS model_invocations (
+                id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                task_id TEXT,
+                bid_id TEXT,
+                provider TEXT NOT NULL,
+                lane TEXT NOT NULL,
+                model_id TEXT,
+                invocation_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                prompt_preview TEXT,
+                response_preview TEXT,
+                raw_usage_json TEXT NOT NULL,
+                token_usage_json TEXT NOT NULL,
+                cost_usage_json TEXT NOT NULL,
+                error TEXT,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS trace_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id TEXT NOT NULL,
+                task_id TEXT,
+                bid_id TEXT,
+                trace_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT NOT NULL,
+                provider TEXT,
+                lane TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
+            );
             """
         )
         self.connection.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            self.connection.commit()
 
     def close(self) -> None:
         self.connection.close()
@@ -199,15 +243,15 @@ class MissionStore:
         )
         self.connection.commit()
 
-    def upsert_runtime(self, mission_id: str, *, active_phase: str, active_task_id: str | None, active_bid_round: int, simulation_round: int, recovery_round: int, winner_bid_id: str | None, standby_bid_id: str | None, latest_diff_summary: str, stop_reason: str | None, policy_state: str, current_risk_score: float, simulation_summary: SimulationSummary | None, latest_validation_task_id: str | None, latest_failure_task_id: str | None, accepted_checkpoint_id: str | None) -> None:
+    def upsert_runtime(self, mission_id: str, *, active_phase: str, active_task_id: str | None, active_bid_round: int, simulation_round: int, recovery_round: int, winner_bid_id: str | None, standby_bid_id: str | None, latest_diff_summary: str, stop_reason: str | None, policy_state: str, current_risk_score: float, simulation_summary: SimulationSummary | None, worktree_state: dict[str, Any] | None, latest_validation_task_id: str | None, latest_failure_task_id: str | None, accepted_checkpoint_id: str | None) -> None:
         self.connection.execute(
             """
             INSERT INTO mission_runtime (
                 mission_id, active_phase, active_task_id, active_bid_round, simulation_round, recovery_round,
                 winner_bid_id, standby_bid_id, latest_diff_summary, stop_reason, policy_state, current_risk_score,
-                simulation_summary_json, latest_validation_task_id, latest_failure_task_id, accepted_checkpoint_id, updated_at
+                simulation_summary_json, worktree_state_json, latest_validation_task_id, latest_failure_task_id, accepted_checkpoint_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mission_id) DO UPDATE SET
                 active_phase=excluded.active_phase,
                 active_task_id=excluded.active_task_id,
@@ -221,6 +265,7 @@ class MissionStore:
                 policy_state=excluded.policy_state,
                 current_risk_score=excluded.current_risk_score,
                 simulation_summary_json=excluded.simulation_summary_json,
+                worktree_state_json=excluded.worktree_state_json,
                 latest_validation_task_id=excluded.latest_validation_task_id,
                 latest_failure_task_id=excluded.latest_failure_task_id,
                 accepted_checkpoint_id=excluded.accepted_checkpoint_id,
@@ -240,6 +285,7 @@ class MissionStore:
                 policy_state,
                 current_risk_score,
                 simulation_summary.model_dump_json() if simulation_summary else None,
+                _dump(worktree_state or {}),
                 latest_validation_task_id,
                 latest_failure_task_id,
                 accepted_checkpoint_id,
@@ -350,6 +396,79 @@ class MissionStore:
             (checkpoint.checkpoint_id, mission_id, checkpoint.label, checkpoint.commit_sha, checkpoint.diff_summary, checkpoint.created_at.isoformat(), checkpoint.model_dump_json()),
         )
         self.connection.commit()
+
+    def save_model_invocation(self, mission_id: str, invocation: BaseModel, *, invocation_id: str, task_id: str | None, bid_id: str | None, provider: str, lane: str, model_id: str | None, invocation_kind: str, status: str, started_at: str | None, completed_at: str | None, prompt_preview: str | None, response_preview: str | None, raw_usage: dict[str, Any], token_usage: dict[str, int], cost_usage: dict[str, float], error: str | None) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO model_invocations (
+                id, mission_id, task_id, bid_id, provider, lane, model_id, invocation_kind, status,
+                started_at, completed_at, prompt_preview, response_preview, raw_usage_json, token_usage_json,
+                cost_usage_json, error, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                task_id=excluded.task_id,
+                bid_id=excluded.bid_id,
+                provider=excluded.provider,
+                lane=excluded.lane,
+                model_id=excluded.model_id,
+                invocation_kind=excluded.invocation_kind,
+                status=excluded.status,
+                started_at=excluded.started_at,
+                completed_at=excluded.completed_at,
+                prompt_preview=excluded.prompt_preview,
+                response_preview=excluded.response_preview,
+                raw_usage_json=excluded.raw_usage_json,
+                token_usage_json=excluded.token_usage_json,
+                cost_usage_json=excluded.cost_usage_json,
+                error=excluded.error,
+                payload_json=excluded.payload_json
+            """,
+            (
+                invocation_id,
+                mission_id,
+                task_id,
+                bid_id,
+                provider,
+                lane,
+                model_id,
+                invocation_kind,
+                status,
+                started_at,
+                completed_at,
+                prompt_preview,
+                response_preview,
+                _dump(raw_usage),
+                _dump(token_usage),
+                _dump(cost_usage),
+                error,
+                invocation.model_dump_json(),
+            ),
+        )
+        self.connection.commit()
+
+    def save_trace_entry(self, mission_id: str, trace: BaseModel, *, task_id: str | None, bid_id: str | None, trace_type: str, title: str, message: str, status: str, provider: str | None, lane: str | None) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO trace_entries (mission_id, task_id, bid_id, trace_type, title, message, status, provider, lane, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mission_id,
+                task_id,
+                bid_id,
+                trace_type,
+                title,
+                message,
+                status,
+                provider,
+                lane,
+                trace.model_dump_json(),
+                getattr(trace, "created_at", utc_now()).isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
 
     def add_replay_record(self, mission_id: str | None, lane: str, replay_key: str, payload: ReplayRecord) -> None:
         self.connection.execute(

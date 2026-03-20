@@ -108,6 +108,22 @@ class LocalToolset:
     def diff(self) -> str:
         return self._run_tool(["git", "diff", "--stat"]).stdout
 
+    def diff_patch(self) -> str:
+        return self._run_tool(["git", "diff", "--", "."]).stdout
+
+    def worktree_state(self) -> dict[str, object]:
+        changed = self.changed_files()
+        diff_stat = self.diff()
+        diff_patch = self.diff_patch()
+        return {
+            "worktree_path": str(self.worktree),
+            "changed_files": changed,
+            "diff_stat": diff_stat,
+            "diff_patch": diff_patch,
+            "has_changes": bool(changed or diff_stat.strip() or diff_patch.strip()),
+            "reason": "No repo changes yet." if not changed and not diff_stat.strip() and not diff_patch.strip() else "Isolated worktree contains pending or accepted changes.",
+        }
+
     def revert_to_checkpoint(self, commit_sha: str) -> None:
         subprocess.run(["git", "reset", "--hard", commit_sha], cwd=str(self.worktree), check=True, capture_output=True, text=True)
         subprocess.run(["git", "clean", "-fd"], cwd=str(self.worktree), check=True, capture_output=True, text=True)

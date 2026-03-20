@@ -23,10 +23,12 @@ ROLE_FAMILIES = {
 
 
 class SimulationFactory:
-    def __init__(self, max_workers: int = 8, backend=None, bidder_models: list[str] | None = None) -> None:
+    def __init__(self, max_workers: int = 8, backend=None, bidder_models: list[str] | None = None, provider_pool: list[str] | None = None, on_invocation=None) -> None:
         self.max_workers = max_workers
         self.backend = backend
         self.bidder_models = bidder_models or []
+        self.provider_pool = provider_pool or []
+        self.on_invocation = on_invocation
         self.market_token_usage: dict[str, int] = {}
         self.market_cost_usage: dict[str, float] = {}
 
@@ -34,9 +36,10 @@ class SimulationFactory:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [executor.submit(self._build_role_variants, role, task, snapshot) for role in ARCHETYPES]
             llm_futures = []
-            if self.backend and self.bidder_models:
-                for model_lane in self.bidder_models:
-                    llm_futures.append(executor.submit(self._build_llm_bid, model_lane, task, snapshot))
+            if self.backend and hasattr(self.backend, "router") and self.bidder_models and self.provider_pool:
+                for provider in self.provider_pool:
+                    for model_lane in self.bidder_models:
+                        llm_futures.append(executor.submit(self._build_llm_bid, provider, model_lane, task, snapshot))
 
         self.market_token_usage.clear()
         self.market_cost_usage.clear()
@@ -95,8 +98,9 @@ class SimulationFactory:
             bids.append(bid)
         return bids
 
-    def _build_llm_bid(self, lane: str, task: TaskNode, snapshot: RepoSnapshot) -> tuple[Bid, dict, dict]:
+    def _build_llm_bid(self, provider: str, lane: str, task: TaskNode, snapshot: RepoSnapshot) -> tuple[Bid, dict, dict]:
         import json
+
         system = (
             "You are an autonomous AI strategy bidder. Return only valid JSON with fields: "
             '"strategy_summary" (short description), "exact_action" (tactical steps), '
@@ -110,8 +114,35 @@ class SimulationFactory:
             f"Candidate files: {', '.join(candidate_files)}\n"
             "Generate a competitive bid strategy to solve this task safely and effectively."
         )
-        result = self.backend.router.invoke(lane=lane, prompt={"system": system, "user": user})
-        
+        lane_key = f"{lane}.{provider}"
+        if self.on_invocation:
+            self.on_invocation(
+                {
+                    "provider": provider,
+                    "lane": lane_key,
+                    "invocation_kind": "bid_generation",
+                    "status": "started",
+                    "task_id": task.task_id,
+                    "prompt_preview": user[:1200],
+                }
+            )
+        try:
+            result = self.backend.router.invoke(lane=lane_key, prompt={"system": system, "user": user})
+        except Exception as exc:
+            if self.on_invocation:
+                self.on_invocation(
+                    {
+                        "provider": provider,
+                        "lane": lane_key,
+                        "invocation_kind": "bid_generation",
+                        "status": "failed",
+                        "task_id": task.task_id,
+                        "completed_at": None,
+                        "prompt_preview": user[:1200],
+                        "error": str(exc),
+                    }
+                )
+            raise
         cleaned = result.content.strip()
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[-1].split("```")[0].strip()
@@ -119,18 +150,21 @@ class SimulationFactory:
             cleaned = cleaned.split("```")[-2].strip()
             if cleaned.startswith("json"):
                 cleaned = cleaned[4:].strip()
-                
+
         try:
             data = json.loads(cleaned)
         except Exception:
             data = {}
-            
+
         risk_val = float(data.get("risk", 0.3))
-        return Bid(
+        bid = Bid(
             bid_id=uuid4().hex,
             task_id=task.task_id,
-            role="AI-Bidder",
-            variant_id=f"llm-{lane}",
+            role=provider.title(),
+            provider=provider,
+            lane=result.lane or lane_key,
+            model_id=result.model_id,
+            variant_id=f"llm-{provider}-{lane}",
             strategy_family=f"model-{lane}",
             strategy_summary=data.get("strategy_summary", f"Custom strategy by {lane}"),
             exact_action=data.get("exact_action", "Execute inferred AI plan"),
@@ -150,8 +184,31 @@ class SimulationFactory:
             policy_feasibility=PolicyDecision(allowed=True, risk_score=risk_val),
             civic_permission_footprint=list(task.allowed_tools),
             promotion_hints=["validation_failure", "regression"],
+            token_usage=result.token_usage,
+            cost_usage=result.cost_usage,
+            prompt_preview=result.prompt_preview,
+            response_preview=result.response_preview,
         )
-        return new_bid, result.token_usage, result.cost_usage
+        if self.on_invocation:
+            self.on_invocation(
+                {
+                    "provider": result.provider or provider,
+                    "lane": result.lane or lane_key,
+                    "model_id": result.model_id,
+                    "invocation_kind": "bid_generation",
+                    "status": "completed",
+                    "task_id": task.task_id,
+                    "bid_id": bid.bid_id,
+                    "started_at": result.started_at,
+                    "completed_at": result.completed_at,
+                    "prompt_preview": result.prompt_preview,
+                    "response_preview": result.response_preview,
+                    "raw_usage": result.raw_usage,
+                    "token_usage": result.token_usage,
+                    "cost_usage": result.cost_usage,
+                }
+            )
+        return bid, result.token_usage, result.cost_usage
 
     def rollout_plan(self, task: TaskNode, bids: list[Bid], failure_count: int = 0) -> dict[str, list[str] | int]:
         ordered = sorted(bids, key=lambda item: (item.score or item.utility), reverse=True)

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from arbiter.core.contracts import Bid, ReplayRecord, TaskNode
+from arbiter.core.contracts import Bid, ReplayRecord, TaskNode, utc_now
 from arbiter.runtime.config import RuntimeConfig
 from arbiter.runtime.replay import ReplayManager
 
@@ -25,8 +27,37 @@ class EditProposal(BaseModel):
 
 class ModelInvocationResult(BaseModel):
     content: str
+    provider: str | None = None
+    model_id: str | None = None
+    lane: str | None = None
+    raw_usage: dict[str, Any] = Field(default_factory=dict)
     token_usage: dict[str, int] = Field(default_factory=dict)
     cost_usage: dict[str, float] = Field(default_factory=dict)
+    prompt_preview: str | None = None
+    response_preview: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    status: str = "completed"
+    error: str | None = None
+
+
+class ProposalCandidate(BaseModel):
+    candidate_id: str
+    task_id: str
+    bid_id: str
+    provider: str
+    lane: str
+    model_id: str | None = None
+    proposal: EditProposal
+    invocation: ModelInvocationResult
+    score: float = 0.0
+    selected: bool = False
+    rejection_reason: str | None = None
+
+
+def _preview_text(text: str, limit: int = 1200) -> str:
+    cleaned = text.strip()
+    return cleaned[:limit]
 
 
 def _normalize_usage_metadata(usage: dict[str, Any] | None) -> dict[str, int]:
@@ -55,9 +86,22 @@ class BedrockModelRouter:
         self.replay = replay
         self._models: dict[str, Any] = {}
 
+    def _resolve_lane(self, lane: str) -> tuple[str, str]:
+        if lane in self.config.model_lanes:
+            if "." in lane:
+                base_lane, provider = lane.split(".", 1)
+                return base_lane, provider
+            return lane, self.config.default_provider
+        if "." in lane:
+            base_lane, provider = lane.split(".", 1)
+            return base_lane, provider
+        return lane, self.config.default_provider
+
     def _get_model(self, lane: str):
-        lane_config = self.config.model_lanes[lane]
-        if lane not in self._models:
+        base_lane, provider = self._resolve_lane(lane)
+        lane_key = f"{base_lane}.{provider}"
+        lane_config = self.config.model_lanes.get(lane_key) or self.config.model_lanes[base_lane]
+        if lane_key not in self._models:
             if lane_config.provider == "bedrock":
                 if self.config.bedrock_profile:
                     os.environ["AWS_PROFILE"] = self.config.bedrock_profile
@@ -70,13 +114,13 @@ class BedrockModelRouter:
                     kwargs["aws_secret_access_key"] = self.config.bedrock_secret_access_key
                 if self.config.bedrock_session_token:
                     kwargs["aws_session_token"] = self.config.bedrock_session_token
-                self._models[lane] = ChatBedrockConverse(**kwargs)
+                self._models[lane_key] = ChatBedrockConverse(**kwargs)
             elif lane_config.provider == "openai":
                 if not self.config.openai_api_key:
                     raise ValueError("OPENAI_API_KEY is required when MODEL_PROVIDER=openai.")
                 from langchain_openai import ChatOpenAI
 
-                self._models[lane] = ChatOpenAI(
+                self._models[lane_key] = ChatOpenAI(
                     model=lane_config.model_id,
                     temperature=lane_config.temperature,
                     api_key=self.config.openai_api_key,
@@ -86,31 +130,41 @@ class BedrockModelRouter:
                     raise ValueError("ANTHROPIC_API_KEY is required when MODEL_PROVIDER=anthropic.")
                 from langchain_anthropic import ChatAnthropic
 
-                self._models[lane] = ChatAnthropic(
+                self._models[lane_key] = ChatAnthropic(
                     model=lane_config.model_id,
                     temperature=lane_config.temperature,
                     api_key=self.config.anthropic_api_key,
                 )
             else:
                 raise ValueError(f"Unsupported provider: {lane_config.provider}")
-        return self._models[lane]
+        return self._models[lane_key], lane_config
 
     def invoke(self, lane: str, prompt: dict[str, Any]) -> ModelInvocationResult:
         if self.replay.mode == "replay":
             recorded = self.replay.load(prompt)
             if recorded:
                 return ModelInvocationResult.model_validate(recorded)
-        model = self._get_model(lane)
+        started_at = utc_now().isoformat()
+        model, lane_config = self._get_model(lane)
         messages = [
             ("system", prompt["system"]),
             ("human", prompt["user"]),
         ]
         response = model.invoke(messages)
         content = response.content if isinstance(response.content, str) else json.dumps(response.content)
+        raw_usage = getattr(response, "usage_metadata", {}) or {}
         result = ModelInvocationResult(
             content=content,
-            token_usage=_normalize_usage_metadata(getattr(response, "usage_metadata", {}) or {}),
+            provider=lane_config.provider,
+            model_id=lane_config.model_id,
+            lane=lane,
+            raw_usage=raw_usage,
+            token_usage=_normalize_usage_metadata(raw_usage),
             cost_usage={},
+            prompt_preview=_preview_text(prompt["user"]),
+            response_preview=_preview_text(content),
+            started_at=started_at,
+            completed_at=utc_now().isoformat(),
         )
         if self.replay.mode in {"record", "off"}:
             self.replay.record(lane=lane, prompt=prompt, response=result.model_dump())
@@ -121,7 +175,15 @@ class DefaultStrategyBackend:
     def __init__(self, router: BedrockModelRouter) -> None:
         self.router = router
 
-    def generate_edit_proposal(
+    @staticmethod
+    def lane_for_task(task: TaskNode) -> str:
+        if task.task_type.value == "test":
+            return "test_gen"
+        if "perf" in task.task_type.value:
+            return "perf_reason"
+        return "bid_deep"
+
+    def generate_edit_proposals(
         self,
         task: TaskNode,
         bid: Bid,
@@ -129,11 +191,25 @@ class DefaultStrategyBackend:
         candidate_files: dict[str, str],
         failure_context: str | None = None,
         preview: bool = False,
-    ) -> tuple[EditProposal, ModelInvocationResult]:
+        providers: list[str] | None = None,
+        on_invocation=None,
+    ) -> list[ProposalCandidate]:
         del preview
         if not candidate_files:
-            return EditProposal(summary="No candidate files available.", files=[], notes=["no_candidate_files"]), ModelInvocationResult(content="{}", token_usage={}, cost_usage={})
-        lane = "test_gen" if task.task_type.value == "test" else "perf_reason" if "perf" in task.task_type.value else "bid_deep"
+            fallback = ModelInvocationResult(content="{}", token_usage={}, cost_usage={}, prompt_preview="", response_preview="")
+            return [
+                ProposalCandidate(
+                    candidate_id=uuid4().hex,
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider="system",
+                    lane="none",
+                    proposal=EditProposal(summary="No candidate files available.", files=[], notes=["no_candidate_files"]),
+                    invocation=fallback,
+                    rejection_reason="no_candidate_files",
+                )
+            ]
+        lane = self.lane_for_task(task)
         system = (
             "You are Arbiter's execution planner. Return only valid JSON with fields: summary, files, notes. "
             "Each file entry must contain path and full replacement content. Keep edits minimal and respect the bid strategy."
@@ -151,9 +227,98 @@ class DefaultStrategyBackend:
             f"Candidate files:\n{file_blob}\n"
             "Return JSON only."
         )
-        result = self.router.invoke(lane=lane, prompt={"system": system, "user": user})
-        proposal = self._parse_edit_proposal(result.content)
-        return proposal, result
+        provider_pool = providers or self.router.config.enabled_providers
+
+        def run_provider(provider: str) -> ProposalCandidate | None:
+            started_at = utc_now().isoformat()
+            lane_key = f"{lane}.{provider}"
+            if on_invocation:
+                on_invocation(
+                    {
+                        "provider": provider,
+                        "lane": lane_key,
+                        "invocation_kind": "proposal_generation",
+                        "status": "started",
+                        "task_id": task.task_id,
+                        "bid_id": bid.bid_id,
+                        "started_at": started_at,
+                        "prompt_preview": _preview_text(user),
+                    }
+                )
+            try:
+                result = self.router.invoke(lane=lane_key, prompt={"system": system, "user": user})
+                proposal = self._parse_edit_proposal(result.content)
+                if on_invocation:
+                    on_invocation(
+                        {
+                            "provider": result.provider,
+                            "lane": result.lane or lane_key,
+                            "model_id": result.model_id,
+                            "invocation_kind": "proposal_generation",
+                            "status": "completed",
+                            "task_id": task.task_id,
+                            "bid_id": bid.bid_id,
+                            "started_at": result.started_at,
+                            "completed_at": result.completed_at,
+                            "prompt_preview": result.prompt_preview,
+                            "response_preview": result.response_preview,
+                            "raw_usage": result.raw_usage,
+                            "token_usage": result.token_usage,
+                            "cost_usage": result.cost_usage,
+                        }
+                    )
+                return ProposalCandidate(
+                    candidate_id=uuid4().hex,
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider=result.provider or provider,
+                    lane=result.lane or lane_key,
+                    model_id=result.model_id,
+                    proposal=proposal,
+                    invocation=result,
+                )
+            except Exception as exc:
+                if on_invocation:
+                    on_invocation(
+                        {
+                            "provider": provider,
+                            "lane": lane_key,
+                            "invocation_kind": "proposal_generation",
+                            "status": "failed",
+                            "task_id": task.task_id,
+                            "bid_id": bid.bid_id,
+                            "started_at": started_at,
+                            "completed_at": utc_now().isoformat(),
+                            "prompt_preview": _preview_text(user),
+                            "error": str(exc),
+                        }
+                    )
+                return None
+
+        with ThreadPoolExecutor(max_workers=max(1, len(provider_pool))) as executor:
+            candidates = [future.result() for future in [executor.submit(run_provider, provider) for provider in provider_pool]]
+        return [candidate for candidate in candidates if candidate is not None]
+
+    def generate_edit_proposal(
+        self,
+        task: TaskNode,
+        bid: Bid,
+        mission_objective: str,
+        candidate_files: dict[str, str],
+        failure_context: str | None = None,
+        preview: bool = False,
+    ) -> tuple[EditProposal, ModelInvocationResult]:
+        candidates = self.generate_edit_proposals(
+            task=task,
+            bid=bid,
+            mission_objective=mission_objective,
+            candidate_files=candidate_files,
+            failure_context=failure_context,
+            preview=preview,
+            providers=[self.router.config.default_provider],
+        )
+        candidate = candidates[0]
+        return candidate.proposal, candidate.invocation
 
     @staticmethod
     def _parse_edit_proposal(text: str) -> EditProposal:
@@ -181,7 +346,52 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         proposal = self.scripted[self.index]
         if not preview:
             self.index = min(self.index + 1, len(self.scripted) - 1)
-        return proposal, ModelInvocationResult(content=proposal.model_dump_json(), token_usage={"input_tokens": 0, "output_tokens": 0}, cost_usage={"usd": 0.0})
+        return proposal, ModelInvocationResult(content=proposal.model_dump_json(), provider="scripted", model_id="scripted", lane="scripted", token_usage={"input_tokens": 0, "output_tokens": 0}, cost_usage={"usd": 0.0}, prompt_preview="", response_preview=proposal.summary)
+
+    def generate_edit_proposals(
+        self,
+        task: TaskNode,
+        bid: Bid,
+        mission_objective: str,
+        candidate_files: dict[str, str],
+        failure_context: str | None = None,
+        preview: bool = False,
+        providers: list[str] | None = None,
+        on_invocation=None,
+    ) -> list[ProposalCandidate]:
+        del mission_objective, candidate_files, failure_context, providers
+        proposal, invocation = self.generate_edit_proposal(task, bid, "scripted", {}, preview=preview)
+        if on_invocation:
+            on_invocation(
+                {
+                    "provider": "scripted",
+                    "lane": "scripted",
+                    "model_id": "scripted",
+                    "invocation_kind": "proposal_generation",
+                    "status": "completed",
+                    "task_id": task.task_id,
+                    "bid_id": bid.bid_id,
+                    "started_at": utc_now().isoformat(),
+                    "completed_at": utc_now().isoformat(),
+                    "prompt_preview": "",
+                    "response_preview": proposal.summary,
+                    "raw_usage": {},
+                    "token_usage": invocation.token_usage,
+                    "cost_usage": invocation.cost_usage,
+                }
+            )
+        return [
+            ProposalCandidate(
+                candidate_id=uuid4().hex,
+                task_id=task.task_id,
+                bid_id=bid.bid_id,
+                provider="scripted",
+                lane="scripted",
+                model_id="scripted",
+                proposal=proposal,
+                invocation=invocation,
+            )
+        ]
 
 
 def load_candidate_files(repo_path: str, files: list[str]) -> dict[str, str]:
