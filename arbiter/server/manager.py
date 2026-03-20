@@ -44,7 +44,11 @@ class MissionService:
         self._known_repos: dict[str, str] = {}
 
     def close(self) -> None:
-        return
+        with self._lock:
+            active = self._active
+            self._active = None
+        if active:
+            self._finalize_orphaned_mission(active.repo_path, active.mission_id, reason="session_terminated")
 
     def start(self, request: MissionCreateRequest) -> MissionControlResponse:
         with self._lock:
@@ -155,6 +159,7 @@ class MissionService:
         for mission_root in _mission_roots(repo_path):
             mission_id = mission_root.name
             try:
+                self._normalize_mission_state(str(repo_path), mission_id)
                 view = materialize_mission_view(repo_path, mission_id)
             except Exception:
                 continue
@@ -177,6 +182,7 @@ class MissionService:
     def snapshot(self, repo_path: str | None, mission_id: str):
         resolved_repo = self.resolve_repo(mission_id, repo_path)
         self._ensure_mission_exists(resolved_repo, mission_id)
+        self._normalize_mission_state(resolved_repo, mission_id)
         self._known_repos[mission_id] = resolved_repo
         return materialize_mission_view(resolved_repo, mission_id)
 
@@ -194,3 +200,36 @@ class MissionService:
         migrate_legacy_mission(paths, mission_id)
         if not Path(paths.db_path).exists():
             raise MissionNotFoundError(mission_id)
+
+    def _normalize_mission_state(self, repo_path: str, mission_id: str) -> None:
+        with self._lock:
+            is_live_in_process = bool(
+                self._active
+                and self._active.mission_id == mission_id
+                and self._active.thread.is_alive()
+            )
+        if is_live_in_process:
+            return
+        self._finalize_orphaned_mission(repo_path, mission_id, reason="session_ended")
+
+    def _finalize_orphaned_mission(self, repo_path: str, mission_id: str, reason: str) -> None:
+        paths = build_mission_paths(repo_path, mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        store = MissionStore(paths.db_path)
+        try:
+            control = store.fetch_control_state(mission_id)
+            if not control or control["run_state"] not in {
+                RunState.RUNNING.value,
+                RunState.PAUSED.value,
+                RunState.CANCELLING.value,
+            }:
+                return
+            store.upsert_control_state(
+                mission_id=mission_id,
+                run_state=RunState.FINALIZED.value,
+                requested_action=None,
+                reason=reason,
+                updated_at=utc_now().isoformat(),
+            )
+        finally:
+            store.close()
