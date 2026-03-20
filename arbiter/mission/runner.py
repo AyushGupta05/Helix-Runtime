@@ -399,7 +399,7 @@ class MissionRuntime:
         assert bid is not None
         task.status = TaskStatus.RUNNING
         self._save_task(task)
-        if task.task_type.value in {"localize", "perf_diagnosis"}:
+        if task.task_type.value in {"localize", "perf_diagnosis", "validate"}:
             self.state.decision_history.append(f"{task.task_id}: evidence-only step completed")
             self.emit("tool.executed", "Evidence-only task executed.", task_id=task.task_id)
             return {"status": ActivePhase.VALIDATE.value}

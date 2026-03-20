@@ -43,7 +43,7 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     assert state.outcome.value == "success"
     assert state.summary.branch_name
 
-    mission_root = python_bug_repo / ".arbiter" / state.mission.mission_id
+    mission_root = python_bug_repo / ".arbiter" / "missions" / state.mission.mission_id
     assert (mission_root / "events.jsonl").exists()
     events = (mission_root / "events.jsonl").read_text(encoding="utf-8")
     assert "standby.promoted" in events
@@ -55,12 +55,14 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     branches = subprocess.run(["git", "branch", "--list", state.summary.branch_name], cwd=str(python_bug_repo), capture_output=True, text=True, check=True)
     assert state.summary.branch_name in branches.stdout
 
-    db_path = mission_root / "mission.db"
+    db_path = mission_root / "state.db"
     connection = sqlite3.connect(db_path)
-    mission_cp = connection.execute("SELECT COUNT(*) FROM mission_state_checkpoints").fetchone()[0]
-    repo_cp = connection.execute("SELECT COUNT(*) FROM repo_state_checkpoints").fetchone()[0]
-    assert mission_cp >= 1
-    assert repo_cp >= 1
+    task_count = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    checkpoint_count = connection.execute("SELECT COUNT(*) FROM accepted_checkpoints").fetchone()[0]
+    view_count = connection.execute("SELECT COUNT(*) FROM mission_view_cache").fetchone()[0]
+    assert task_count >= 1
+    assert checkpoint_count >= 1
+    assert view_count == 1
     connection.close()
 
 
