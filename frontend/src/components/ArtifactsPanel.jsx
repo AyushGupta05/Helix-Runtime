@@ -1,119 +1,196 @@
 import { formatCurrency, formatInteger, formatNumber, summarizeProvider } from "../lib/format";
 
-function KeyValue({ label, value }) {
-  return (
-    <div className="kv">
-      <span>{label}</span>
-      <strong>{value || "n/a"}</strong>
-    </div>
-  );
+function humanizeStrategy(value) {
+  return String(value || "pending")
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-export default function ArtifactsPanel({ mission, diffState, usageSummary, selectedBid }) {
+function truncate(value, max = 140) {
+  const text = String(value || "");
+  if (text.length <= max) {
+    return text;
+  }
+  return `${text.slice(0, max - 1)}...`;
+}
+
+function decisionReason(selectedBid, latestProposalTrace, failureContext) {
+  if (latestProposalTrace?.payload?.summary) {
+    return truncate(latestProposalTrace.payload.summary);
+  }
+  if (selectedBid) {
+    const parts = [];
+    if (selectedBid.score !== null && selectedBid.score !== undefined) {
+      parts.push(`score ${formatNumber(selectedBid.score)}`);
+    }
+    if (selectedBid.confidence !== null && selectedBid.confidence !== undefined) {
+      parts.push(`confidence ${formatNumber(selectedBid.confidence)}`);
+    }
+    const numericRisk = Number(selectedBid.risk ?? 0);
+    parts.push(numericRisk >= 0.66 ? "high risk" : numericRisk >= 0.33 ? "medium risk" : "low risk");
+    if (selectedBid.search_summary) {
+      parts.push(selectedBid.search_summary);
+    }
+    return `Selected on ${parts.join(", ")}.`;
+  }
+  if (failureContext?.details) {
+    return truncate(failureContext.details);
+  }
+  return "No winner has been selected yet.";
+}
+
+function validationItems(report) {
+  if (!report) {
+    return [];
+  }
+  if (report.command_results?.length) {
+    return report.command_results.map((result) => ({
+      label: result.command?.[result.command.length - 1] ?? "validator",
+      passed: Number(result.exit_code) === 0
+    }));
+  }
+  return [
+    {
+      label: "validation",
+      passed: Boolean(report.passed)
+    }
+  ];
+}
+
+export default function ArtifactsPanel({
+  mission,
+  diffState,
+  usageSummary,
+  selectedBid,
+  latestProposalTrace,
+  latestCheckpoint
+}) {
   const worktree = diffState?.worktree_state ?? mission.worktree_state ?? {};
-  const checkpoints = mission.accepted_checkpoints ?? [];
-  const latestTrace = mission.recent_trace ?? [];
-  const latestProposal = [...latestTrace].reverse().find((entry) => entry.trace_type === "proposal.selected");
-  const usageRows = usageSummary?.invocations ?? [];
   const failureContext = mission.failure_context ?? null;
+  const providerTotals = Object.values(usageSummary?.by_provider ?? {}).sort(
+    (left, right) => right.total_tokens - left.total_tokens
+  );
+  const changedFiles = worktree.changed_files?.length
+    ? worktree.changed_files
+    : mission.validation_report?.changed_files ?? [];
+  const validators = validationItems(mission.validation_report);
+  const winnerProvider = latestProposalTrace?.provider ?? selectedBid?.provider ?? null;
+  const standbyBid =
+    mission.bids.find((bid) => bid.bid_id === mission.standby_bid_id) ??
+    mission.bids.find((bid) => bid.standby) ??
+    null;
 
   return (
-    <div className="inspector-grid">
+    <div className="artifact-stack">
       <section className="artifact-card">
         <div className="artifact-card-head">
-          <h3>Worktree State</h3>
-          <span>{worktree.has_changes ? "Isolated worktree dirty" : "No changes"}</span>
+          <h3>Current Decision</h3>
+          <span>{mission.active_task?.task_id ?? mission.active_task_id ?? "waiting"}</span>
         </div>
-        <p>{worktree.reason || "No repo changes yet."}</p>
-        <KeyValue label="Worktree" value={worktree.worktree_path} />
-        <KeyValue label="Changed files" value={String(worktree.changed_files?.length ?? 0)} />
-        {worktree.changed_files?.length ? (
-          <ul className="artifact-bullets">
-            {worktree.changed_files.map((file) => <li key={file}>{file}</li>)}
-          </ul>
-        ) : null}
-        <details className="artifact-detail">
-          <summary>Diff</summary>
-          <pre>{worktree.diff_patch || worktree.diff_stat || "No diff yet."}</pre>
-        </details>
-      </section>
-
-      <section className="artifact-card">
-        <div className="artifact-card-head">
-          <h3>Accepted Checkpoints</h3>
-          <span>{checkpoints.length}</span>
+        <div className="decision-grid">
+          <div className="decision-block">
+            <span>Winner</span>
+            <strong>
+              {selectedBid ? humanizeStrategy(selectedBid.strategy_family) : "Waiting"}
+              {winnerProvider ? ` (${summarizeProvider(winnerProvider)})` : ""}
+            </strong>
+          </div>
+          <div className="decision-block">
+            <span>Standby</span>
+            <strong>
+              {standbyBid
+                ? `${humanizeStrategy(standbyBid.strategy_family)} (${summarizeProvider(standbyBid.provider)})`
+                : "No standby"}
+            </strong>
+          </div>
         </div>
-        <div className="checkpoint-list">
-          {checkpoints.length ? checkpoints.slice().reverse().map((checkpoint) => (
-            <article key={checkpoint.checkpoint_id} className="checkpoint-item">
-              <strong>{checkpoint.label}</strong>
-              <p>{checkpoint.summary || "Accepted checkpoint"}</p>
-              <div className="trace-chip-row">
-                <span className="timeline-chip">{checkpoint.commit_sha?.slice(0, 12)}</span>
-                {checkpoint.strategy_family ? <span className="timeline-chip">{checkpoint.strategy_family}</span> : null}
-              </div>
-            </article>
-          )) : <p>No checkpoints yet.</p>}
+        <div className="decision-reason">
+          <span>Why selected</span>
+          <p>{decisionReason(selectedBid, latestProposalTrace, failureContext)}</p>
         </div>
       </section>
 
       <section className="artifact-card">
         <div className="artifact-card-head">
-          <h3>Winning Thesis</h3>
-          <span>{latestProposal?.provider ? summarizeProvider(latestProposal.provider) : "Pending"}</span>
-        </div>
-        {latestProposal ? (
-          <>
-            <KeyValue label="Provider" value={summarizeProvider(latestProposal.provider)} />
-            <KeyValue label="Lane" value={latestProposal.lane} />
-            <KeyValue label="Model" value={latestProposal.payload?.model_id} />
-            <p>{latestProposal.payload?.summary || latestProposal.message}</p>
-            {failureContext?.details ? (
-              <p className="warning-note">Latest failure context: {failureContext.details}</p>
-            ) : null}
-          </>
-        ) : selectedBid ? (
-          <>
-            <KeyValue label="Winning bid" value={selectedBid.strategy_family} />
-            <KeyValue label="Provider" value={summarizeProvider(selectedBid.provider)} />
-            <KeyValue label="Score" value={formatNumber(selectedBid.score)} />
-            <p>{selectedBid.strategy_summary}</p>
-            {failureContext?.details ? (
-              <p className="warning-note">Latest failure context: {failureContext.details}</p>
-            ) : null}
-          </>
-        ) : (
-          <p>No provider proposal selected yet.</p>
-        )}
-      </section>
-
-      <section className="artifact-card">
-        <div className="artifact-card-head">
-          <h3>Provider Burn</h3>
+          <h3>Cost Monitor</h3>
           <span>{formatInteger(usageSummary?.mission?.total_tokens ?? 0)} tok</span>
         </div>
-        <div className="usage-summary-grid">
-          <KeyValue label="Mission tokens" value={formatInteger(usageSummary?.mission?.total_tokens ?? 0)} />
-          <KeyValue label="Mission cost" value={formatCurrency(usageSummary?.mission?.total_cost ?? 0)} />
-          <KeyValue label="Active task tokens" value={formatInteger(usageSummary?.active_task?.total_tokens ?? 0)} />
-          <KeyValue label="Active task cost" value={formatCurrency(usageSummary?.active_task?.total_cost ?? 0)} />
+        <div className="usage-stack">
+          <div className="usage-summary-card">
+            <span>Mission Usage</span>
+            <strong>
+              {formatInteger(usageSummary?.mission?.total_tokens ?? 0)} tok |{" "}
+              {formatCurrency(usageSummary?.mission?.total_cost ?? 0)}
+            </strong>
+          </div>
+          <div className="usage-summary-card">
+            <span>Current Round</span>
+            <strong>
+              {formatInteger(usageSummary?.active_task?.total_tokens ?? 0)} tok |{" "}
+              {formatCurrency(usageSummary?.active_task?.total_cost ?? 0)}
+            </strong>
+          </div>
         </div>
-        <div className="usage-ledger">
-          {usageRows.slice().reverse().slice(0, 10).map((row) => (
-            <article key={row.invocation_id} className="usage-item">
-              <div className="usage-item-head">
+        <div className="provider-totals">
+          {providerTotals.length ? (
+            providerTotals.map((row) => (
+              <div key={row.provider} className="provider-total-row">
                 <strong>{summarizeProvider(row.provider)}</strong>
-                <span>{row.invocation_kind}</span>
+                <span>
+                  {formatInteger(row.total_tokens)} tok | {formatCurrency(row.total_cost)}
+                </span>
               </div>
-              <p>{row.model_id || row.lane}</p>
-              <div className="trace-chip-row">
-                <span className="timeline-chip">{formatInteger(row.total_tokens)} tok</span>
-                <span className="timeline-chip">{formatCurrency(row.total_cost)}</span>
-                {row.task_id ? <span className="timeline-chip">{row.task_id}</span> : null}
-              </div>
-            </article>
-          ))}
+            ))
+          ) : (
+            <p>No provider spend recorded yet.</p>
+          )}
         </div>
+      </section>
+
+      <section className="artifact-card">
+        <div className="artifact-card-head">
+          <h3>Repo State</h3>
+          <span>{changedFiles.length ? `${changedFiles.length} files` : "No changes"}</span>
+        </div>
+        <div className={`repo-state-banner ${changedFiles.length ? "is-changed" : "is-clean"}`}>
+          <strong>{changedFiles.length ? "Repo Changed" : "No repo changes yet"}</strong>
+          <p>
+            {changedFiles.length
+              ? `${changedFiles.length} files modified`
+              : "No patch has been accepted."}
+          </p>
+        </div>
+        {changedFiles.length ? (
+          <ul className="repo-state-list">
+            {changedFiles.slice(0, 6).map((file) => (
+              <li key={file}>{file}</li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="repo-validation">
+          <span>Validation</span>
+          <div className="validation-list">
+            {validators.map((item) => (
+              <span
+                key={item.label}
+                className={`validation-item ${item.passed ? "is-pass" : "is-fail"}`}
+              >
+                {item.label}: {item.passed ? "PASS" : "FAIL"}
+              </span>
+            ))}
+            {!validators.length ? <span className="validation-item">No validation yet</span> : null}
+          </div>
+          <p>
+            Checkpoint:{" "}
+            {latestCheckpoint
+              ? `${latestCheckpoint.label} accepted (${latestCheckpoint.commit_sha?.slice(0, 8)})`
+              : "No checkpoint accepted yet"}
+          </p>
+        </div>
+        <details className="artifact-detail">
+          <summary>View diff</summary>
+          <pre>{worktree.diff_patch || worktree.diff_stat || "No diff yet."}</pre>
+        </details>
       </section>
     </div>
   );

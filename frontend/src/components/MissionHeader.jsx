@@ -1,20 +1,16 @@
 import StatusBadge from "./StatusBadge";
-import { formatCurrency, formatInteger, summarizeProvider } from "../lib/format";
+import { formatCurrency, formatInteger } from "../lib/format";
 
-function Metric({ label, value, emphasis = false }) {
-  return (
-    <div className={`mission-metric ${emphasis ? "mission-metric-strong" : ""}`}>
-      <span>{label}</span>
-      <strong>{value || "n/a"}</strong>
-    </div>
-  );
+function repoLabel(repoPath) {
+  const segments = String(repoPath || "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  return segments[segments.length - 1] ?? repoPath ?? "repo";
 }
 
 export default function MissionHeader({
   mission,
   usageSummary,
-  latestProposalTrace,
-  latestCheckpoint,
   busy,
   onPause,
   onResume,
@@ -36,25 +32,29 @@ export default function MissionHeader({
           : [];
 
   const missionUsage = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
-  const latestValidation = mission.validation_report
-    ? `${mission.validation_report.passed ? "Passed" : "Failed"} ${mission.validation_report.task_id}`
-    : "No validation yet";
-  const currentProvider =
-    latestProposalTrace?.provider ||
-    mission.bids.find((bid) => bid.bid_id === mission.winner_bid_id)?.provider ||
-    "system";
+  const activeTask = mission.active_task?.task_id ?? mission.active_task_id ?? "Waiting";
 
   return (
     <header className="mission-ribbon panel">
       <div className="mission-ribbon-topline">
-        <div className="mission-ribbon-main">
-          <p className="eyebrow">Mission {mission.mission_id}</p>
-          <h1>{mission.objective}</h1>
-          <p className="mission-subtitle">{mission.repo_path}</p>
-          <div className="mission-badges">
-            <StatusBadge value={mission.run_state} />
-            <StatusBadge value={mission.active_phase} />
-            {mission.outcome ? <StatusBadge value={mission.outcome} /> : null}
+        <div className="mission-bar-main">
+          <div className="mission-bar-brand">
+            <strong className="mission-bar-title">Arbiter</strong>
+            <span className="mission-bar-divider">|</span>
+            <span className="mission-bar-objective">{mission.objective}</span>
+            <StatusBadge value={mission.outcome ?? mission.run_state} />
+          </div>
+          <div className="mission-bar-meta">
+            <span className="mission-bar-meta-item" title={mission.repo_path}>
+              Repo: {repoLabel(mission.repo_path)}
+            </span>
+            <span className="mission-bar-meta-item">Task: {activeTask}</span>
+            <span className="mission-bar-meta-item">
+              Tokens: {formatInteger(missionUsage.total_tokens)}
+            </span>
+            <span className="mission-bar-meta-item">
+              Cost: {formatCurrency(missionUsage.total_cost)}
+            </span>
           </div>
         </div>
         <div className="mission-controls">
@@ -68,30 +68,6 @@ export default function MissionHeader({
               {control.label}
             </button>
           ))}
-        </div>
-      </div>
-      <div className="mission-ribbon-metrics">
-        <Metric label="Active task" value={mission.active_task?.task_id ?? mission.active_task_id} emphasis />
-        <Metric label="Winner provider" value={summarizeProvider(currentProvider)} />
-        <Metric label="Latest validation" value={latestValidation} />
-        <Metric label="Latest checkpoint" value={latestCheckpoint?.commit_sha?.slice(0, 12) ?? mission.head_commit?.slice(0, 12)} />
-        <Metric label="Mission tokens" value={formatInteger(missionUsage.total_tokens)} emphasis />
-        <Metric label="Mission cost" value={formatCurrency(missionUsage.total_cost)} />
-        <Metric label="Branch" value={mission.branch_name} />
-        <Metric label="Head" value={mission.head_commit?.slice(0, 12)} />
-      </div>
-      <div className="mission-ribbon-footer">
-        <div className="mission-signal">
-          <span>Selected provider</span>
-          <strong>{summarizeProvider(currentProvider)}</strong>
-        </div>
-        <div className="mission-signal">
-          <span>Latest validation</span>
-          <strong>{latestValidation}</strong>
-        </div>
-        <div className="mission-signal">
-          <span>Accepted checkpoint</span>
-          <strong>{latestCheckpoint?.commit_sha?.slice(0, 12) ?? mission.head_commit?.slice(0, 12) ?? "pending"}</strong>
         </div>
       </div>
     </header>

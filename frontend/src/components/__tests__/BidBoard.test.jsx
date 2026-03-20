@@ -40,33 +40,57 @@ const bids = [
     token_usage: { input_tokens: 90, output_tokens: 38 },
     cost_usage: { usd: 0.01 },
     rejection_reason: null
+  },
+  {
+    bid_id: "rejected",
+    task_id: "T2",
+    role: "Fast",
+    provider: "bedrock",
+    lane: "bid_fast.bedrock",
+    model_id: "nova",
+    strategy_family: "fast-path",
+    strategy_summary: "Race to a broad patch with more churn.",
+    score: 0.41,
+    confidence: 0.44,
+    risk: 0.74,
+    cost: 0.09,
+    estimated_runtime_seconds: 30,
+    touched_files: ["calc.py", "tests/test_calc.py", "helper.py"],
+    token_usage: { input_tokens: 60, output_tokens: 25 },
+    cost_usage: { usd: 0.03 },
+    rejection_reason: "too much file churn"
   }
 ];
 
 describe("BidBoard", () => {
-  it("renders compact strategy cards with winner and standby states", () => {
+  it("renders the bidding arena with prioritized bid statuses", () => {
     render(
       <BidBoard
         bids={bids}
         winnerBidId="winner"
         standbyBidId="standby"
         activeTaskId="T2"
-        providerMarketSummary={{
-          families: {
-            "localized-fix": [bids[0]],
-            "shared-helper": [bids[1]]
+        activePhase="market"
+        activeBidRound={3}
+        simulationRound={2}
+        usageSummary={{
+          active_task: {
+            total_tokens: 377,
+            total_cost: 0.06
           }
         }}
       />
     );
 
-    expect(screen.getByText("Winner")).toBeInTheDocument();
-    expect(screen.getByText("Standby")).toBeInTheDocument();
+    expect(screen.getByText(/Live Bidding Arena/i)).toBeInTheDocument();
+    expect(screen.getByText(/Round 3/i)).toBeInTheDocument();
     expect(screen.getAllByText("Openai").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Anthropic").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Bedrock").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Localized Fix").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Shared Helper").length).toBeGreaterThan(0);
-    expect(screen.getByText("WIN")).toBeInTheDocument();
-    expect(screen.getByText("STBY")).toBeInTheDocument();
+    expect(screen.getByText("WINNER")).toBeInTheDocument();
+    expect(screen.getByText("STANDBY")).toBeInTheDocument();
+    expect(screen.getByText("REJECTED")).toBeInTheDocument();
   });
 });

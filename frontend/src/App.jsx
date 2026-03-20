@@ -23,12 +23,11 @@ import { useMissionStream } from "./lib/missionStream";
 import MissionComposer from "./components/MissionComposer";
 import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";
-import TaskRail from "./components/TaskRail";
 import BidBoard from "./components/BidBoard";
 import ArtifactsPanel from "./components/ArtifactsPanel";
-import LiveFeedPanel from "./components/LiveFeedPanel";
+import EventStrip from "./components/EventStrip";
 
-function HomePanel({ activeMission, onOpenActiveMission }) {
+function HomePanel() {
   return (
     <div className="home-stack">
       <section className="hero-panel">
@@ -57,23 +56,6 @@ function HomePanel({ activeMission, onOpenActiveMission }) {
           </article>
         </div>
       </section>
-
-      {activeMission ? (
-        <section className="hero-panel hero-panel-compact">
-          <div className="hero-active-head">
-            <div>
-              <p className="eyebrow">Live Mission</p>
-              <h2>{activeMission.objective}</h2>
-            </div>
-            <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
-              Open live room
-            </button>
-          </div>
-          <p className="hero-hint">
-            A mission is already active in this process. Use the live room instead of launching a second run.
-          </p>
-        </section>
-      ) : null}
     </div>
   );
 }
@@ -142,12 +124,10 @@ function MissionRoute() {
   const trace = traceQuery.data ?? mission.recent_trace ?? [];
   const diffState = diffQuery.data ?? { worktree_state: mission.worktree_state ?? {} };
   const usageSummary = usageQuery.data ?? mission.usage_summary ?? {};
-  const invocations = usageSummary.invocations ?? [];
   const latestProposalTrace = [...trace].reverse().find((entry) => entry.trace_type === "proposal.selected");
   const selectedBid =
     mission.bids.find((bid) => bid.bid_id === mission.winner_bid_id) ??
     mission.bids.find((bid) => bid.selected) ??
-    mission.bids[0] ??
     null;
   const latestCheckpoint = mission.accepted_checkpoints?.length
     ? mission.accepted_checkpoints[mission.accepted_checkpoints.length - 1]
@@ -158,70 +138,41 @@ function MissionRoute() {
       <MissionHeader
         mission={mission}
         usageSummary={usageSummary}
-        latestProposalTrace={latestProposalTrace}
-        latestCheckpoint={latestCheckpoint}
         busy={controlMutation.isPending}
         onPause={() => controlMutation.mutate("pause")}
         onResume={() => controlMutation.mutate("resume")}
         onCancel={() => controlMutation.mutate("cancel")}
       />
 
-      <div className="operator-grid">
-        <section className="panel panel-task-rail">
-          <TaskRail
-            tasks={mission.tasks}
-            activeTaskId={mission.active_task_id}
-            bids={mission.bids}
-            executionSteps={mission.execution_steps ?? []}
-            validationReport={mission.validation_report}
-            winnerBidId={mission.winner_bid_id}
-            standbyBidId={mission.standby_bid_id}
-          />
-        </section>
-
-        <section className="panel panel-trace">
-          <div className="panel-heading">
-            <h2>Mission Pulse</h2>
-            <span className="panel-meta">
-              {mission.events.length} events, {trace.length} trace entries, {invocations.length} model calls
-            </span>
-          </div>
-          <LiveFeedPanel
-            events={mission.events}
-            trace={trace}
-            invocations={invocations}
-            validationReport={mission.validation_report}
-            executionSteps={mission.execution_steps ?? []}
-          />
-        </section>
-
-        <section className="panel panel-market">
-          <div className="panel-heading">
-            <h2>Strategy Market</h2>
-            <span className="panel-meta">Contenders, outcomes, risk, and provider posture</span>
-          </div>
+      <div className="market-layout">
+        <section className="panel panel-arena">
           <BidBoard
             bids={mission.bids}
             winnerBidId={mission.winner_bid_id}
             standbyBidId={mission.standby_bid_id}
             activeTaskId={mission.active_task_id}
-            providerMarketSummary={mission.provider_market_summary}
+            activePhase={mission.active_phase}
+            activeBidRound={mission.active_bid_round}
+            simulationRound={mission.simulation_round}
+            usageSummary={usageSummary}
           />
         </section>
 
-        <section className="panel panel-inspectors">
-          <div className="panel-heading">
-            <h2>Inspectors</h2>
-            <span className="panel-meta">Repo changes, checkpoints, selected proposal, usage</span>
-          </div>
+        <aside className="side-rail">
           <ArtifactsPanel
             mission={mission}
             diffState={diffState}
             usageSummary={usageSummary}
             selectedBid={selectedBid}
+            latestProposalTrace={latestProposalTrace}
+            latestCheckpoint={latestCheckpoint}
           />
-        </section>
+        </aside>
       </div>
+
+      <section className="panel panel-event-strip">
+        <EventStrip events={mission.events} />
+      </section>
     </div>
   );
 }
@@ -230,6 +181,7 @@ function Shell() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const isMissionView = location.pathname.startsWith("/missions/");
   const [repoScope, setRepoScope] = useState(() => {
     try {
       return JSON.parse(window.localStorage.getItem("arbiter:recent-repos") ?? "[]")[0] ?? "";
@@ -277,36 +229,35 @@ function Shell() {
   });
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <p className="eyebrow">Autonomous Mission Runner</p>
-          <h1>Arbiter</h1>
-        </div>
-        <MissionComposer
-          busy={createMutation.isPending}
-          blocked={Boolean(activeMission)}
-          activeMission={activeMission}
-          error={createMutation.error?.message}
-          onSubmit={(payload) => createMutation.mutate(payload)}
-          onOpenActiveMission={() => activeMission && openMission(activeMission)}
-        />
-        <MissionHistoryList
-          missions={missionsQuery.data ?? []}
-          loading={missionsQuery.isLoading}
-          onSelect={(mission) =>
-            navigate(
-              `/missions/${mission.mission_id}?repo=${encodeURIComponent(repoScope || mission.repo_path || "")}`
-            )
-          }
-        />
-      </aside>
-      <main className="main-stage">
-        <Routes>
-          <Route
-            path="/"
-            element={<HomePanel activeMission={activeMission} onOpenActiveMission={openMission} />}
+    <div className={`app-shell ${isMissionView ? "app-shell-mission" : ""}`}>
+      {!isMissionView ? (
+        <aside className="sidebar">
+          <div className="sidebar-brand">
+            <p className="eyebrow">Autonomous Mission Runner</p>
+            <h1>Arbiter</h1>
+          </div>
+          <MissionComposer
+            busy={createMutation.isPending}
+            blocked={Boolean(activeMission)}
+            activeMission={activeMission}
+            error={createMutation.error?.message}
+            onSubmit={(payload) => createMutation.mutate(payload)}
+            onOpenActiveMission={() => activeMission && openMission(activeMission)}
           />
+          <MissionHistoryList
+            missions={missionsQuery.data ?? []}
+            loading={missionsQuery.isLoading}
+            onSelect={(mission) =>
+              navigate(
+                `/missions/${mission.mission_id}?repo=${encodeURIComponent(repoScope || mission.repo_path || "")}`
+              )
+            }
+          />
+        </aside>
+      ) : null}
+      <main className={`main-stage ${isMissionView ? "main-stage-mission" : ""}`}>
+        <Routes>
+          <Route path="/" element={<HomePanel />} />
           <Route path="/missions/:missionId" element={<MissionRoute />} />
         </Routes>
       </main>

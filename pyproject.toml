@@ -45,7 +45,9 @@ arbiter = "arbiter.cli.main:main"
 testpaths = ["tests"]
 pythonpath = ["."]
 
+[tool.setuptools.packages.find]
+include = ["arbiter*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-

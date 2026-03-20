@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import MissionHeader from "../MissionHeader";
 
 describe("MissionHeader", () => {
-  it("renders controls and mission usage metrics for a running mission", () => {
+  it("renders the thin mission bar with task and usage details", () => {
     render(
       <MissionHeader
         mission={{
@@ -31,7 +31,10 @@ describe("MissionHeader", () => {
 
     expect(screen.getByRole("button", { name: /Pause/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Cancel/i })).toBeInTheDocument();
-    expect(screen.getByText(/Mission tokens/i)).toBeInTheDocument();
-    expect(screen.getByText(/^456$/)).toBeInTheDocument();
+    expect(screen.getByText("Arbiter")).toBeInTheDocument();
+    expect(screen.getByText(/Fix tests/i)).toBeInTheDocument();
+    expect(screen.getByText(/Repo: repo/i)).toBeInTheDocument();
+    expect(screen.getByText(/Task: T2_bugfix/i)).toBeInTheDocument();
+    expect(screen.getByText(/Tokens: 456/i)).toBeInTheDocument();
   });
 });

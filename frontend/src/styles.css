@@ -129,6 +129,10 @@ textarea {
   min-height: 100vh;
 }
 
+.app-shell-mission {
+  display: block;
+}
+
 .sidebar {
   position: relative;
   border-right: 1px solid var(--line);
@@ -200,6 +204,10 @@ textarea {
 .main-stage {
   padding: 22px;
   overflow: auto;
+}
+
+.main-stage-mission {
+  padding: 18px;
 }
 
 .home-stack,
@@ -1213,5 +1221,436 @@ textarea {
   .mission-lockout {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+/* Mission simplification */
+
+.mission-ribbon {
+  padding: 16px 18px;
+  gap: 0;
+}
+
+.mission-ribbon-topline {
+  align-items: center;
+}
+
+.mission-bar-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mission-bar-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mission-bar-title {
+  font-family: "Sora", "Segoe UI", sans-serif;
+  font-size: 1.1rem;
+}
+
+.mission-bar-divider {
+  color: var(--muted);
+}
+
+.mission-bar-objective {
+  font-weight: 600;
+  min-width: 0;
+}
+
+.mission-bar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.mission-bar-meta-item {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.market-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.9fr) minmax(320px, 0.95fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.panel-arena {
+  min-height: 0;
+}
+
+.side-rail,
+.artifact-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.arena-shell {
+  display: grid;
+  gap: 16px;
+}
+
+.arena-topline {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.arena-topline h2 {
+  margin: 0;
+  font-family: "Sora", "Segoe UI", sans-serif;
+  font-size: 1.7rem;
+}
+
+.arena-phase {
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 7px 12px;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.arena-quickstats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.arena-stat {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(7, 16, 25, 0.6);
+  display: grid;
+  gap: 4px;
+}
+
+.arena-stat span,
+.decision-block span,
+.decision-reason span,
+.usage-summary-card span,
+.repo-validation span {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.arena-stat strong,
+.decision-block strong,
+.usage-summary-card strong {
+  font-size: 1.05rem;
+}
+
+.arena-stat p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.arena-provider-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-spend-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+}
+
+.bid-leaderboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.leaderboard-card {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 16px;
+  background: linear-gradient(180deg, rgba(16, 31, 47, 0.96), rgba(10, 19, 29, 0.92));
+  display: grid;
+  gap: 10px;
+  animation: panel-rise 360ms ease both;
+}
+
+.leaderboard-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.leaderboard-card-head strong {
+  display: block;
+  font-family: "Sora", "Segoe UI", sans-serif;
+  font-size: 1rem;
+}
+
+.leaderboard-card-provider,
+.leaderboard-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.leaderboard-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.leaderboard-status-winner {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.leaderboard-status-standby {
+  background: var(--secondary-soft);
+  color: var(--secondary);
+}
+
+.leaderboard-status-bidding {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.leaderboard-status-shortlisted {
+  background: rgba(255, 190, 110, 0.14);
+  color: var(--warning);
+}
+
+.leaderboard-status-rejected {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.leaderboard-card-winner {
+  border-color: rgba(99, 232, 163, 0.3);
+  background: linear-gradient(180deg, rgba(16, 45, 35, 0.94), rgba(10, 25, 21, 0.9));
+}
+
+.leaderboard-card-standby {
+  border-color: rgba(122, 182, 255, 0.28);
+}
+
+.leaderboard-card-rejected {
+  opacity: 0.62;
+}
+
+.leaderboard-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted-strong);
+  font-size: 0.92rem;
+}
+
+.leaderboard-line-strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.leaderboard-empty {
+  border: 1px dashed var(--line);
+  border-radius: 18px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.arena-pinned {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.arena-pinned-item {
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+}
+
+.artifact-stack {
+  grid-template-columns: 1fr;
+}
+
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.decision-block,
+.usage-summary-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(7, 16, 25, 0.58);
+  display: grid;
+  gap: 4px;
+}
+
+.decision-reason {
+  display: grid;
+  gap: 6px;
+}
+
+.decision-reason p {
+  color: var(--muted-strong);
+}
+
+.usage-stack,
+.provider-totals,
+.repo-validation {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-total-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 11px 12px;
+  background: rgba(7, 16, 25, 0.46);
+}
+
+.provider-total-row span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.repo-state-banner {
+  border-radius: 18px;
+  padding: 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.repo-state-banner.is-clean {
+  background: rgba(122, 182, 255, 0.12);
+  border: 1px solid rgba(122, 182, 255, 0.16);
+}
+
+.repo-state-banner.is-changed {
+  background: rgba(99, 232, 163, 0.12);
+  border: 1px solid rgba(99, 232, 163, 0.16);
+}
+
+.repo-state-banner strong {
+  font-family: "Sora", "Segoe UI", sans-serif;
+  font-size: 1rem;
+}
+
+.repo-state-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted-strong);
+}
+
+.validation-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.validation-item {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted-strong);
+  font-size: 0.76rem;
+}
+
+.validation-item.is-pass {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.validation-item.is-fail {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.panel-event-strip {
+  padding: 14px 18px;
+}
+
+.event-strip {
+  display: grid;
+  gap: 10px;
+}
+
+.event-strip-track {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding-bottom: 2px;
+}
+
+.event-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 1400px) {
+  .market-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .main-stage-mission,
+  .main-stage {
+    padding: 14px;
+  }
+
+  .arena-quickstats,
+  .decision-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mission-ribbon-topline,
+  .mission-bar-brand {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mission-bar-divider {
+    display: none;
   }
 }
