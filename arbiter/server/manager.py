@@ -114,7 +114,12 @@ class MissionService:
         resolved_repo = self.resolve_repo(mission_id, repo_path)
         with self._lock:
             if self._active and self._active.thread.is_alive():
-                raise MissionConflictError("Only one active mission is supported per process in V1.")
+                if self._active.mission_id == mission_id:
+                    self._active.thread.join(timeout=10.0)
+                    if not self._active.thread.is_alive():
+                        self._active = None
+                if self._active and self._active.thread.is_alive():
+                    raise MissionConflictError("Only one active mission is supported per process in V1.")
             self._update_control(resolved_repo, mission_id, RunState.RUNNING.value, None, None)
             thread = threading.Thread(target=self._run_resume, args=(resolved_repo, mission_id), daemon=True, name=f"arbiter-mission-{mission_id}")
             self._active = ActiveExecution(mission_id, resolved_repo, thread)

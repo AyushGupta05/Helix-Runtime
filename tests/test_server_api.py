@@ -22,7 +22,7 @@ class SlowScriptedStrategyBackend(ScriptedStrategyBackend):
         return super().generate_edit_proposal(*args, **kwargs)
 
 
-def wait_for(predicate: Callable[[], bool], timeout: float = 12.0) -> None:
+def wait_for(predicate: Callable[[], bool], timeout: float = 20.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
