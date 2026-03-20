@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -65,7 +66,7 @@ def payload(repo: Path) -> dict[str, object]:
 
 
 def repo_query(repo: Path) -> str:
-    return f"?repo={repo.resolve()}"
+    return f"?repo={quote(str(repo.resolve()), safe='')}"
 
 
 def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path, monkeypatch) -> None:
@@ -106,7 +107,7 @@ def test_api_streams_ordered_sse_events(python_bug_repo: Path, tmp_path: Path, m
         mission_id = client.post("/api/missions", json=payload(python_bug_repo)).json()["mission_id"]
 
         received: list[dict[str, object]] = []
-        response = client.get(f"/api/missions/{mission_id}/events?after_id=0&repo={python_bug_repo.resolve()}")
+        response = client.get(f"/api/missions/{mission_id}/events?after_id=0&repo={quote(str(python_bug_repo.resolve()), safe='')}")
         assert response.status_code == 200
         current_event: dict[str, object] = {}
         for line in response.text.splitlines():

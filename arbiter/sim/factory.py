@@ -83,7 +83,7 @@ class SimulationFactory:
         if len({round(bid.confidence, 1) for bid in bids}) > 3:
             base_budget += 2
         partial_count = min(len(ordered), 6 if task.risk_level >= 0.6 else 4)
-        sandbox_count = min(len(ordered), 3 if task.risk_level >= 0.5 or failure_count else 2)
+        sandbox_count = 0 if task.task_type.value in {"localize", "perf_diagnosis", "validate"} else min(len(ordered), 2 if task.risk_level >= 0.5 or failure_count else 1)
         return {
             "budget": base_budget,
             "paper": [bid.bid_id for bid in ordered],

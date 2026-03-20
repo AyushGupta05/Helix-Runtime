@@ -265,7 +265,9 @@ class MissionRuntime:
             self._sync_state("finalized" if self.state.control.run_state == RunState.FINALIZED else self.state.control.run_state.value)
 
     def node_collect(self) -> dict:
-        self.state.repo_snapshot = self.collector.collect(run_commands=True)
+        # Capability detection and repo policy checks are enough for collection.
+        # Initial validator execution happens later as governed validation work.
+        self.state.repo_snapshot = self.collector.collect(run_commands=False)
         repo_decision = self.governance.evaluate_repo(self.state.repo_snapshot, self.spec)
         self.state.governance.last_decision = repo_decision
         self.state.governance.current_risk_score = repo_decision.risk_score
@@ -315,7 +317,7 @@ class MissionRuntime:
                 continue
             bid.score = score_bid(bid)
             valid.append(bid)
-        self.state.active_bids = cluster_and_select(valid, per_family=2)
+        self.state.active_bids = cluster_and_select(valid, per_family=1, max_candidates=7)
         for bid in self.state.active_bids:
             self._save_bid(bid, self.state.active_bid_round)
             self.emit("bid.submitted", f"Bid {bid.bid_id} submitted.", bid_id=bid.bid_id, task_id=task.task_id, role=bid.role, score=bid.score, strategy_family=bid.strategy_family)
@@ -350,16 +352,20 @@ class MissionRuntime:
                 try:
                     scratch_tools = LocalToolset(str(scratch))
                     files = load_candidate_files(str(scratch), bid.touched_files or task.candidate_files)
-                    proposal, invocation = self.strategy_backend.generate_edit_proposal(task=task, bid=bid, mission_objective=self.spec.objective, candidate_files=files, failure_context=self.state.failure_context.details if self.state.failure_context else None, preview=True)
-                    self._merge_usage(invocation.token_usage, invocation.cost_usage)
-                    if proposal.files:
-                        scratch_tools.apply_file_updates({item.path: item.content for item in proposal.files})
-                        report = ValidationEngine(scratch_tools, self.spec, self.state.repo_snapshot).validate(task)
-                        reward += 0.20 if report.passed else -0.12
-                        evidence.append("sandbox:pass" if report.passed else "sandbox:fail")
+                    if hasattr(self.strategy_backend, "scripted"):
+                        reward += 0.12 if files else -0.05
+                        evidence.append("sandbox:heuristic")
                     else:
-                        reward -= 0.10
-                        evidence.append("sandbox:no_patch")
+                        proposal, invocation = self.strategy_backend.generate_edit_proposal(task=task, bid=bid, mission_objective=self.spec.objective, candidate_files=files, failure_context=self.state.failure_context.details if self.state.failure_context else None, preview=True)
+                        self._merge_usage(invocation.token_usage, invocation.cost_usage)
+                        if proposal.files:
+                            scratch_tools.apply_file_updates({item.path: item.content for item in proposal.files})
+                            report = ValidationEngine(scratch_tools, self.spec, self.state.repo_snapshot).validate(task)
+                            reward += 0.20 if report.passed else -0.12
+                            evidence.append("sandbox:pass" if report.passed else "sandbox:fail")
+                        else:
+                            reward -= 0.10
+                            evidence.append("sandbox:no_patch")
                 finally:
                     self.worktree.remove_path(str(scratch))
             bid.search_reward = round(max(0.0, min(1.0, reward)), 4)
@@ -449,6 +455,19 @@ class MissionRuntime:
         assert self.state.repo_snapshot is not None
         if task.task_type.value in {"localize", "perf_diagnosis"}:
             report = ValidationReport(task_id=task.task_id, passed=bool(task.candidate_files), notes=[] if task.candidate_files else ["No candidate files identified during evidence gathering."], policy_conformance=True)
+        elif task.task_type.value == "validate" and not self.toolset.changed_files() and self.state.validation_report and self.state.validation_report.passed:
+            report = ValidationReport(
+                task_id=task.task_id,
+                passed=True,
+                command_results=self.state.validation_report.command_results,
+                file_churn=self.state.validation_report.file_churn,
+                changed_files=self.state.validation_report.changed_files,
+                api_guard_passed=self.state.validation_report.api_guard_passed,
+                benchmark_delta=self.state.validation_report.benchmark_delta,
+                notes=["Reused latest accepted validator report because the worktree is unchanged."],
+                policy_conformance=self.state.validation_report.policy_conformance,
+                validator_deltas=[],
+            )
         else:
             report = ValidationEngine(self.toolset, self.spec, self.state.repo_snapshot).validate(task)
         self.state.validation_report = report

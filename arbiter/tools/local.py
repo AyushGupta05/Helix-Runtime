@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from arbiter.core.contracts import CommandResult
-from arbiter.repo.collector import _run
+from arbiter.repo.collector import IGNORED_DIRECTORIES, _run
 
 
 class LocalToolset:
@@ -41,6 +41,25 @@ class LocalToolset:
     def _run_tool(self, command: list[str], timeout: int = 300) -> CommandResult:
         return _run(command, cwd=str(self.worktree), timeout=timeout)
 
+    def _include_path(self, relative_path: str) -> bool:
+        path = Path(relative_path)
+        if any(part in IGNORED_DIRECTORIES for part in path.parts):
+            return False
+        if path.suffix.lower() in {".pyc", ".pyo"}:
+            return False
+        return True
+
+    def _changed_paths(self) -> list[str]:
+        result = self._run_tool(["git", "status", "--porcelain"])
+        paths: list[str] = []
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            relative_path = line[3:]
+            if self._include_path(relative_path):
+                paths.append(relative_path)
+        return paths
+
     def run_tests(self, command: list[str]) -> CommandResult:
         return self._run_tool(command)
 
@@ -60,8 +79,7 @@ class LocalToolset:
         return self._run_tool(["git", "rev-parse", "HEAD"]).stdout.strip()
 
     def changed_files(self) -> list[str]:
-        result = self._run_tool(["git", "status", "--porcelain"])
-        return [line[3:] for line in result.stdout.splitlines() if line]
+        return self._changed_paths()
 
     def diff(self) -> str:
         return self._run_tool(["git", "diff", "--stat"]).stdout
@@ -71,7 +89,10 @@ class LocalToolset:
         subprocess.run(["git", "clean", "-fd"], cwd=str(self.worktree), check=True, capture_output=True, text=True)
 
     def commit(self, message: str) -> str:
-        subprocess.run(["git", "add", "-A"], cwd=str(self.worktree), check=True, capture_output=True, text=True)
+        changed = self._changed_paths()
+        if not changed:
+            return self.git_head()
+        subprocess.run(["git", "add", "--", *changed], cwd=str(self.worktree), check=True, capture_output=True, text=True)
         subprocess.run(["git", "commit", "-m", message], cwd=str(self.worktree), check=True, capture_output=True, text=True)
         return self.git_head()
 

@@ -11,7 +11,7 @@ def strategy_fingerprint(bid: Bid) -> str:
     return "|".join([bid.strategy_family, files, validators, bid.dependency_impact])
 
 
-def cluster_and_select(bids: list[Bid], per_family: int = 2) -> list[Bid]:
+def cluster_and_select(bids: list[Bid], per_family: int = 1, max_candidates: int = 7) -> list[Bid]:
     grouped: dict[str, list[Bid]] = defaultdict(list)
     for bid in bids:
         grouped[strategy_fingerprint(bid)].append(bid)
@@ -29,8 +29,14 @@ def cluster_and_select(bids: list[Bid], per_family: int = 2) -> list[Bid]:
             continue
         diversified.append(bid)
         seen_families.add(bid.strategy_family)
+        if len(diversified) >= max_candidates:
+            return diversified
+    selected_ids = {item.bid_id for item in diversified}
     for bid in ordered_selected:
-        if bid.bid_id in {item.bid_id for item in diversified}:
+        if bid.bid_id in selected_ids:
             continue
         diversified.append(bid)
+        selected_ids.add(bid.bid_id)
+        if len(diversified) >= max_candidates:
+            break
     return diversified
