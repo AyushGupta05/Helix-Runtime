@@ -74,6 +74,8 @@ class MissionRuntime:
             max_workers=self.config.max_parallel_bidders,
             backend=self.strategy_backend,
             bidder_models=self.config.bidder_models,
+            provider_pool=self.config.enabled_providers if hasattr(self.strategy_backend, "router") else [],
+            on_invocation=self._record_model_invocation,
         )
         self.recovery = RecoveryEngine()
         self.civic = CivicRuntime(self.config)
@@ -91,10 +93,76 @@ class MissionRuntime:
         event = MissionEvent(event_type=event_type, mission_id=self.spec.mission_id, message=message, payload=payload)
         self.persistence.append_event(event, refresh_view=refresh_view)
 
+    def trace(self, trace_type: str, title: str, message: str, *, status: str = "info", task_id: str | None = None, bid_id: str | None = None, provider: str | None = None, lane: str | None = None, refresh_view: bool = False, **payload) -> None:
+        self.persistence.append_trace(
+            trace_type=trace_type,
+            title=title,
+            message=message,
+            status=status,
+            task_id=task_id,
+            bid_id=bid_id,
+            provider=provider,
+            lane=lane,
+            refresh_view=refresh_view,
+            **payload,
+        )
+
+    def _record_model_invocation(self, payload: dict) -> None:
+        invocation_id = self.persistence.save_model_invocation(payload)
+        self.trace(
+            f"provider.invocation.{payload['status']}",
+            title=f"Provider {payload['status']}",
+            message=f"{payload.get('provider', 'unknown')} {payload.get('invocation_kind', 'invocation')} {payload['status']}.",
+            status="danger" if payload["status"] == "failed" else "info" if payload["status"] == "started" else "success",
+            task_id=payload.get("task_id"),
+            bid_id=payload.get("bid_id"),
+            provider=payload.get("provider"),
+            lane=payload.get("lane"),
+            invocation_id=invocation_id,
+            model_id=payload.get("model_id"),
+            prompt_preview=payload.get("prompt_preview"),
+            response_preview=payload.get("response_preview"),
+            raw_usage=payload.get("raw_usage", {}),
+            token_usage=payload.get("token_usage", {}),
+            cost_usage=payload.get("cost_usage", {}),
+            error=payload.get("error"),
+        )
+
+    def _refresh_worktree_state(self, reason: str | None = None) -> None:
+        state = self.toolset.worktree_state()
+        state["branch_name"] = self.branch_name
+        state["accepted_checkpoint_id"] = self.state.accepted_checkpoint.checkpoint_id if self.state.accepted_checkpoint else None
+        state["accepted_commit"] = self.state.accepted_checkpoint.commit_sha if self.state.accepted_checkpoint else None
+        if not state["has_changes"]:
+            state["reason"] = reason or ("No uncommitted repo changes; latest accepted checkpoint is current." if self.state.accepted_checkpoint else "No repo changes yet.")
+        elif reason:
+            state["reason"] = reason
+        self.state.worktree_state = state
+        self.state.latest_diff_summary = str(state.get("diff_stat", self.state.latest_diff_summary))
+
+    @staticmethod
+    def _proposal_score(candidate, bid, task) -> float:
+        files = [item.path for item in candidate.proposal.files]
+        if not files:
+            return -1.0
+        score = 1.0
+        if candidate.provider == bid.provider and bid.provider != "system":
+            score += 0.15
+        if len(files) <= max(1, len(bid.touched_files or task.candidate_files or files)):
+            score += 0.2
+        score -= max(0, len(files) - task.risk_level * 10) * 0.03
+        score += min(0.25, len(candidate.invocation.token_usage) * 0.02)
+        return score
+
     def _sync_state(self, status: str) -> None:
         self.state.summary.branch_name = self.branch_name
         if self.state.accepted_checkpoint:
             self.state.summary.head_commit = self.state.accepted_checkpoint.commit_sha
+        self.state.summary.token_usage = dict(self.state.token_usage)
+        self.state.summary.cost_usage = dict(self.state.cost_usage)
+        self.state.summary.decision_history = list(self.state.decision_history)
+        self.state.summary.runtime_seconds = self.state.runtime_seconds
+        self.state.summary.outcome = self.state.outcome
         control_row = self.store.fetch_control_state(self.spec.mission_id)
         run_state = self.state.control.run_state.value
         requested_action = self.state.control.requested_action
@@ -130,6 +198,7 @@ class MissionRuntime:
             policy_state=self.state.governance.policy_state.value,
             current_risk_score=self.state.governance.current_risk_score,
             simulation_summary=self.state.simulation_summary,
+            worktree_state=self.state.worktree_state,
             latest_validation_task_id=self.state.validation_report.task_id if self.state.validation_report else None,
             latest_failure_task_id=self.state.failure_context.task_id if self.state.failure_context else None,
             accepted_checkpoint_id=self.state.accepted_checkpoint.checkpoint_id if self.state.accepted_checkpoint else None,
@@ -222,6 +291,7 @@ class MissionRuntime:
     def _prepare_run(self) -> str:
         self.persistence.reconcile_jsonl()
         self.worktree.ensure()
+        self._refresh_worktree_state("Mission prepared in an isolated worktree.")
         self._load_failed_families()
         if self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED, RunState.PAUSED}:
             self.state.control = MissionControlState(run_state=RunState.RUNNING, reason=self.state.control.reason)
@@ -235,6 +305,7 @@ class MissionRuntime:
             )
             self.state.accepted_checkpoint = checkpoint
             self._save_checkpoint(checkpoint)
+        self._refresh_worktree_state("Mission starting from the latest accepted checkpoint.")
         if not self.store.fetch_all("events", self.spec.mission_id):
             self.emit("mission.started", "Mission runtime created.", repo_path=self.spec.repo_path, branch_name=self.branch_name)
         return self.state.active_phase.value if self.state.active_phase != ActivePhase.IDLE else ActivePhase.COLLECT.value
@@ -311,6 +382,7 @@ class MissionRuntime:
         if not ready:
             return {"status": ActivePhase.FINALIZE.value}
         self.state.active_task_id = ready[0].task_id
+        self.trace("task.selected", "Task selected", f"{ready[0].task_id} selected for market formation.", task_id=ready[0].task_id, status="info")
         return {"status": ActivePhase.MARKET.value}
 
     def node_market(self) -> dict:
@@ -318,6 +390,7 @@ class MissionRuntime:
         assert self.state.repo_snapshot is not None
         self.state.active_bid_round += 1
         failed = self.failed_families.setdefault(task.task_id, set())
+        self.trace("market.opened", "Market opened", f"Competitive market opened for {task.task_id}.", task_id=task.task_id, status="info", round=self.state.active_bid_round, providers=self.config.enabled_providers)
         bids = self.simulation.generate(task, self.state.repo_snapshot)
         self._merge_usage(self.simulation.market_token_usage, self.simulation.market_cost_usage)
         valid: list = []
@@ -329,6 +402,7 @@ class MissionRuntime:
                 bid.status = BidStatus.REJECTED
                 self._save_bid(bid, self.state.active_bid_round)
                 self.emit("bid.rejected", f"Bid {bid.bid_id} rejected.", bid_id=bid.bid_id, task_id=task.task_id, reason=bid.rejection_reason)
+                self.trace("bid.retired", "Bid rejected", f"{bid.bid_id} was rejected before scoring.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="danger", reason=bid.rejection_reason)
                 continue
             bid.score = score_bid(bid)
             valid.append(bid)
@@ -336,6 +410,7 @@ class MissionRuntime:
         for bid in self.state.active_bids:
             self._save_bid(bid, self.state.active_bid_round)
             self.emit("bid.submitted", f"Bid {bid.bid_id} submitted.", bid_id=bid.bid_id, task_id=task.task_id, role=bid.role, score=bid.score, strategy_family=bid.strategy_family)
+            self.trace("bid.generated", "Bid generated", f"{bid.bid_id} entered the active market.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="success", score=bid.score, strategy_family=bid.strategy_family, model_id=bid.model_id)
         if not self.state.active_bids:
             self.state.no_valid_contenders = True
             return {"status": ActivePhase.FINALIZE.value}
@@ -355,12 +430,14 @@ class MissionRuntime:
             if bid.bid_id in paper_ids:
                 reward += 0.05
                 evidence.append("paper")
+                self.trace("simulation.rollout", "Paper rollout", f"Paper rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="paper")
             if bid.bid_id in partial_ids:
                 files = load_candidate_files(self.paths.worktree_dir, bid.touched_files or task.candidate_files)
                 reward += min(0.15, len(files) * 0.05)
                 if task.validator_requirements and set(task.validator_requirements).issubset(set(bid.validator_plan)):
                     reward += 0.05
                 evidence.append("partial")
+                self.trace("simulation.rollout", "Partial rollout", f"Partial rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="partial", files=list(files))
             if bid.bid_id in sandbox_ids:
                 scratch = Path(self.paths.scratch_worktrees_dir) / bid.bid_id
                 self.worktree.ensure_detached(str(scratch), ref=base_ref)
@@ -383,6 +460,7 @@ class MissionRuntime:
                             evidence.append("sandbox:no_patch")
                 finally:
                     self.worktree.remove_path(str(scratch))
+                self.trace("simulation.rollout", "Sandbox rollout", f"Sandbox rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="sandbox")
             bid.search_reward = round(max(0.0, min(1.0, reward)), 4)
             bid.search_score = bid.search_reward
             bid.search_summary = ", ".join(evidence) or "paper"
@@ -407,11 +485,14 @@ class MissionRuntime:
         self.state.standby_bid = standby
         self.state.winner_bid_id = winner.bid_id
         self.state.standby_bid_id = standby.bid_id if standby else None
+        winner.selection_reason = "highest_scored_valid_contender"
         self._save_bid(winner, self.state.active_bid_round)
         self.emit("bid.won", f"Bid {winner.bid_id} won.", task_id=winner.task_id, bid_id=winner.bid_id, role=winner.role, score=winner.score)
+        self.trace("bid.won", "Winner selected", f"{winner.bid_id} selected as the winner.", task_id=winner.task_id, bid_id=winner.bid_id, provider=winner.provider, lane=winner.lane, status="success", score=winner.score)
         if standby:
             self._save_bid(standby, self.state.active_bid_round)
             self.emit("standby.selected", f"Standby selected for {winner.task_id}.", task_id=winner.task_id, bid_id=standby.bid_id, role=standby.role, score=standby.score)
+            self.trace("standby.selected", "Standby selected", f"{standby.bid_id} is ready as an alternate.", task_id=winner.task_id, bid_id=standby.bid_id, provider=standby.provider, lane=standby.lane, status="info", score=standby.score)
         return {"status": ActivePhase.EXECUTE.value}
 
     def node_execute(self) -> dict:
@@ -420,13 +501,51 @@ class MissionRuntime:
         assert bid is not None
         task.status = TaskStatus.RUNNING
         self._save_task(task)
+        self.emit("task.running", f"Task {task.task_id} is running.", task_id=task.task_id)
+        self.trace("task.running", "Task running", f"{task.task_id} entered execution.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info")
         if task.task_type.value in {"localize", "perf_diagnosis", "validate"}:
             self.state.decision_history.append(f"{task.task_id}: evidence-only step completed")
             self.emit("tool.executed", "Evidence-only task executed.", task_id=task.task_id)
+            self._refresh_worktree_state("Evidence-only phase completed without modifying repo files.")
+            self.trace("diff.updated", "Worktree refreshed", self.state.worktree_state["reason"], task_id=task.task_id, bid_id=bid.bid_id, status="info", worktree_state=self.state.worktree_state)
             return {"status": ActivePhase.VALIDATE.value}
         candidate_files = load_candidate_files(self.paths.worktree_dir, bid.touched_files or task.candidate_files)
-        proposal, invocation = self.strategy_backend.generate_edit_proposal(task=task, bid=bid, mission_objective=self.spec.objective, candidate_files=candidate_files, failure_context=self.state.failure_context.details if self.state.failure_context else None)
-        self._merge_usage(invocation.token_usage, invocation.cost_usage)
+        candidates = self.strategy_backend.generate_edit_proposals(
+            task=task,
+            bid=bid,
+            mission_objective=self.spec.objective,
+            candidate_files=candidate_files,
+            failure_context=self.state.failure_context.details if self.state.failure_context else None,
+            on_invocation=self._record_model_invocation,
+        )
+        for candidate in candidates:
+            self._merge_usage(candidate.invocation.token_usage, candidate.invocation.cost_usage)
+            candidate.score = self._proposal_score(candidate, bid, task)
+        candidates = sorted(candidates, key=lambda item: item.score, reverse=True)
+        selected_candidate = candidates[0] if candidates else None
+        if not selected_candidate or not selected_candidate.proposal.files:
+            return self._stall_failure(task, bid)
+        for candidate in candidates[1:]:
+            candidate.rejection_reason = "lower_ranked_provider_proposal"
+        selected_candidate.selected = True
+        selected_candidate.proposal.summary = f"{selected_candidate.proposal.summary} [{selected_candidate.provider}]"
+        self.state.decision_history.append(
+            f"{task.task_id}: selected {selected_candidate.provider} proposal on {selected_candidate.lane}"
+        )
+        self.trace(
+            "proposal.selected",
+            "Proposal selected",
+            f"{selected_candidate.provider} proposal selected for {task.task_id}.",
+            task_id=task.task_id,
+            bid_id=bid.bid_id,
+            provider=selected_candidate.provider,
+            lane=selected_candidate.lane,
+            status="success",
+            model_id=selected_candidate.model_id,
+            score=selected_candidate.score,
+            summary=selected_candidate.proposal.summary,
+        )
+        proposal = selected_candidate.proposal
         if not proposal.files:
             return self._stall_failure(task, bid)
         intent = ActionIntent(action_type="edit_file", task_id=task.task_id, bid_id=bid.bid_id, file_scope=[item.path for item in proposal.files], payload={"summary": proposal.summary})
@@ -448,7 +567,7 @@ class MissionRuntime:
             self.state.failure_context = FailureContext(task_id=task.task_id, failure_type="policy_block", details="; ".join(decision.reasons), diff_summary=self.toolset.diff(), validator_deltas=[], recommended_recovery_scope="rebid", strategy_family=bid.strategy_family, attempted_file_scope=intent.file_scope, civic_action_history=[outcome.audit.audit_id])
             self._save_failure(self.state.failure_context)
             return {"status": ActivePhase.RECOVER.value}
-        self.state.latest_diff_summary = self.toolset.diff()
+        self._refresh_worktree_state("Material edit applied in the isolated worktree.")
         step = ExecutionStep(
             step_id=f"{task.task_id}-{uuid4().hex[:8]}",
             task_id=task.task_id,
@@ -463,11 +582,13 @@ class MissionRuntime:
         )
         self._save_execution_step(step)
         self.emit("tool.executed", "Material edit applied.", task_id=task.task_id, touched_files=outcome.result.get("touched", []))
+        self.trace("diff.updated", "Worktree updated", self.state.worktree_state["reason"], task_id=task.task_id, bid_id=bid.bid_id, provider=selected_candidate.provider, lane=selected_candidate.lane, status="success", worktree_state=self.state.worktree_state)
         return {"status": ActivePhase.VALIDATE.value}
 
     def node_validate(self) -> dict:
         task = self._active_task()
         assert self.state.repo_snapshot is not None
+        self.trace("validation.started", "Validation started", f"Validation started for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="info")
         if task.task_type.value in {"localize", "perf_diagnosis"}:
             report = ValidationReport(task_id=task.task_id, passed=bool(task.candidate_files), notes=[] if task.candidate_files else ["No candidate files identified during evidence gathering."], policy_conformance=True)
         elif task.task_type.value == "validate" and not self.toolset.changed_files() and self.state.validation_report and self.state.validation_report.passed:
@@ -511,9 +632,12 @@ class MissionRuntime:
                 self.state.accepted_checkpoint = checkpoint
                 self._save_checkpoint(checkpoint)
                 self.emit("checkpoint.accepted", "Accepted checkpoint committed.", task_id=task.task_id, commit_sha=commit_sha)
+                self._refresh_worktree_state("Changes were committed to the Arbiter-managed branch; the worktree is now clean.")
+                self.trace("checkpoint.accepted", "Checkpoint accepted", f"Accepted checkpoint committed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", commit_sha=commit_sha, checkpoint_id=checkpoint.checkpoint_id)
             self.state.decision_history.append(f"{task.task_id}: completed")
             self.emit("task.completed", f"Task {task.task_id} completed.", task_id=task.task_id)
             self.emit("validation.passed", "Validation passed.", task_id=task.task_id, refresh_view=True)
+            self.trace("validation.completed", "Validation passed", f"Validation passed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", notes=report.notes, changed_files=report.changed_files, refresh_view=True)
             return {"status": ActivePhase.SELECT_TASK.value}
         self.state.failure_context = FailureContext(
             task_id=task.task_id,
@@ -530,12 +654,14 @@ class MissionRuntime:
         self._save_failure(self.state.failure_context)
         self.emit("task.failed", "Task failed validation.", task_id=task.task_id)
         self.emit("validation.failed", "Validation failed.", task_id=task.task_id, details=self.state.failure_context.details, refresh_view=True)
+        self.trace("validation.completed", "Validation failed", f"Validation failed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="danger", details=self.state.failure_context.details, validator_deltas=report.validator_deltas, refresh_view=True)
         return {"status": ActivePhase.RECOVER.value}
 
     def node_recover(self) -> dict:
         task = self._active_task()
         assert self.state.failure_context is not None
         self.state.recovery_round += 1
+        self.trace("recovery.started", "Recovery started", f"Recovery started for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failure_type=self.state.failure_context.failure_type)
         if self.state.accepted_checkpoint:
             intent = ActionIntent(action_type="revert_to_checkpoint", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, file_scope=[], payload={"checkpoint": self.state.accepted_checkpoint.commit_sha})
             outcome = self.civic.authorize_and_execute(
@@ -548,6 +674,8 @@ class MissionRuntime:
             )
             self.state.last_civic_audit = outcome.audit
             self.emit("checkpoint.reverted", "Worktree reverted to accepted checkpoint.", commit_sha=self.state.accepted_checkpoint.commit_sha)
+            self._refresh_worktree_state("Worktree reverted to the latest accepted checkpoint.")
+            self.trace("diff.updated", "Worktree reverted", self.state.worktree_state["reason"], task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", worktree_state=self.state.worktree_state)
         if self.recovery.should_promote_standby(self.state.standby_bid, self.state.failure_context):
             self.state.current_bid = self.state.standby_bid
             self.state.current_bid.status = BidStatus.WINNER
@@ -556,6 +684,7 @@ class MissionRuntime:
             self.state.standby_bid_id = None
             self._save_bid(self.state.current_bid, self.state.active_bid_round)
             self.emit("standby.promoted", "Standby promoted after failure.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id, refresh_view=True)
+            self.trace("recovery.completed", "Standby promoted", f"Standby {self.state.current_bid.bid_id} promoted after failure.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id, provider=self.state.current_bid.provider, lane=self.state.current_bid.lane, status="success", refresh_view=True)
             return {"status": ActivePhase.EXECUTE.value}
         if self.state.current_bid:
             family, _ = self.recovery.family_penalty(self.state.failure_context)
@@ -571,6 +700,7 @@ class MissionRuntime:
         task.status = TaskStatus.READY
         self._save_task(task)
         self.emit("recovery.round_opened", "Rebidding with prior evidence.", task_id=task.task_id, round=self.state.recovery_round, failed_families=sorted(self.failed_families.get(task.task_id, set())))
+        self.trace("recovery.completed", "Rebid opened", f"Rebidding opened for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failed_families=sorted(self.failed_families.get(task.task_id, set())))
         return {"status": ActivePhase.MARKET.value}
 
     def node_finalize(self) -> dict:
@@ -606,13 +736,14 @@ class MissionRuntime:
         )
         self._save_failure(self.state.failure_context)
         self.emit("task.failed", "Task failed to generate an edit.", task_id=task.task_id)
+        self.trace("proposal.selected", "No usable proposal", f"No valid provider proposal was available for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id, status="danger")
         return {"status": ActivePhase.RECOVER.value}
 
     def _revert(self) -> bool:
         if not self.state.accepted_checkpoint:
             return False
         self.toolset.revert_to_checkpoint(self.state.accepted_checkpoint.commit_sha)
-        self.state.latest_diff_summary = self.toolset.diff()
+        self._refresh_worktree_state("Worktree reset to the latest accepted checkpoint.")
         return True
 
     def _active_task(self):

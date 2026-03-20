@@ -5,8 +5,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cancelMission,
   createMission,
-  getMission,
+  getMissionDiff,
   getMissions,
+  getMissionTrace,
+  getMissionUsage,
   pauseMission,
   resumeMission
 } from "./lib/api";
@@ -14,7 +16,7 @@ import { useMissionStream } from "./lib/missionStream";
 import MissionComposer from "./components/MissionComposer";
 import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";
-import MissionGraph from "./components/MissionGraph";
+import TaskRail from "./components/TaskRail";
 import BidBoard from "./components/BidBoard";
 import TimelinePanel from "./components/TimelinePanel";
 import ArtifactsPanel from "./components/ArtifactsPanel";
@@ -22,24 +24,17 @@ import ArtifactsPanel from "./components/ArtifactsPanel";
 function HomePanel({ activeMissionId }) {
   return (
     <section className="hero-panel">
-      <p className="eyebrow">Arbiter Mission Control</p>
-      <h1>Launch a repo mission, watch the market form, and follow every recovery live.</h1>
+      <p className="eyebrow">Arbiter Operator Console</p>
+      <h1>Launch a repo mission and watch every market, provider race, edit, and recovery live.</h1>
       <p className="hero-copy">
-        Arbiter decomposes the objective into tasks, opens a bounded strategy market,
-        selects a winner and standby, validates each result, and keeps recovering
-        until it lands a safe branch-ready change.
+        Arbiter now exposes the active task rail, provider market, live trace, isolated
+        worktree state, accepted checkpoints, and token burn in one dense control room.
       </p>
-      {activeMissionId ? (
-        <p className="hero-hint">
-          An active mission is already in flight. Select it from the left rail to step
-          into the live control room.
-        </p>
-      ) : (
-        <p className="hero-hint">
-          Start with a local repo path and a concrete objective. The control room will
-          hydrate as soon as the mission is created.
-        </p>
-      )}
+      <p className="hero-hint">
+        {activeMissionId
+          ? "An active mission is already running. Open it from the left rail to inspect the full operator console."
+          : "Start with a local repo path and a concrete software objective. The console will hydrate as soon as the mission is created."}
+      </p>
     </section>
   );
 }
@@ -64,12 +59,33 @@ function MissionRoute() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mission", repo, missionId] });
+      queryClient.invalidateQueries({ queryKey: ["mission-trace", repo, missionId] });
+      queryClient.invalidateQueries({ queryKey: ["mission-diff", repo, missionId] });
+      queryClient.invalidateQueries({ queryKey: ["mission-usage", repo, missionId] });
       queryClient.invalidateQueries({ queryKey: ["missions", repo] });
     }
   });
 
+  const traceQuery = useQuery({
+    queryKey: ["mission-trace", repo, missionId],
+    queryFn: () => getMissionTrace(missionId, repo),
+    enabled: Boolean(missionId && repo)
+  });
+
+  const diffQuery = useQuery({
+    queryKey: ["mission-diff", repo, missionId],
+    queryFn: () => getMissionDiff(missionId, repo),
+    enabled: Boolean(missionId && repo)
+  });
+
+  const usageQuery = useQuery({
+    queryKey: ["mission-usage", repo, missionId],
+    queryFn: () => getMissionUsage(missionId, repo),
+    enabled: Boolean(missionId && repo)
+  });
+
   if (missionQuery.isLoading) {
-    return <div className="empty-panel">Hydrating mission snapshot...</div>;
+    return <div className="empty-panel">Hydrating operator console...</div>;
   }
 
   if (missionQuery.isError || !missionQuery.data) {
@@ -84,56 +100,78 @@ function MissionRoute() {
   }
 
   const mission = missionQuery.data;
+  const trace = traceQuery.data ?? mission.recent_trace ?? [];
+  const diffState = diffQuery.data ?? { worktree_state: mission.worktree_state ?? {} };
+  const usageSummary = usageQuery.data ?? mission.usage_summary ?? {};
+  const latestProposalTrace = [...trace].reverse().find((entry) => entry.trace_type === "proposal.selected");
   const selectedBid =
     mission.bids.find((bid) => bid.bid_id === mission.winner_bid_id) ??
     mission.bids.find((bid) => bid.selected) ??
     mission.bids[0] ??
     null;
+  const latestCheckpoint = mission.accepted_checkpoints?.length
+    ? mission.accepted_checkpoints[mission.accepted_checkpoints.length - 1]
+    : null;
 
   return (
-    <div className="mission-room">
+    <div className="mission-room operator-console">
       <MissionHeader
         mission={mission}
+        usageSummary={usageSummary}
+        latestProposalTrace={latestProposalTrace}
+        latestCheckpoint={latestCheckpoint}
         busy={controlMutation.isPending}
         onPause={() => controlMutation.mutate("pause")}
         onResume={() => controlMutation.mutate("resume")}
         onCancel={() => controlMutation.mutate("cancel")}
       />
-      <div className="mission-grid">
-        <section className="panel panel-graph">
-          <div className="panel-heading">
-            <h2>Task Graph</h2>
-            <span className="panel-meta">Dependency-aware mission DAG</span>
-          </div>
-          <MissionGraph tasks={mission.tasks} />
+
+      <div className="operator-grid">
+        <section className="panel panel-task-rail">
+          <TaskRail
+            tasks={mission.tasks}
+            activeTaskId={mission.active_task_id}
+            bids={mission.bids}
+            executionSteps={mission.execution_steps ?? []}
+            validationReport={mission.validation_report}
+            winnerBidId={mission.winner_bid_id}
+            standbyBidId={mission.standby_bid_id}
+          />
         </section>
-        <section className="panel panel-bids">
+
+        <section className="panel panel-trace">
           <div className="panel-heading">
-            <h2>Bid Market</h2>
-            <span className="panel-meta">Winner + standby selection in real time</span>
+            <h2>Live Trace</h2>
+            <span className="panel-meta">Reasoning, provider calls, validation, recovery</span>
+          </div>
+          <TimelinePanel trace={trace} validationReport={mission.validation_report} />
+        </section>
+
+        <section className="panel panel-market">
+          <div className="panel-heading">
+            <h2>Provider Market</h2>
+            <span className="panel-meta">Grouped by strategy family and provider</span>
           </div>
           <BidBoard
             bids={mission.bids}
             winnerBidId={mission.winner_bid_id}
             standbyBidId={mission.standby_bid_id}
+            activeTaskId={mission.active_task_id}
+            providerMarketSummary={mission.provider_market_summary}
           />
         </section>
-        <section className="panel panel-timeline">
+
+        <section className="panel panel-inspectors">
           <div className="panel-heading">
-            <h2>Live Timeline</h2>
-            <span className="panel-meta">Execution, validation, recovery, checkpoints</span>
+            <h2>Inspectors</h2>
+            <span className="panel-meta">Repo changes, checkpoints, selected proposal, usage</span>
           </div>
-          <TimelinePanel
-            events={mission.events}
-            validationReport={mission.validation_report}
+          <ArtifactsPanel
+            mission={mission}
+            diffState={diffState}
+            usageSummary={usageSummary}
+            selectedBid={selectedBid}
           />
-        </section>
-        <section className="panel panel-artifacts">
-          <div className="panel-heading">
-            <h2>Artifacts</h2>
-            <span className="panel-meta">Diff scope, branch output, selected bid, reports</span>
-          </div>
-          <ArtifactsPanel mission={mission} selectedBid={selectedBid} />
         </section>
       </div>
     </div>

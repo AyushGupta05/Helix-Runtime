@@ -5,6 +5,20 @@ export function formatNumber(value, digits = 2) {
   return Number(value).toFixed(digits);
 }
 
+export function formatInteger(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "0";
+  }
+  return Number(value).toLocaleString();
+}
+
+export function formatCurrency(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "$0.00";
+  }
+  return `$${Number(value).toFixed(4)}`;
+}
+
 export function formatRuntime(seconds) {
   if (!seconds) {
     return "0s";
@@ -39,4 +53,11 @@ export function relativeTime(isoString) {
 
 export function humanizeToken(value) {
   return value.replace(/[._]/g, " ");
+}
+
+export function summarizeProvider(provider) {
+  if (!provider) {
+    return "system";
+  }
+  return provider.replace(/(^\w)|-(\w)/g, (match) => match.replace("-", "").toUpperCase());
 }

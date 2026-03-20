@@ -527,10 +527,140 @@ class MissionStore:
     def fetch_latest_checkpoint(self, mission_id: str) -> sqlite3.Row | None:
         return self.connection.execute("SELECT * FROM accepted_checkpoints WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1", (mission_id,)).fetchone()
 
+    def fetch_model_invocations(self, mission_id: str, task_id: str | None = None) -> list[sqlite3.Row]:
+        if task_id is None:
+            return self.connection.execute("SELECT * FROM model_invocations WHERE mission_id = ? ORDER BY started_at ASC, id ASC", (mission_id,)).fetchall()
+        return self.connection.execute("SELECT * FROM model_invocations WHERE mission_id = ? AND task_id = ? ORDER BY started_at ASC, id ASC", (mission_id, task_id)).fetchall()
+
+    def fetch_trace_entries(self, mission_id: str, limit: int = 200, after_id: int = 0) -> list[sqlite3.Row]:
+        rows = self.connection.execute(
+            "SELECT * FROM trace_entries WHERE mission_id = ? AND id > ? ORDER BY id DESC LIMIT ?",
+            (mission_id, after_id, limit),
+        ).fetchall()
+        rows = list(rows)
+        rows.reverse()
+        return rows
+
     def _events_for_view(self, mission_id: str) -> list[dict[str, Any]]:
         rows = self.connection.execute("SELECT * FROM events WHERE mission_id = ? ORDER BY id DESC LIMIT 200", (mission_id,)).fetchall()
         rows.reverse()
         return [{"id": row["id"], "event_type": row["event_type"], "created_at": row["created_at"], "message": json.loads(row["payload_json"]).get("message", ""), "payload": json.loads(row["payload_json"]).get("payload", {})} for row in rows]
+
+    def _trace_for_view(self, mission_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self.fetch_trace_entries(mission_id, limit=limit)
+        return [
+            {
+                "id": row["id"],
+                "trace_type": row["trace_type"],
+                "title": row["title"],
+                "message": row["message"],
+                "status": row["status"],
+                "task_id": row["task_id"],
+                "bid_id": row["bid_id"],
+                "provider": row["provider"],
+                "lane": row["lane"],
+                "created_at": row["created_at"],
+                "payload": json.loads(row["payload_json"]).get("payload", {}),
+            }
+            for row in rows
+        ]
+
+    def _execution_steps_for_view(self, mission_id: str) -> list[dict[str, Any]]:
+        return [json.loads(row["payload_json"]) for row in self.fetch_ordered("execution_steps", "timestamp ASC", mission_id)]
+
+    def _checkpoints_for_view(self, mission_id: str) -> list[dict[str, Any]]:
+        return [json.loads(row["payload_json"]) for row in self.fetch_ordered("accepted_checkpoints", "created_at ASC", mission_id)]
+
+    def _usage_summary(self, mission_id: str, active_task_id: str | None) -> dict[str, Any]:
+        rows = self.fetch_model_invocations(mission_id)
+        mission_tokens: dict[str, int] = {}
+        mission_costs: dict[str, float] = {}
+        active_tokens: dict[str, int] = {}
+        active_costs: dict[str, float] = {}
+        by_provider: dict[str, dict[str, Any]] = {}
+        by_lane: dict[str, dict[str, Any]] = {}
+        invocations: list[dict[str, Any]] = []
+        for row in rows:
+            token_usage = json.loads(row["token_usage_json"])
+            cost_usage = json.loads(row["cost_usage_json"])
+            for key, value in token_usage.items():
+                mission_tokens[key] = mission_tokens.get(key, 0) + int(value)
+                if row["task_id"] and row["task_id"] == active_task_id:
+                    active_tokens[key] = active_tokens.get(key, 0) + int(value)
+            for key, value in cost_usage.items():
+                mission_costs[key] = mission_costs.get(key, 0.0) + float(value)
+                if row["task_id"] and row["task_id"] == active_task_id:
+                    active_costs[key] = active_costs.get(key, 0.0) + float(value)
+            provider_bucket = by_provider.setdefault(row["provider"], {"provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
+            lane_bucket = by_lane.setdefault(row["lane"], {"lane": row["lane"], "provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
+            total_tokens = sum(int(value) for value in token_usage.values())
+            total_cost = sum(float(value) for value in cost_usage.values())
+            provider_bucket["total_tokens"] += total_tokens
+            provider_bucket["total_cost"] += total_cost
+            provider_bucket["invocation_count"] += 1
+            lane_bucket["total_tokens"] += total_tokens
+            lane_bucket["total_cost"] += total_cost
+            lane_bucket["invocation_count"] += 1
+            for bucket in (provider_bucket, lane_bucket):
+                for key, value in token_usage.items():
+                    bucket["token_usage"][key] = bucket["token_usage"].get(key, 0) + int(value)
+                for key, value in cost_usage.items():
+                    bucket["cost_usage"][key] = bucket["cost_usage"].get(key, 0.0) + float(value)
+            invocations.append(
+                {
+                    "invocation_id": row["id"],
+                    "task_id": row["task_id"],
+                    "bid_id": row["bid_id"],
+                    "provider": row["provider"],
+                    "lane": row["lane"],
+                    "model_id": row["model_id"],
+                    "invocation_kind": row["invocation_kind"],
+                    "status": row["status"],
+                    "started_at": row["started_at"],
+                    "completed_at": row["completed_at"],
+                    "prompt_preview": row["prompt_preview"],
+                    "response_preview": row["response_preview"],
+                    "raw_usage": json.loads(row["raw_usage_json"]),
+                    "token_usage": token_usage,
+                    "cost_usage": cost_usage,
+                    "error": row["error"],
+                    "total_tokens": total_tokens,
+                    "total_cost": total_cost,
+                }
+            )
+        return {
+            "mission": {
+                "token_usage": mission_tokens,
+                "cost_usage": mission_costs,
+                "total_tokens": sum(mission_tokens.values()),
+                "total_cost": sum(mission_costs.values()),
+            },
+            "active_task": {
+                "task_id": active_task_id,
+                "token_usage": active_tokens,
+                "cost_usage": active_costs,
+                "total_tokens": sum(active_tokens.values()),
+                "total_cost": sum(active_costs.values()),
+            },
+            "by_provider": by_provider,
+            "by_lane": by_lane,
+            "invocations": invocations,
+        }
+
+    def _provider_market_summary(self, bids: list[dict[str, Any]], active_task_id: str | None, winner_bid_id: str | None, standby_bid_id: str | None) -> dict[str, Any]:
+        active_bids = [bid for bid in bids if bid.get("task_id") == active_task_id]
+        providers: dict[str, list[dict[str, Any]]] = {}
+        families: dict[str, list[dict[str, Any]]] = {}
+        for bid in active_bids:
+            providers.setdefault(bid.get("provider") or "system", []).append(bid)
+            families.setdefault(bid.get("strategy_family") or "unclassified", []).append(bid)
+        return {
+            "active_task_id": active_task_id,
+            "winner_bid_id": winner_bid_id,
+            "standby_bid_id": standby_bid_id,
+            "providers": providers,
+            "families": families,
+        }
 
     def refresh_mission_view(self, mission_id: str) -> dict[str, Any]:
         mission = self.fetch_mission(mission_id)
@@ -543,6 +673,10 @@ class MissionStore:
         failure = self.fetch_latest_failure(mission_id)
         checkpoint = self.fetch_latest_checkpoint(mission_id)
         events = self._events_for_view(mission_id)
+        tasks = [json.loads(row["payload_json"]) for row in self.fetch_ordered("tasks", "updated_at ASC", mission_id)]
+        bids = [json.loads(row["payload_json"]) for row in self.fetch_ordered("bids", "updated_at ASC", mission_id)]
+        active_task = next((task for task in tasks if task["task_id"] == (runtime["active_task_id"] if runtime else None)), None)
+        usage_summary = self._usage_summary(mission_id, runtime["active_task_id"] if runtime else None)
         payload = {
             "mission_id": mission["id"],
             "repo_path": mission["repo_path"],
@@ -563,8 +697,9 @@ class MissionStore:
             "standby_bid_id": runtime["standby_bid_id"] if runtime else None,
             "decision_history": summary.get("decision_history", []),
             "failed_attempt_history": summary.get("failed_attempt_history", []),
-            "tasks": [json.loads(row["payload_json"]) for row in self.fetch_ordered("tasks", "updated_at ASC", mission_id)],
-            "bids": [json.loads(row["payload_json"]) for row in self.fetch_ordered("bids", "updated_at ASC", mission_id)],
+            "tasks": tasks,
+            "active_task": active_task,
+            "bids": bids,
             "events": events,
             "validation_report": json.loads(validation["payload_json"]) if validation else None,
             "failure_context": json.loads(failure["payload_json"]) if failure else None,
@@ -573,6 +708,12 @@ class MissionStore:
             "recovery_state": {"recovery_round": runtime["recovery_round"] if runtime else 0, "last_failure_task_id": runtime["latest_failure_task_id"] if runtime else None},
             "stop_state": {"stop_reason": runtime["stop_reason"] if runtime else None},
             "civic_audit_summary": summary.get("audit_summary", {}),
+            "provider_market_summary": self._provider_market_summary(bids, runtime["active_task_id"] if runtime else None, runtime["winner_bid_id"] if runtime else None, runtime["standby_bid_id"] if runtime else None),
+            "usage_summary": usage_summary,
+            "worktree_state": json.loads(runtime["worktree_state_json"]) if runtime and runtime["worktree_state_json"] else {},
+            "accepted_checkpoints": self._checkpoints_for_view(mission_id),
+            "execution_steps": self._execution_steps_for_view(mission_id),
+            "recent_trace": self._trace_for_view(mission_id),
         }
         self.connection.execute(
             "INSERT INTO mission_view_cache (mission_id, payload_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(mission_id) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
@@ -611,6 +752,7 @@ class MissionStore:
                 "validation_report": json.loads(validation["payload_json"]) if validation else None,
                 "failure_context": json.loads(failure["payload_json"]) if failure else None,
                 "simulation_summary": json.loads(runtime["simulation_summary_json"]) if runtime["simulation_summary_json"] else None,
+                "worktree_state": json.loads(runtime["worktree_state_json"]) if runtime["worktree_state_json"] else {},
             }
         )
         if checkpoint:

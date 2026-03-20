@@ -35,7 +35,7 @@ function TaskLabel({ task }) {
   );
 }
 
-export default function MissionGraph({ tasks }) {
+export default function MissionGraph({ tasks, compact = false }) {
   const { nodes, edges } = useMemo(() => {
     const taskMap = new Map(tasks.map((task) => [task.task_id, task]));
     const lanes = new Map();
@@ -64,7 +64,7 @@ export default function MissionGraph({ tasks }) {
   }, [tasks]);
 
   return (
-    <div className="graph-shell">
+    <div className={`graph-shell ${compact ? "graph-shell-compact" : ""}`}>
       <ReactFlow fitView nodes={nodes} edges={edges} proOptions={{ hideAttribution: true }}>
         <Background color="#c0cad5" gap={22} />
         <Controls showInteractive={false} />

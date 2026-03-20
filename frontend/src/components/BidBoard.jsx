@@ -1,81 +1,89 @@
-import { formatNumber, formatRuntime } from "../lib/format";
+import { formatCurrency, formatInteger, formatNumber, summarizeProvider } from "../lib/format";
 import StatusBadge from "./StatusBadge";
 
-function BidCard({ bid, label }) {
+function BidCell({ bid, winnerBidId, standbyBidId }) {
   if (!bid) {
-    return (
-      <div className="bid-spotlight empty-card">
-        <span>{label}</span>
-        <strong>Waiting for qualified contender</strong>
-      </div>
-    );
+    return <div className="market-cell market-cell-empty">No contender</div>;
   }
+
+  const tone =
+    bid.bid_id === winnerBidId ? "winner" : bid.bid_id === standbyBidId ? "standby" : bid.rejection_reason ? "failed" : "idle";
+  const totalTokens = Object.values(bid.token_usage ?? {}).reduce((total, value) => total + Number(value || 0), 0);
+  const totalCost = Object.values(bid.cost_usage ?? {}).reduce((total, value) => total + Number(value || 0), 0);
+
   return (
-    <div className="bid-spotlight">
-      <span>{label}</span>
-      <strong>{bid.role}</strong>
-      <p>{bid.strategy_family}</p>
-      <div className="bid-spotlight-metrics">
+    <article className={`market-cell market-cell-${tone}`}>
+      <div className="market-cell-head">
+        <strong>{summarizeProvider(bid.provider)}</strong>
+        <StatusBadge value={bid.bid_id === winnerBidId ? "running" : bid.bid_id === standbyBidId ? "ready" : bid.rejection_reason ? "failed" : "pending"} quiet />
+      </div>
+      <p className="market-cell-model">{bid.model_id ?? bid.role}</p>
+      <div className="market-cell-metrics">
         <span>score {formatNumber(bid.score)}</span>
         <span>risk {formatNumber(bid.risk)}</span>
+        <span>conf {formatNumber(bid.confidence)}</span>
       </div>
-    </div>
+      <div className="market-cell-metrics">
+        <span>{formatInteger(totalTokens)} tok</span>
+        <span>{formatCurrency(totalCost)}</span>
+      </div>
+      <p>{bid.strategy_summary}</p>
+      {bid.search_summary ? <p className="market-cell-note">Rollout: {bid.search_summary}</p> : null}
+      {bid.rejection_reason ? <p className="inline-warning">{bid.rejection_reason}</p> : null}
+    </article>
   );
 }
 
-export default function BidBoard({ bids, winnerBidId, standbyBidId }) {
-  const ordered = [...bids].sort((left, right) => {
-    const leftScore = left.score ?? -1;
-    const rightScore = right.score ?? -1;
-    return rightScore - leftScore;
-  });
-  const winner = ordered.find((bid) => bid.bid_id === winnerBidId) ?? null;
-  const standby = ordered.find((bid) => bid.bid_id === standbyBidId) ?? null;
+export default function BidBoard({ bids, winnerBidId, standbyBidId, activeTaskId, providerMarketSummary }) {
+  const activeBids = bids.filter((bid) => bid.task_id === activeTaskId);
+  const providerOrder = [...new Set(activeBids.map((bid) => bid.provider || "system"))];
+  const families = Object.entries(providerMarketSummary?.families ?? {}).filter(([_, familyBids]) =>
+    familyBids.some((bid) => bid.task_id === activeTaskId)
+  );
+
+  const winner = activeBids.find((bid) => bid.bid_id === winnerBidId) ?? null;
+  const standby = activeBids.find((bid) => bid.bid_id === standbyBidId) ?? null;
 
   return (
-    <div className="bid-board">
-      <div className="bid-spotlights">
-        <BidCard bid={winner} label="Winner" />
-        <BidCard bid={standby} label="Standby" />
+    <div className="provider-market">
+      <div className="provider-market-head">
+        <div className="bid-spotlight">
+          <span>Winner</span>
+          <strong>{winner ? `${summarizeProvider(winner.provider)} · ${winner.strategy_family}` : "Waiting"}</strong>
+          <p>{winner?.model_id ?? winner?.role ?? "No selection yet"}</p>
+        </div>
+        <div className="bid-spotlight">
+          <span>Standby</span>
+          <strong>{standby ? `${summarizeProvider(standby.provider)} · ${standby.strategy_family}` : "Waiting"}</strong>
+          <p>{standby?.model_id ?? standby?.role ?? "No standby yet"}</p>
+        </div>
       </div>
-      <div className="bid-table-shell">
-        <table className="bid-table">
-          <thead>
-            <tr>
-              <th>Role</th>
-              <th>Strategy</th>
-              <th>Score</th>
-              <th>Risk</th>
-              <th>Cost</th>
-              <th>Runtime</th>
-              <th>Files</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ordered.map((bid) => {
-              const status = bid.bid_id === winnerBidId ? "running" : bid.bid_id === standbyBidId ? "ready" : bid.rejection_reason ? "failed" : "pending";
+      <div className="provider-market-grid">
+        <div className="provider-market-grid-head family-head">Strategy family</div>
+        {providerOrder.map((provider) => (
+          <div key={provider} className="provider-market-grid-head">
+            {summarizeProvider(provider)}
+          </div>
+        ))}
+        {families.map(([family, familyBids]) => (
+          <div key={family} className="provider-market-row">
+            <div className="provider-market-family">
+              <strong>{family}</strong>
+              <span>{familyBids.length} contenders</span>
+            </div>
+            {providerOrder.map((provider) => {
+              const bid = familyBids.find((item) => (item.provider || "system") === provider);
               return (
-                <tr key={bid.bid_id} className={bid.bid_id === winnerBidId ? "row-winner" : ""}>
-                  <td>{bid.role}</td>
-                  <td>
-                    <strong>{bid.strategy_family}</strong>
-                    <p>{bid.strategy_summary}</p>
-                    {bid.rejection_reason ? <span className="inline-warning">{bid.rejection_reason}</span> : null}
-                  </td>
-                  <td>{formatNumber(bid.score)}</td>
-                  <td>{formatNumber(bid.risk)}</td>
-                  <td>{formatNumber(bid.cost)}</td>
-                  <td>{formatRuntime(bid.estimated_runtime_seconds)}</td>
-                  <td>{bid.touched_files.join(", ") || "pending"}</td>
-                  <td>
-                    <StatusBadge value={status} quiet />
-                  </td>
-                </tr>
+                <BidCell
+                  key={`${family}-${provider}`}
+                  bid={bid}
+                  winnerBidId={winnerBidId}
+                  standbyBidId={standbyBidId}
+                />
               );
             })}
-          </tbody>
-        </table>
+          </div>
+        ))}
       </div>
     </div>
   );

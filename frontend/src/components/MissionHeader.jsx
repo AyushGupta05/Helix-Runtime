@@ -1,6 +1,25 @@
 import StatusBadge from "./StatusBadge";
+import { formatCurrency, formatInteger, summarizeProvider } from "../lib/format";
 
-export default function MissionHeader({ mission, busy, onPause, onResume, onCancel }) {
+function Metric({ label, value, emphasis = false }) {
+  return (
+    <div className={`mission-metric ${emphasis ? "mission-metric-strong" : ""}`}>
+      <span>{label}</span>
+      <strong>{value || "n/a"}</strong>
+    </div>
+  );
+}
+
+export default function MissionHeader({
+  mission,
+  usageSummary,
+  latestProposalTrace,
+  latestCheckpoint,
+  busy,
+  onPause,
+  onResume,
+  onCancel
+}) {
   const controls =
     mission.run_state === "running"
       ? [
@@ -16,9 +35,18 @@ export default function MissionHeader({ mission, busy, onPause, onResume, onCanc
           ? [{ label: "Cancelling...", action: null, type: "ghost", disabled: true }]
           : [];
 
+  const missionUsage = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
+  const latestValidation = mission.validation_report
+    ? `${mission.validation_report.passed ? "Passed" : "Failed"} ${mission.validation_report.task_id}`
+    : "No validation yet";
+  const currentProvider =
+    latestProposalTrace?.provider ||
+    mission.bids.find((bid) => bid.bid_id === mission.winner_bid_id)?.provider ||
+    "system";
+
   return (
-    <header className="mission-header panel">
-      <div className="mission-header-copy">
+    <header className="mission-ribbon panel">
+      <div className="mission-ribbon-main">
         <p className="eyebrow">Mission {mission.mission_id}</p>
         <h1>{mission.objective}</h1>
         <p className="mission-subtitle">{mission.repo_path}</p>
@@ -28,27 +56,27 @@ export default function MissionHeader({ mission, busy, onPause, onResume, onCanc
           {mission.outcome ? <StatusBadge value={mission.outcome} /> : null}
         </div>
       </div>
-      <div className="mission-header-meta">
-        <div className="artifact-pill">
-          <span>Branch</span>
-          <strong>{mission.branch_name ?? "pending"}</strong>
-        </div>
-        <div className="artifact-pill">
-          <span>Head</span>
-          <strong>{mission.head_commit?.slice(0, 10) ?? "n/a"}</strong>
-        </div>
-        <div className="mission-controls">
-          {controls.map((control) => (
-            <button
-              key={control.label}
-              className={`${control.type}-button`}
-              disabled={busy || control.disabled}
-              onClick={control.action ?? undefined}
-            >
-              {control.label}
-            </button>
-          ))}
-        </div>
+      <div className="mission-ribbon-metrics">
+        <Metric label="Active task" value={mission.active_task?.task_id ?? mission.active_task_id} emphasis />
+        <Metric label="Winner provider" value={summarizeProvider(currentProvider)} />
+        <Metric label="Latest validation" value={latestValidation} />
+        <Metric label="Latest checkpoint" value={latestCheckpoint?.commit_sha?.slice(0, 12) ?? mission.head_commit?.slice(0, 12)} />
+        <Metric label="Mission tokens" value={formatInteger(missionUsage.total_tokens)} emphasis />
+        <Metric label="Mission cost" value={formatCurrency(missionUsage.total_cost)} />
+        <Metric label="Branch" value={mission.branch_name} />
+        <Metric label="Head" value={mission.head_commit?.slice(0, 12)} />
+      </div>
+      <div className="mission-controls">
+        {controls.map((control) => (
+          <button
+            key={control.label}
+            className={`${control.type}-button`}
+            disabled={busy || control.disabled}
+            onClick={control.action ?? undefined}
+          >
+            {control.label}
+          </button>
+        ))}
       </div>
     </header>
   );

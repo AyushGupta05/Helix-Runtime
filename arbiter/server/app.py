@@ -117,6 +117,72 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
         return EventSourceResponse(event_generator())
 
+    @app.get("/api/missions/{mission_id}/trace")
+    def mission_trace(mission_id: str, request: Request, repo: str | None = None, after_id: int = 0, limit: int = 200):
+        try:
+            resolved_repo = request.app.state.mission_service.resolve_repo(mission_id, repo)
+        except MissionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
+        paths = build_mission_paths(resolved_repo, mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        store = MissionStore(paths.db_path)
+        try:
+            rows = store.fetch_trace_entries(mission_id, limit=min(limit, 500), after_id=after_id)
+            return [
+                {
+                    "id": row["id"],
+                    "trace_type": row["trace_type"],
+                    "title": row["title"],
+                    "message": row["message"],
+                    "status": row["status"],
+                    "task_id": row["task_id"],
+                    "bid_id": row["bid_id"],
+                    "provider": row["provider"],
+                    "lane": row["lane"],
+                    "payload": json.loads(row["payload_json"]).get("payload", {}),
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+        finally:
+            store.close()
+
+    @app.get("/api/missions/{mission_id}/diff")
+    def mission_diff(mission_id: str, request: Request, repo: str | None = None):
+        try:
+            resolved_repo = request.app.state.mission_service.resolve_repo(mission_id, repo)
+        except MissionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
+        paths = build_mission_paths(resolved_repo, mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        store = MissionStore(paths.db_path)
+        try:
+            view = store.get_mission_view(mission_id)
+            return {
+                "mission_id": mission_id,
+                "repo_path": resolved_repo,
+                "branch_name": view.get("branch_name"),
+                "head_commit": view.get("head_commit"),
+                "worktree_state": view.get("worktree_state", {}),
+                "accepted_checkpoint": view.get("accepted_checkpoints", [])[-1] if view.get("accepted_checkpoints") else None,
+            }
+        finally:
+            store.close()
+
+    @app.get("/api/missions/{mission_id}/usage")
+    def mission_usage(mission_id: str, request: Request, repo: str | None = None):
+        try:
+            resolved_repo = request.app.state.mission_service.resolve_repo(mission_id, repo)
+        except MissionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
+        paths = build_mission_paths(resolved_repo, mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        store = MissionStore(paths.db_path)
+        try:
+            return store.get_mission_view(mission_id).get("usage_summary", {})
+        finally:
+            store.close()
+
     dist_dir = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     assets_dir = dist_dir / "assets"
     if assets_dir.exists():

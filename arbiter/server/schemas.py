@@ -38,13 +38,24 @@ class BidView(BaseModel):
     bid_id: str
     task_id: str
     role: str
+    provider: str = "system"
+    lane: str | None = None
+    model_id: str | None = None
     strategy_family: str
     strategy_summary: str
     score: float | None = None
+    confidence: float | None = None
     risk: float
     cost: float
     estimated_runtime_seconds: float
     touched_files: list[str] = Field(default_factory=list)
+    validator_plan: list[str] = Field(default_factory=list)
+    rollback_plan: str | None = None
+    rollout_level: str | None = None
+    search_summary: str | None = None
+    policy_state: str | None = None
+    token_usage: dict[str, int] = Field(default_factory=dict)
+    cost_usage: dict[str, float] = Field(default_factory=dict)
     rejection_reason: str | None = None
     selected: bool = False
     standby: bool = False
@@ -79,6 +90,7 @@ class MissionView(BaseModel):
     decision_history: list[str] = Field(default_factory=list)
     failed_attempt_history: list[str] = Field(default_factory=list)
     tasks: list[TaskView] = Field(default_factory=list)
+    active_task: dict[str, Any] | None = None
     bids: list[BidView] = Field(default_factory=list)
     events: list[TimelineEventView] = Field(default_factory=list)
     validation_report: dict[str, Any] | None = None
@@ -88,6 +100,12 @@ class MissionView(BaseModel):
     recovery_state: dict[str, Any] = Field(default_factory=dict)
     stop_state: dict[str, Any] = Field(default_factory=dict)
     civic_audit_summary: dict[str, Any] = Field(default_factory=dict)
+    provider_market_summary: dict[str, Any] = Field(default_factory=dict)
+    usage_summary: dict[str, Any] = Field(default_factory=dict)
+    worktree_state: dict[str, Any] = Field(default_factory=dict)
+    accepted_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+    execution_steps: list[dict[str, Any]] = Field(default_factory=list)
+    recent_trace: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MissionHistoryEntry(BaseModel):

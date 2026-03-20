@@ -8,16 +8,30 @@ const EVENT_TYPES = [
   "task.created",
   "task.ready",
   "task.running",
+  "task.selected",
   "task.completed",
   "task.failed",
+  "market.opened",
+  "bid.generated",
+  "bid.retired",
   "bid.submitted",
   "bid.rejected",
   "bid.won",
   "standby.selected",
   "standby.promoted",
+  "simulation.rollout",
+  "provider.invocation.started",
+  "provider.invocation.completed",
+  "provider.invocation.failed",
+  "proposal.selected",
+  "diff.updated",
   "tool.executed",
+  "validation.started",
+  "validation.completed",
   "validation.passed",
   "validation.failed",
+  "recovery.started",
+  "recovery.completed",
   "recovery.round_opened",
   "checkpoint.accepted",
   "checkpoint.reverted"
@@ -103,6 +117,24 @@ export function openMissionEvents(missionId, repo, afterId, { onEvent, onError }
   });
   source.onerror = onError;
   return source;
+}
+
+export function getMissionTrace(missionId, repo, afterId = 0, limit = 200) {
+  const target = new URL(`/api/missions/${missionId}/trace`, window.location.origin);
+  target.searchParams.set("after_id", String(afterId));
+  target.searchParams.set("limit", String(limit));
+  if (repo) {
+    target.searchParams.set("repo", repo);
+  }
+  return apiRequest(`${target.pathname}${target.search}`);
+}
+
+export function getMissionDiff(missionId, repo) {
+  return apiRequest(withRepo(`/api/missions/${missionId}/diff`, repo));
+}
+
+export function getMissionUsage(missionId, repo) {
+  return apiRequest(withRepo(`/api/missions/${missionId}/usage`, repo));
 }
 
 export { EVENT_TYPES };
