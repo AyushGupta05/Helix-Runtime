@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from arbiter.core.contracts import RunState
+from arbiter.runtime.migrate import migrate_legacy_mission
 from arbiter.runtime.paths import build_mission_paths
 from arbiter.runtime.store import MissionStore
 from arbiter.server.manager import MissionConflictError, MissionNotFoundError, MissionService
@@ -21,14 +22,13 @@ from arbiter.server.schemas import MissionCreateRequest
 def create_app(strategy_backend_factory=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        service = MissionService(strategy_backend_factory=strategy_backend_factory)
-        app.state.mission_service = service
+        app.state.mission_service = MissionService(strategy_backend_factory=strategy_backend_factory)
         try:
             yield
         finally:
-            service.close()
+            app.state.mission_service.close()
 
-    app = FastAPI(title="Arbiter Mission Control", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Arbiter Mission Control", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:8000", "http://localhost:8000"],
@@ -36,96 +36,74 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    def get_service() -> MissionService:
-        service = getattr(app.state, "mission_service", None)
-        if service is None:
-            service = MissionService(strategy_backend_factory=strategy_backend_factory)
-            app.state.mission_service = service
-        return service
-
     @app.get("/api/health")
     def health() -> dict:
         return {"status": "ok"}
 
     @app.post("/api/missions")
-    def create_mission(payload: MissionCreateRequest):
-        service = get_service()
+    def create_mission(payload: MissionCreateRequest, request: Request):
         try:
-            return service.start(payload)
+            return request.app.state.mission_service.start(payload)
         except MissionConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/missions")
-    def list_missions():
-        service = get_service()
-        return service.list_history()
+    def list_missions(repo: str, request: Request):
+        return request.app.state.mission_service.list_history(repo)
 
     @app.get("/api/missions/{mission_id}")
-    def get_mission(mission_id: str):
-        service = get_service()
+    def get_mission(mission_id: str, repo: str, request: Request):
         try:
-            return service.snapshot(mission_id)
+            return request.app.state.mission_service.snapshot(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.post("/api/missions/{mission_id}/pause")
-    def pause_mission(mission_id: str):
-        service = get_service()
+    def pause_mission(mission_id: str, repo: str, request: Request):
         try:
-            return service.pause(mission_id)
+            return request.app.state.mission_service.pause(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.post("/api/missions/{mission_id}/resume")
-    def resume_mission(mission_id: str):
-        service = get_service()
+    def resume_mission_route(mission_id: str, repo: str, request: Request):
         try:
-            return service.resume(mission_id)
+            return request.app.state.mission_service.resume(repo, mission_id)
         except MissionConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.post("/api/missions/{mission_id}/cancel")
-    def cancel_mission(mission_id: str):
-        service = get_service()
+    def cancel_mission(mission_id: str, repo: str, request: Request):
         try:
-            return service.cancel(mission_id)
+            return request.app.state.mission_service.cancel(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.get("/api/missions/{mission_id}/events")
-    async def mission_events(mission_id: str, request: Request, after_id: int | None = None):
-        service = get_service()
+    async def mission_events(mission_id: str, repo: str, request: Request, after_id: int | None = None):
         try:
-            snapshot = service.snapshot(mission_id)
+            snapshot = request.app.state.mission_service.snapshot(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
         last_event_id = request.headers.get("last-event-id")
-        if after_id is not None:
-            last_seen = after_id
-        else:
-            last_seen = int(last_event_id) if last_event_id and last_event_id.isdigit() else snapshot.latest_event_id
+        last_seen = after_id if after_id is not None else int(last_event_id) if last_event_id and last_event_id.isdigit() else snapshot.latest_event_id
 
         async def event_generator():
             nonlocal last_seen
-            record = service.registry.get(mission_id)
-            assert record is not None
-            paths = build_mission_paths(record["repo_path"], mission_id)
+            paths = build_mission_paths(repo, mission_id)
+            migrate_legacy_mission(paths, mission_id)
             store = MissionStore(paths.db_path)
             try:
                 while True:
                     if await request.is_disconnected():
                         break
-                    rows = store.fetch_events_after(last_seen)
+                    rows = store.fetch_events_after(mission_id, last_seen)
                     for row in rows:
                         payload = json.loads(row["payload_json"])
                         last_seen = row["id"]
-                        yield {
-                            "id": str(row["id"]),
-                            "event": payload["event_type"],
-                            "data": json.dumps(payload),
-                        }
+                        yield {"id": str(row["id"]), "event": row["event_type"], "data": json.dumps(payload)}
                     control = store.fetch_control_state(mission_id)
                     if not rows and control and control["run_state"] == RunState.FINALIZED.value:
                         break

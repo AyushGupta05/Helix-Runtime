@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from arbiter.core.contracts import MissionSummary, RunState, utc_now
 from arbiter.mission.runner import build_mission_spec, resume_mission, start_mission
-from arbiter.runtime.paths import build_mission_paths
+from arbiter.runtime.migrate import migrate_legacy_mission
+from arbiter.runtime.paths import build_mission_paths, resolve_repo_path
 from arbiter.runtime.store import MissionStore
 from arbiter.server.materializer import materialize_mission_view
-from arbiter.server.registry import MissionRegistry
-from arbiter.server.schemas import MissionControlResponse, MissionCreateRequest
+from arbiter.server.schemas import MissionControlResponse, MissionCreateRequest, MissionHistoryEntry
 
 
 class MissionConflictError(RuntimeError):
@@ -27,15 +28,23 @@ class ActiveExecution:
     thread: threading.Thread
 
 
+def _mission_roots(repo_path: str) -> list[Path]:
+    repo = resolve_repo_path(repo_path)
+    root = repo / ".arbiter" / "missions"
+    if not root.exists():
+        return []
+    return [path for path in root.iterdir() if path.is_dir()]
+
+
 class MissionService:
     def __init__(self, strategy_backend_factory=None) -> None:
-        self.registry = MissionRegistry()
         self.strategy_backend_factory = strategy_backend_factory or (lambda: None)
         self._lock = threading.Lock()
         self._active: ActiveExecution | None = None
+        self._known_repos: dict[str, str] = {}
 
     def close(self) -> None:
-        self.registry.close()
+        return
 
     def start(self, request: MissionCreateRequest) -> MissionControlResponse:
         with self._lock:
@@ -52,54 +61,31 @@ class MissionService:
                 public_api_surface=request.public_api_surface,
             )
             paths = build_mission_paths(spec.repo_path, spec.mission_id)
-            now = utc_now().isoformat()
             store = MissionStore(paths.db_path)
             try:
                 store.upsert_mission(
                     mission_id=spec.mission_id,
-                    status="queued",
+                    status="running",
                     repo_path=spec.repo_path,
+                    objective=spec.objective,
                     branch_name=f"codex/arbiter-{spec.mission_id}",
                     outcome=None,
                     spec=spec,
-                    summary=MissionSummary(
-                        mission_id=spec.mission_id,
-                        repo_path=spec.repo_path,
-                        objective=spec.objective,
-                    ),
+                    summary=MissionSummary(mission_id=spec.mission_id, repo_path=spec.repo_path, objective=spec.objective),
+                    created_at=utc_now().isoformat(),
                 )
-                store.upsert_control_state(
-                    mission_id=spec.mission_id,
-                    run_state=RunState.RUNNING.value,
-                    requested_action=None,
-                    reason=None,
-                    updated_at=now,
-                )
+                store.upsert_control_state(spec.mission_id, RunState.RUNNING.value, None, None, utc_now().isoformat())
             finally:
                 store.close()
-            self.registry.upsert(
-                mission_id=spec.mission_id,
-                repo_path=spec.repo_path,
-                objective=spec.objective,
-                root_dir=paths.root_dir,
-                status="queued",
-                run_state=RunState.RUNNING.value,
-                created_at=now,
-                updated_at=now,
-            )
-            thread = threading.Thread(
-                target=self._run_start,
-                args=(spec.mission_id, request),
-                daemon=True,
-                name=f"arbiter-mission-{spec.mission_id}",
-            )
+            thread = threading.Thread(target=self._run_start, args=(spec.mission_id, request), daemon=True, name=f"arbiter-mission-{spec.mission_id}")
             self._active = ActiveExecution(spec.mission_id, spec.repo_path, thread)
+            self._known_repos[spec.mission_id] = spec.repo_path
             thread.start()
-            return MissionControlResponse(mission_id=spec.mission_id, run_state=RunState.RUNNING.value)
+            return MissionControlResponse(mission_id=spec.mission_id, run_state=RunState.RUNNING.value, repo_path=spec.repo_path)
 
     def _run_start(self, mission_id: str, request: MissionCreateRequest) -> None:
         try:
-            state = start_mission(
+            start_mission(
                 repo=request.repo,
                 objective=request.objective,
                 constraints=request.constraints,
@@ -111,105 +97,95 @@ class MissionService:
                 strategy_backend=self.strategy_backend_factory(),
                 mission_id=mission_id,
             )
-            self._sync_registry(mission_id, request.repo, request.objective, state.control.run_state.value)
-        except Exception:
-            self._sync_registry(mission_id, request.repo, request.objective, RunState.FINALIZED.value)
-            raise
         finally:
             with self._lock:
                 self._active = None
 
-    def resume(self, mission_id: str) -> MissionControlResponse:
+    def resolve_repo(self, mission_id: str, repo_path: str | None = None) -> str:
+        if repo_path:
+            return str(resolve_repo_path(repo_path))
+        if mission_id in self._known_repos:
+            return self._known_repos[mission_id]
+        if self._active and self._active.mission_id == mission_id:
+            return self._active.repo_path
+        raise MissionNotFoundError(mission_id)
+
+    def resume(self, repo_path: str | None, mission_id: str) -> MissionControlResponse:
+        resolved_repo = self.resolve_repo(mission_id, repo_path)
         with self._lock:
-            record = self.registry.get(mission_id)
-            if record is None:
-                raise MissionNotFoundError(mission_id)
             if self._active and self._active.thread.is_alive():
-                if self._active.mission_id == mission_id and record["run_state"] == RunState.PAUSED.value:
-                    self._active.thread.join(timeout=2.0)
-                if self._active.thread.is_alive():
-                    raise MissionConflictError("Only one active mission is supported per process in V1.")
-            self._update_control(record["repo_path"], mission_id, run_state=RunState.RUNNING.value, requested_action=None, reason=None)
-            thread = threading.Thread(
-                target=self._run_resume,
-                args=(mission_id, record["repo_path"], record["objective"]),
-                daemon=True,
-                name=f"arbiter-mission-{mission_id}",
-            )
-            self._active = ActiveExecution(mission_id, record["repo_path"], thread)
+                raise MissionConflictError("Only one active mission is supported per process in V1.")
+            self._update_control(resolved_repo, mission_id, RunState.RUNNING.value, None, None)
+            thread = threading.Thread(target=self._run_resume, args=(resolved_repo, mission_id), daemon=True, name=f"arbiter-mission-{mission_id}")
+            self._active = ActiveExecution(mission_id, resolved_repo, thread)
+            self._known_repos[mission_id] = resolved_repo
             thread.start()
-            return MissionControlResponse(mission_id=mission_id, run_state=RunState.RUNNING.value)
+            return MissionControlResponse(mission_id=mission_id, run_state=RunState.RUNNING.value, repo_path=resolved_repo)
 
-    def _run_resume(self, mission_id: str, repo_path: str, objective: str) -> None:
+    def _run_resume(self, repo_path: str, mission_id: str) -> None:
         try:
-            state = resume_mission(mission_id, repo_path, strategy_backend=self.strategy_backend_factory())
-            self._sync_registry(mission_id, repo_path, objective, state.control.run_state.value)
+            resume_mission(mission_id, repo_path, strategy_backend=self.strategy_backend_factory())
         finally:
             with self._lock:
                 self._active = None
 
-    def pause(self, mission_id: str) -> MissionControlResponse:
-        record = self.registry.get(mission_id)
-        if record is None:
-            raise MissionNotFoundError(mission_id)
-        self._update_control(record["repo_path"], mission_id, run_state=RunState.RUNNING.value, requested_action="pause", reason="user_paused")
-        self._sync_registry(mission_id, record["repo_path"], record["objective"], RunState.RUNNING.value)
-        return MissionControlResponse(mission_id=mission_id, run_state="pause_requested")
+    def pause(self, repo_path: str | None, mission_id: str) -> MissionControlResponse:
+        resolved_repo = self.resolve_repo(mission_id, repo_path)
+        self._ensure_mission_exists(resolved_repo, mission_id)
+        self._update_control(resolved_repo, mission_id, RunState.RUNNING.value, "pause", "user_paused")
+        return MissionControlResponse(mission_id=mission_id, run_state="pause_requested", repo_path=resolved_repo)
 
-    def cancel(self, mission_id: str) -> MissionControlResponse:
-        record = self.registry.get(mission_id)
-        if record is None:
-            raise MissionNotFoundError(mission_id)
-        self._update_control(record["repo_path"], mission_id, run_state=RunState.CANCELLING.value, requested_action="cancel", reason="user_cancelled")
-        self._sync_registry(mission_id, record["repo_path"], record["objective"], RunState.CANCELLING.value)
-        return MissionControlResponse(mission_id=mission_id, run_state=RunState.CANCELLING.value)
+    def cancel(self, repo_path: str | None, mission_id: str) -> MissionControlResponse:
+        resolved_repo = self.resolve_repo(mission_id, repo_path)
+        self._ensure_mission_exists(resolved_repo, mission_id)
+        self._update_control(resolved_repo, mission_id, RunState.CANCELLING.value, "cancel", "user_cancelled")
+        return MissionControlResponse(mission_id=mission_id, run_state=RunState.CANCELLING.value, repo_path=resolved_repo)
 
-    def list_history(self):
-        entries = []
-        for entry in self.registry.list():
+    def list_history(self, repo_path: str | None) -> list[MissionHistoryEntry]:
+        if repo_path is None:
+            repo_path = self._active.repo_path if self._active else next(iter(self._known_repos.values()), None)
+            if repo_path is None:
+                return []
+        entries: list[MissionHistoryEntry] = []
+        for mission_root in _mission_roots(repo_path):
+            mission_id = mission_root.name
             try:
-                view = materialize_mission_view(entry.repo_path, entry.mission_id)
-                entry.run_state = view.run_state
-                entry.outcome = view.outcome
-                entry.branch_name = view.branch_name
+                view = materialize_mission_view(repo_path, mission_id)
             except Exception:
-                pass
-            entries.append(entry)
-        return entries
+                continue
+            entries.append(
+                MissionHistoryEntry(
+                    mission_id=mission_id,
+                    repo_path=view.repo_path,
+                    objective=view.objective,
+                    created_at=utc_now().isoformat(),
+                    updated_at=utc_now().isoformat(),
+                    run_state=view.run_state,
+                    status=view.status or view.active_phase,
+                    outcome=view.outcome,
+                    branch_name=view.branch_name,
+                )
+            )
+            self._known_repos[mission_id] = view.repo_path
+        return sorted(entries, key=lambda item: item.updated_at, reverse=True)
 
-    def snapshot(self, mission_id: str):
-        record = self.registry.get(mission_id)
-        if record is None:
-            raise MissionNotFoundError(mission_id)
-        return materialize_mission_view(record["repo_path"], mission_id)
+    def snapshot(self, repo_path: str | None, mission_id: str):
+        resolved_repo = self.resolve_repo(mission_id, repo_path)
+        self._ensure_mission_exists(resolved_repo, mission_id)
+        self._known_repos[mission_id] = resolved_repo
+        return materialize_mission_view(resolved_repo, mission_id)
 
     def _update_control(self, repo_path: str, mission_id: str, run_state: str, requested_action: str | None, reason: str | None) -> None:
         paths = build_mission_paths(repo_path, mission_id)
+        migrate_legacy_mission(paths, mission_id)
         store = MissionStore(paths.db_path)
         try:
-            store.upsert_control_state(
-                mission_id=mission_id,
-                run_state=run_state,
-                requested_action=requested_action,
-                reason=reason,
-                updated_at=utc_now().isoformat(),
-            )
+            store.upsert_control_state(mission_id=mission_id, run_state=run_state, requested_action=requested_action, reason=reason, updated_at=utc_now().isoformat())
         finally:
             store.close()
 
-    def _sync_registry(self, mission_id: str, repo_path: str, objective: str, run_state: str) -> None:
-        view = materialize_mission_view(repo_path, mission_id)
-        record = self.registry.get(mission_id)
-        created_at = record["created_at"] if record else utc_now().isoformat()
-        self.registry.upsert(
-            mission_id=mission_id,
-            repo_path=repo_path,
-            objective=objective,
-            root_dir=build_mission_paths(repo_path, mission_id).root_dir,
-            status=view.active_phase,
-            run_state=run_state,
-            created_at=created_at,
-            updated_at=utc_now().isoformat(),
-            outcome=view.outcome,
-            branch_name=view.branch_name,
-        )
+    def _ensure_mission_exists(self, repo_path: str, mission_id: str) -> None:
+        paths = build_mission_paths(repo_path, mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        if not Path(paths.db_path).exists():
+            raise MissionNotFoundError(mission_id)

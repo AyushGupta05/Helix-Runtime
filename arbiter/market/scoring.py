@@ -20,7 +20,7 @@ def hard_filter_reason(bid: Bid, task: TaskNode, spec: MissionSpec, available_to
 
 
 def score_bid(bid: Bid) -> float:
-    base = 0.35 * bid.utility + 0.25 * bid.confidence - 0.20 * bid.risk - 0.15 * bid.cost
-    search = 0.10 * (bid.search_reward or bid.search_score or 0.0)
-    policy = 0.05 if bid.policy_feasibility.allowed else -0.30
+    base = 0.40 * bid.utility + 0.25 * bid.confidence - 0.20 * bid.risk - 0.15 * bid.cost
+    search = 0.10 * (bid.search_reward or bid.search_score or 0.0) if (bid.search_reward is not None or bid.search_score is not None) else 0.0
+    policy = -0.30 if not bid.policy_feasibility.allowed else 0.0
     return round(base + search + policy, 4)

@@ -209,6 +209,9 @@ class MissionRuntime:
         self.persistence.reconcile_jsonl()
         self.worktree.ensure()
         self._load_failed_families()
+        if self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED, RunState.PAUSED}:
+            self.state.control = MissionControlState(run_state=RunState.RUNNING, reason=self.state.control.reason)
+        self._sync_state("running")
         if self.state.accepted_checkpoint is None:
             checkpoint = AcceptedCheckpoint(
                 checkpoint_id=f"{self.spec.mission_id}-accepted-0",
@@ -218,8 +221,6 @@ class MissionRuntime:
             )
             self.state.accepted_checkpoint = checkpoint
             self._save_checkpoint(checkpoint)
-        if self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED, RunState.PAUSED}:
-            self.state.control = MissionControlState(run_state=RunState.RUNNING, reason=self.state.control.reason)
         if not self.store.fetch_all("events", self.spec.mission_id):
             self.emit("mission.started", "Mission runtime created.", repo_path=self.spec.repo_path, branch_name=self.branch_name)
         return self.state.active_phase.value if self.state.active_phase != ActivePhase.IDLE else ActivePhase.COLLECT.value

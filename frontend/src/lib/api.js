@@ -47,12 +47,20 @@ async function apiRequest(path, options = {}) {
   return response.json();
 }
 
-export function getMissions() {
-  return apiRequest("/api/missions");
+function withRepo(path, repo) {
+  const target = new URL(path, window.location.origin);
+  if (repo) {
+    target.searchParams.set("repo", repo);
+  }
+  return `${target.pathname}${target.search}`;
 }
 
-export function getMission(missionId) {
-  return apiRequest(`/api/missions/${missionId}`);
+export function getMissions(repo) {
+  return apiRequest(withRepo("/api/missions", repo));
+}
+
+export function getMission(missionId, repo) {
+  return apiRequest(withRepo(`/api/missions/${missionId}`, repo));
 }
 
 export function createMission(payload) {
@@ -62,20 +70,25 @@ export function createMission(payload) {
   });
 }
 
-export function pauseMission(missionId) {
-  return apiRequest(`/api/missions/${missionId}/pause`, { method: "POST" });
+export function pauseMission(missionId, repo) {
+  return apiRequest(withRepo(`/api/missions/${missionId}/pause`, repo), { method: "POST" });
 }
 
-export function resumeMission(missionId) {
-  return apiRequest(`/api/missions/${missionId}/resume`, { method: "POST" });
+export function resumeMission(missionId, repo) {
+  return apiRequest(withRepo(`/api/missions/${missionId}/resume`, repo), { method: "POST" });
 }
 
-export function cancelMission(missionId) {
-  return apiRequest(`/api/missions/${missionId}/cancel`, { method: "POST" });
+export function cancelMission(missionId, repo) {
+  return apiRequest(withRepo(`/api/missions/${missionId}/cancel`, repo), { method: "POST" });
 }
 
-export function openMissionEvents(missionId, afterId, { onEvent, onError }) {
-  const source = new EventSource(`/api/missions/${missionId}/events?after_id=${afterId}`);
+export function openMissionEvents(missionId, repo, afterId, { onEvent, onError }) {
+  const target = new URL(`/api/missions/${missionId}/events`, window.location.origin);
+  target.searchParams.set("after_id", String(afterId));
+  if (repo) {
+    target.searchParams.set("repo", repo);
+  }
+  const source = new EventSource(`${target.pathname}${target.search}`);
   EVENT_TYPES.forEach((eventType) => {
     source.addEventListener(eventType, (event) => {
       const payload = JSON.parse(event.data);

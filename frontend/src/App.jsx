@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -46,23 +46,25 @@ function HomePanel({ activeMissionId }) {
 
 function MissionRoute() {
   const { missionId = "" } = useParams();
+  const [searchParams] = useSearchParams();
+  const repo = searchParams.get("repo") ?? "";
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const missionQuery = useMissionStream(missionId);
+  const missionQuery = useMissionStream(missionId, repo);
 
   const controlMutation = useMutation({
     mutationFn: async (action) => {
       if (action === "pause") {
-        return pauseMission(missionId);
+        return pauseMission(missionId, repo);
       }
       if (action === "resume") {
-        return resumeMission(missionId);
+        return resumeMission(missionId, repo);
       }
-      return cancelMission(missionId);
+      return cancelMission(missionId, repo);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
-      queryClient.invalidateQueries({ queryKey: ["missions"] });
+      queryClient.invalidateQueries({ queryKey: ["mission", repo, missionId] });
+      queryClient.invalidateQueries({ queryKey: ["missions", repo] });
     }
   });
 
@@ -141,10 +143,18 @@ function MissionRoute() {
 function Shell() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [repoScope, setRepoScope] = useState(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem("arbiter:recent-repos") ?? "[]")[0] ?? "";
+    } catch {
+      return "";
+    }
+  });
   const missionsQuery = useQuery({
-    queryKey: ["missions"],
-    queryFn: getMissions,
-    refetchInterval: 3000
+    queryKey: ["missions", repoScope],
+    queryFn: () => getMissions(repoScope),
+    enabled: Boolean(repoScope),
+    refetchInterval: repoScope ? 3000 : false
   });
 
   const activeMissionId = useMemo(() => {
@@ -162,8 +172,9 @@ function Shell() {
       const recent = JSON.parse(window.localStorage.getItem("arbiter:recent-repos") ?? "[]");
       const merged = [variables.repo, ...recent.filter((value) => value !== variables.repo)].slice(0, 6);
       window.localStorage.setItem("arbiter:recent-repos", JSON.stringify(merged));
-      queryClient.invalidateQueries({ queryKey: ["missions"] });
-      navigate(`/missions/${response.mission_id}`);
+      setRepoScope(response.repo_path ?? variables.repo);
+      queryClient.invalidateQueries({ queryKey: ["missions", variables.repo] });
+      navigate(`/missions/${response.mission_id}?repo=${encodeURIComponent(response.repo_path ?? variables.repo)}`);
     }
   });
 
@@ -183,7 +194,7 @@ function Shell() {
         <MissionHistoryList
           missions={missionsQuery.data ?? []}
           loading={missionsQuery.isLoading}
-          onSelect={(missionId) => navigate(`/missions/${missionId}`)}
+          onSelect={(missionId) => navigate(`/missions/${missionId}?repo=${encodeURIComponent(repoScope)}`)}
         />
       </aside>
       <main className="main-stage">

@@ -8,7 +8,9 @@ import typer
 import uvicorn
 
 from arbiter.mission.runner import mission_status, resume_mission, start_mission
-from arbiter.runtime.paths import build_mission_paths
+from arbiter.runtime.migrate import migrate_legacy_mission
+from arbiter.runtime.paths import build_mission_paths, resolve_repo_path
+from arbiter.runtime.store import MissionStore
 from arbiter.server.app import create_app
 
 app = typer.Typer(add_completion=False)
@@ -57,6 +59,30 @@ def status(
     print(json.dumps(mission_status(mission_id, repo), indent=2))
 
 
+@mission_app.command("list")
+def list_missions(
+    repo: str = typer.Option(..., "--repo"),
+) -> None:
+    repo_path = resolve_repo_path(repo)
+    missions_root = repo_path / ".arbiter" / "missions"
+    if not missions_root.exists():
+        print("[]")
+        return
+    entries: list[dict[str, object]] = []
+    for mission_root in sorted(missions_root.iterdir()):
+        if not mission_root.is_dir():
+            continue
+        mission_id = mission_root.name
+        paths = build_mission_paths(str(repo_path), mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        store = MissionStore(paths.db_path)
+        try:
+            entries.append(store.get_mission_view(mission_id))
+        finally:
+            store.close()
+    print(json.dumps(entries, indent=2))
+
+
 @mission_app.command("events")
 def events(
     mission_id: str,
@@ -64,6 +90,7 @@ def events(
     follow: bool = typer.Option(False, "--follow"),
 ) -> None:
     paths = build_mission_paths(repo, mission_id)
+    migrate_legacy_mission(paths, mission_id)
     target = Path(paths.events_path)
     if not target.exists():
         raise typer.BadParameter(f"No events found for mission {mission_id}")

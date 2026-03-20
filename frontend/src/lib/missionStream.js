@@ -80,7 +80,7 @@ function mergeMissionEvent(snapshot, event) {
     case "task.completed":
       next = {
         ...next,
-        tasks: replaceTask(next.tasks, event.payload?.task_id, "completed")
+        tasks: replaceTask(next.tasks, event.payload?.task_id, "complete")
       };
       break;
     case "task.failed":
@@ -141,16 +141,16 @@ function mergeMissionEvent(snapshot, event) {
   return next;
 }
 
-export function useMissionStream(missionId) {
+export function useMissionStream(missionId, repo) {
   const queryClient = useQueryClient();
   const reconnectRef = useRef(null);
   const lastSeenRef = useRef(0);
   const invalidateRef = useRef(null);
 
   const missionQuery = useQuery({
-    queryKey: ["mission", missionId],
-    queryFn: () => getMission(missionId),
-    enabled: Boolean(missionId),
+    queryKey: ["mission", repo, missionId],
+    queryFn: () => getMission(missionId, repo),
+    enabled: Boolean(missionId && repo),
     refetchInterval: (query) =>
       ["running", "paused", "cancelling"].includes(query.state.data?.run_state)
         ? 4000
@@ -164,7 +164,7 @@ export function useMissionStream(missionId) {
   }, [missionQuery.data?.latest_event_id]);
 
   useEffect(() => {
-    if (!missionId || !missionQuery.isSuccess) {
+    if (!missionId || !repo || !missionQuery.isSuccess) {
       return undefined;
     }
     let disposed = false;
@@ -175,16 +175,16 @@ export function useMissionStream(missionId) {
         window.clearTimeout(invalidateRef.current);
       }
       invalidateRef.current = window.setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
-        queryClient.invalidateQueries({ queryKey: ["missions"] });
+        queryClient.invalidateQueries({ queryKey: ["mission", repo, missionId] });
+        queryClient.invalidateQueries({ queryKey: ["missions", repo] });
       }, 350);
     };
 
     const connect = () => {
-      source = openMissionEvents(missionId, lastSeenRef.current, {
+      source = openMissionEvents(missionId, repo, lastSeenRef.current, {
         onEvent: (event) => {
           lastSeenRef.current = Math.max(lastSeenRef.current, event.id ?? 0);
-          queryClient.setQueryData(["mission", missionId], (current) =>
+          queryClient.setQueryData(["mission", repo, missionId], (current) =>
             mergeMissionEvent(current, event)
           );
           scheduleRefresh();
@@ -195,7 +195,7 @@ export function useMissionStream(missionId) {
             return;
           }
           reconnectRef.current = window.setTimeout(() => {
-            queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+            queryClient.invalidateQueries({ queryKey: ["mission", repo, missionId] });
             connect();
           }, 1200);
         }
@@ -213,7 +213,7 @@ export function useMissionStream(missionId) {
         window.clearTimeout(invalidateRef.current);
       }
     };
-  }, [missionId, missionQuery.isSuccess, queryClient]);
+  }, [missionId, repo, missionQuery.isSuccess, queryClient]);
 
   return missionQuery;
 }
