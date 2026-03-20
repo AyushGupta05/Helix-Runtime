@@ -9,6 +9,28 @@ from typing import Iterable
 
 from arbiter.core.contracts import CapabilitySet, CommandResult, RepoSnapshot
 
+IGNORED_DIRECTORIES = {
+    ".git",
+    ".arbiter",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    ".pnpm-store",
+    ".yarn",
+    "coverage",
+}
+
+IGNORED_FILE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx"}
+
 
 def _run(command: list[str], cwd: str, timeout: int = 120) -> CommandResult:
     completed = subprocess.run(
@@ -28,13 +50,30 @@ def _run(command: list[str], cwd: str, timeout: int = 120) -> CommandResult:
     )
 
 
-def _iter_source_files(repo: Path) -> Iterable[Path]:
+def _prune_directories(directories: list[str]) -> None:
+    directories[:] = [name for name in directories if name not in IGNORED_DIRECTORIES]
+
+
+def _repo_walk(repo: Path) -> Iterable[tuple[Path, list[str], list[str]]]:
     for root, dirs, files in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in {".git", ".arbiter", ".venv", "node_modules", "__pycache__"}]
+        _prune_directories(dirs)
+        yield Path(root), dirs, files
+
+
+def _iter_source_files(repo: Path) -> Iterable[Path]:
+    for root, _, files in _repo_walk(repo):
         for file_name in files:
-            path = Path(root) / file_name
-            if path.suffix.lower() in {".py", ".ts", ".tsx", ".js", ".jsx"}:
+            path = root / file_name
+            if path.suffix.lower() in IGNORED_FILE_SUFFIXES:
                 yield path
+
+
+def _find_matching_file(repo: Path, pattern: str) -> bool:
+    for root, _, files in _repo_walk(repo):
+        for file_name in files:
+            if Path(file_name).match(pattern):
+                return True
+    return False
 
 
 class RepoStateCollector:
@@ -73,10 +112,28 @@ class RepoStateCollector:
         candidates = ["pyproject.toml", "requirements.txt", "setup.py", "package.json", "package-lock.json", "pnpm-lock.yaml"]
         return [name for name in candidates if (self.repo / name).exists()]
 
+    def _risky_paths(self) -> list[str]:
+        markers = ("migrations", "alembic", "schema", "config", "settings", "api", "public")
+        risky: list[str] = []
+        for path in _iter_source_files(self.repo):
+            relative = str(path.relative_to(self.repo))
+            if any(marker in relative.lower() for marker in markers):
+                risky.append(relative)
+        return risky[:10]
+
+    def _protected_interfaces(self) -> list[str]:
+        protected: list[str] = []
+        for path in _iter_source_files(self.repo):
+            relative = str(path.relative_to(self.repo))
+            lowered = relative.lower()
+            if any(marker in lowered for marker in ("api", "public", "sdk", "client")):
+                protected.append(relative)
+        return protected[:10]
+
     def _tree_summary(self) -> list[str]:
         paths = []
         for path in sorted(self.repo.iterdir()):
-            if path.name in {".git", ".arbiter", ".venv", "node_modules"}:
+            if path.name in IGNORED_DIRECTORIES:
                 continue
             paths.append(path.name)
         return paths[:50]
@@ -120,7 +177,7 @@ class RepoStateCollector:
         return results
 
     def _detect_capabilities(self) -> CapabilitySet:
-        if (self.repo / "pyproject.toml").exists() or (self.repo / "tests").exists() or any(self.repo.rglob("test_*.py")):
+        if (self.repo / "pyproject.toml").exists() or (self.repo / "tests").exists() or _find_matching_file(self.repo, "test_*.py"):
             return self._detect_python()
         if (self.repo / "package.json").exists():
             return self._detect_tsjs()
@@ -146,6 +203,8 @@ class RepoStateCollector:
             lint_commands=lint_commands,
             static_commands=static_commands,
             benchmark_commands=benchmark_commands,
+            risky_paths=self._risky_paths(),
+            protected_interfaces=self._protected_interfaces(),
         )
 
     def _detect_tsjs(self) -> CapabilitySet:
@@ -169,4 +228,6 @@ class RepoStateCollector:
             static_commands=static_commands,
             benchmark_commands=benchmark_commands,
             is_single_package_tsjs=True,
+            risky_paths=self._risky_paths(),
+            protected_interfaces=self._protected_interfaces(),
         )

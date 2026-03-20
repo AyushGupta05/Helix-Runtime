@@ -128,7 +128,9 @@ class DefaultStrategyBackend:
         mission_objective: str,
         candidate_files: dict[str, str],
         failure_context: str | None = None,
+        preview: bool = False,
     ) -> tuple[EditProposal, ModelInvocationResult]:
+        del preview
         if not candidate_files:
             return EditProposal(summary="No candidate files available.", files=[], notes=["no_candidate_files"]), ModelInvocationResult(content="{}", token_usage={}, cost_usage={})
         lane = "test_gen" if task.task_type.value == "test" else "perf_reason" if "perf" in task.task_type.value else "bid_deep"
@@ -174,9 +176,11 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         mission_objective: str,
         candidate_files: dict[str, str],
         failure_context: str | None = None,
+        preview: bool = False,
     ) -> tuple[EditProposal, ModelInvocationResult]:
         proposal = self.scripted[self.index]
-        self.index = min(self.index + 1, len(self.scripted) - 1)
+        if not preview:
+            self.index = min(self.index + 1, len(self.scripted) - 1)
         return proposal, ModelInvocationResult(content=proposal.model_dump_json(), token_usage={"input_tokens": 0, "output_tokens": 0}, cost_usage={"usd": 0.0})
 
 

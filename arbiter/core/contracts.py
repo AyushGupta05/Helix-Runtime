@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -16,6 +16,7 @@ class MissionOutcome(str, Enum):
     PARTIAL_SUCCESS = "partial_success"
     FAILED_SAFE_STOP = "failed_safe_stop"
     FAILED_EXECUTION = "failed_execution"
+    POLICY_BLOCKED = "policy_blocked"
 
 
 class RunState(str, Enum):
@@ -32,6 +33,8 @@ class ActivePhase(str, Enum):
     DECOMPOSE = "decompose"
     SELECT_TASK = "select_task"
     MARKET = "market"
+    SIMULATE = "simulate"
+    SELECT = "select"
     EXECUTE = "execute"
     VALIDATE = "validate"
     RECOVER = "recover"
@@ -47,7 +50,7 @@ class TaskStatus(str, Enum):
     PENDING = "pending"
     READY = "ready"
     RUNNING = "running"
-    COMPLETED = "completed"
+    COMPLETED = "complete"
     FAILED = "failed"
     SKIPPED = "skipped"
 
@@ -64,7 +67,7 @@ class TaskType(str, Enum):
 
 class RolloutLevel(str, Enum):
     PAPER = "paper"
-    CHEAP_PARTIAL = "cheap_partial"
+    PARTIAL = "partial"
     SANDBOX = "sandbox"
 
 
@@ -72,11 +75,36 @@ class ApprovalMode(str, Enum):
     HARD_POLICY_ONLY = "hard_policy_only"
 
 
+class PolicyState(str, Enum):
+    CLEAR = "clear"
+    RESTRICTED = "restricted"
+    BLOCKED = "blocked"
+
+
+class BidStatus(str, Enum):
+    GENERATED = "generated"
+    REJECTED = "rejected"
+    SIMULATED = "simulated"
+    WINNER = "winner"
+    STANDBY = "standby"
+    EXECUTING = "executing"
+    FAILED = "failed"
+    RETIRED = "retired"
+
+
+class ActionStatus(str, Enum):
+    APPROVED = "approved"
+    BLOCKED = "blocked"
+    EXECUTED = "executed"
+
+
 class StopPolicy(BaseModel):
     max_runtime_minutes: int = 10
     max_recovery_rounds: int = 3
     max_policy_collisions: int = 2
     max_file_churn: int = 8
+    max_diff_lines: int = 600
+    max_file_scope: int = 8
 
 
 class RiskPolicy(BaseModel):
@@ -84,6 +112,7 @@ class RiskPolicy(BaseModel):
     require_tests_for_bugfix: bool = True
     require_benchmark_for_perf_claim: bool = True
     block_public_api_changes: bool = True
+    max_risk_score: float = 0.85
 
 
 class ApprovalPolicy(BaseModel):
@@ -94,6 +123,7 @@ class SuccessCriteria(BaseModel):
     description: str
     required_validators: list[str] = Field(default_factory=list)
     required_signals: list[str] = Field(default_factory=list)
+    acceptance_checks: list[str] = Field(default_factory=list)
 
 
 class MissionSpec(BaseModel):
@@ -104,7 +134,19 @@ class MissionSpec(BaseModel):
     preferences: list[str] = Field(default_factory=list)
     max_runtime_minutes: int = 10
     allowed_tool_classes: list[str] = Field(
-        default_factory=lambda: ["read", "search", "edit", "diff", "test", "lint", "static", "benchmark", "revert"]
+        default_factory=lambda: [
+            "read_file",
+            "search_code",
+            "edit_file",
+            "run_tests",
+            "run_lint",
+            "static_analysis",
+            "benchmark",
+            "revert_to_checkpoint",
+            "fetch_ci_status",
+            "open_pr_metadata",
+            "request_patch_apply",
+        ]
     )
     benchmark_requirement: str | None = None
     protected_paths: list[str] = Field(default_factory=list)
@@ -124,6 +166,8 @@ class MissionPaths(BaseModel):
     reports_dir: str
     replay_dir: str
     worktree_dir: str
+    scratch_worktrees_dir: str
+    legacy_root_dir: str | None = None
 
 
 class MissionSummary(BaseModel):
@@ -140,6 +184,9 @@ class MissionSummary(BaseModel):
     token_usage: dict[str, int] = Field(default_factory=dict)
     cost_usage: dict[str, float] = Field(default_factory=dict)
     audit_summary: dict[str, Any] = Field(default_factory=dict)
+    current_risk_score: float = 0.0
+    stop_reason: str | None = None
+    civic_audit_ids: list[str] = Field(default_factory=list)
 
 
 class CommandResult(BaseModel):
@@ -158,6 +205,8 @@ class CapabilitySet(BaseModel):
     benchmark_commands: list[list[str]] = Field(default_factory=list)
     is_single_package_tsjs: bool = False
     unsupported_reason: str | None = None
+    risky_paths: list[str] = Field(default_factory=list)
+    protected_interfaces: list[str] = Field(default_factory=list)
 
 
 class RepoSnapshot(BaseModel):
@@ -177,6 +226,23 @@ class RepoSnapshot(BaseModel):
     initial_static_results: list[CommandResult] = Field(default_factory=list)
 
 
+class PolicyDecision(BaseModel):
+    allowed: bool
+    state: PolicyState = PolicyState.CLEAR
+    reasons: list[str] = Field(default_factory=list)
+    risk_score: float = 0.0
+    validators_required: list[str] = Field(default_factory=list)
+    blocked_files: list[str] = Field(default_factory=list)
+
+
+class GovernanceSnapshot(BaseModel):
+    policy_state: PolicyState = PolicyState.CLEAR
+    stop_reason: str | None = None
+    current_risk_score: float = 0.0
+    last_decision: PolicyDecision | None = None
+    active_guardrails: list[str] = Field(default_factory=list)
+
+
 class TaskNode(BaseModel):
     task_id: str
     title: str
@@ -191,7 +257,14 @@ class TaskNode(BaseModel):
     runtime_class: Literal["small", "medium", "large"] = "small"
     expected_artifact: str | None = None
     candidate_files: list[str] = Field(default_factory=list)
+    policy_constraints: list[str] = Field(default_factory=list)
+    strategy_families: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
+
+    @property
+    def required(self) -> bool:
+        return self.requirement_level == TaskRequirementLevel.REQUIRED
 
 
 class Bid(BaseModel):
@@ -213,10 +286,60 @@ class Bid(BaseModel):
     rollback_plan: str
     dependency_impact: str = "localized"
     rollout_level: RolloutLevel = RolloutLevel.PAPER
+    mutation_parent_id: str | None = None
+    mutation_kind: str | None = None
+    policy_feasibility: PolicyDecision = Field(default_factory=lambda: PolicyDecision(allowed=True))
+    civic_permission_footprint: list[str] = Field(default_factory=list)
     score: float | None = None
+    search_score: float | None = None
+    search_reward: float | None = None
+    search_summary: str | None = None
     rejection_reason: str | None = None
     can_be_standby: bool = True
     promotion_hints: list[str] = Field(default_factory=list)
+    status: BidStatus = BidStatus.GENERATED
+
+
+class SimulationSummary(BaseModel):
+    task_id: str
+    total_bids: int = 0
+    valid_bids: int = 0
+    paper_rollouts: int = 0
+    partial_rollouts: int = 0
+    sandbox_rollouts: int = 0
+    budget_used: int = 0
+    risk_forecast: float = 0.0
+    validator_stability: float = 0.0
+    rollback_safety: float = 0.0
+    policy_confidence: float = 0.0
+    summary: str = ""
+
+
+class ActionIntent(BaseModel):
+    action_type: str
+    task_id: str
+    bid_id: str | None = None
+    file_scope: list[str] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CivicAuditRecord(BaseModel):
+    audit_id: str
+    mission_id: str
+    task_id: str
+    action_type: str
+    status: ActionStatus
+    policy_state: PolicyState
+    reasons: list[str] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ActionOutcome(BaseModel):
+    success: bool
+    result: dict[str, Any] = Field(default_factory=dict)
+    audit: CivicAuditRecord
+    command_result: CommandResult | None = None
 
 
 class ExecutionStep(BaseModel):
@@ -230,7 +353,13 @@ class ExecutionStep(BaseModel):
     output_payload: dict[str, Any] = Field(default_factory=dict)
     approved: bool = True
     success: bool = True
+    civic_audit_id: str | None = None
+    governance_state: PolicyState = PolicyState.CLEAR
     created_at: datetime = Field(default_factory=utc_now)
+
+    @property
+    def action(self) -> str:
+        return self.action_type
 
 
 class ValidationReport(BaseModel):
@@ -242,6 +371,12 @@ class ValidationReport(BaseModel):
     api_guard_passed: bool = True
     benchmark_delta: float | None = None
     notes: list[str] = Field(default_factory=list)
+    policy_conformance: bool = True
+    validator_deltas: list[str] = Field(default_factory=list)
+
+    @property
+    def details(self) -> list[str]:
+        return self.notes
 
 
 class FailureContext(BaseModel):
@@ -251,6 +386,12 @@ class FailureContext(BaseModel):
     diff_summary: str
     validator_deltas: list[str] = Field(default_factory=list)
     recommended_recovery_scope: str
+    strategy_family: str | None = None
+    attempted_file_scope: list[str] = Field(default_factory=list)
+    rollout_evidence: list[str] = Field(default_factory=list)
+    civic_action_history: list[str] = Field(default_factory=list)
+    rollback_result: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class AcceptedCheckpoint(BaseModel):
@@ -259,6 +400,12 @@ class AcceptedCheckpoint(BaseModel):
     commit_sha: str
     created_at: datetime = Field(default_factory=utc_now)
     summary: str | None = None
+    diff_summary: str = ""
+    affected_files: list[str] = Field(default_factory=list)
+    validator_results: list[str] = Field(default_factory=list)
+    strategy_family: str | None = None
+    civic_audit_ids: list[str] = Field(default_factory=list)
+    rollback_pointer: str | None = None
 
 
 class MissionEvent(BaseModel):
@@ -288,9 +435,11 @@ class ArbiterState(BaseModel):
     mission: MissionSpec
     summary: MissionSummary = Field(default_factory=lambda: MissionSummary(mission_id=""))
     control: MissionControlState = Field(default_factory=MissionControlState)
+    governance: GovernanceSnapshot = Field(default_factory=GovernanceSnapshot)
     active_phase: ActivePhase = ActivePhase.IDLE
     active_bid_round: int = 0
     active_bids: list[Bid] = Field(default_factory=list)
+    simulation_summary: SimulationSummary | None = None
     winner_bid_id: str | None = None
     standby_bid_id: str | None = None
     repo_snapshot: RepoSnapshot | None = None
@@ -300,6 +449,8 @@ class ArbiterState(BaseModel):
     standby_bid: Bid | None = None
     failure_context: FailureContext | None = None
     validation_report: ValidationReport | None = None
+    accepted_checkpoint: AcceptedCheckpoint | None = None
+    last_civic_audit: CivicAuditRecord | None = None
     recovery_round: int = 0
     policy_collisions: int = 0
     runtime_seconds: float = 0.0
@@ -309,3 +460,11 @@ class ArbiterState(BaseModel):
     latest_diff_summary: str = ""
     no_valid_contenders: bool = False
     outcome: MissionOutcome | None = None
+
+    @model_validator(mode="after")
+    def sync_summary(self) -> ArbiterState:
+        self.summary.current_risk_score = self.governance.current_risk_score
+        self.summary.stop_reason = self.governance.stop_reason
+        if self.last_civic_audit and self.last_civic_audit.audit_id not in self.summary.civic_audit_ids:
+            self.summary.civic_audit_ids.append(self.last_civic_audit.audit_id)
+        return self

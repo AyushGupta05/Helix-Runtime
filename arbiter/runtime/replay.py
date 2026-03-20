@@ -15,15 +15,16 @@ def replay_key(payload: dict[str, Any]) -> str:
 
 
 class ReplayManager:
-    def __init__(self, store: MissionStore, replay_dir: str, mode: str = "off") -> None:
+    def __init__(self, store: MissionStore, replay_dir: str, mode: str = "off", mission_id: str | None = None) -> None:
         self.store = store
         self.replay_dir = Path(replay_dir)
         self.replay_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
+        self.mission_id = mission_id
 
     def record(self, lane: str, prompt: dict[str, Any], response: dict[str, Any]) -> ReplayRecord:
         record = ReplayRecord(lane=lane, key=replay_key(prompt), prompt=prompt, response=response)
-        self.store.add_replay_record(lane=lane, replay_key=record.key, payload=record)
+        self.store.add_replay_record(mission_id=self.mission_id, lane=lane, replay_key=record.key, payload=record)
         target = self.replay_dir / f"{record.key}.json"
         target.write_text(record.model_dump_json(indent=2), encoding="utf-8")
         return record

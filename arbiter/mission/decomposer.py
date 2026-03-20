@@ -12,6 +12,7 @@ class GoalDecomposer:
         wants_perf = any(word in objective_lower for word in ("perf", "performance", "slow", "latency", "speed"))
 
         candidate_files = snapshot.complexity_hotspots[:3] or snapshot.changed_files[:3]
+        candidate_files = list(dict.fromkeys(candidate_files + snapshot.capabilities.risky_paths[:2]))
 
         if is_bugfix or wants_perf:
             tasks.append(
@@ -23,11 +24,15 @@ class GoalDecomposer:
                     success_criteria=SuccessCriteria(
                         description="Likely failure area is isolated from evidence.",
                         required_signals=["candidate_files"],
+                        acceptance_checks=["root_cause_evidence"],
                     ),
-                    allowed_tools=["read", "search", "diff"],
+                    allowed_tools=["read_file", "search_code"],
                     rollback_conditions=[],
                     validator_requirements=[],
                     candidate_files=candidate_files,
+                    policy_constraints=["repo_only"],
+                    strategy_families=["Speed", "Safe", "Quality", "Test"],
+                    acceptance_criteria=["candidate files identified", "protected boundaries recognized"],
                     status=TaskStatus.READY,
                 )
             )
@@ -43,11 +48,15 @@ class GoalDecomposer:
                     success_criteria=SuccessCriteria(
                         description="Fix lands without new failures.",
                         required_validators=["tests"],
+                        acceptance_checks=["tests_pass", "policy_conformant"],
                     ),
-                    allowed_tools=["read", "search", "edit", "diff", "test", "revert"],
+                    allowed_tools=["read_file", "search_code", "edit_file", "run_tests", "revert_to_checkpoint"],
                     rollback_conditions=["regression", "scope_drift"],
                     validator_requirements=["tests"],
                     candidate_files=candidate_files,
+                    policy_constraints=["protected_paths_respected", "public_api_guard"],
+                    strategy_families=["Safe", "Quality", "Test", "Speed"],
+                    acceptance_criteria=["tests pass", "no public api drift"],
                 )
             )
             tasks.append(
@@ -60,11 +69,15 @@ class GoalDecomposer:
                     success_criteria=SuccessCriteria(
                         description="Regression coverage exists for the fixed behavior.",
                         required_validators=["tests"],
+                        acceptance_checks=["coverage_added"],
                     ),
-                    allowed_tools=["read", "search", "edit", "test"],
+                    allowed_tools=["read_file", "search_code", "edit_file", "run_tests"],
                     rollback_conditions=["test_breakage"],
                     validator_requirements=["tests"],
                     candidate_files=[path for path in candidate_files if "test" in path or "spec" in path] or candidate_files,
+                    policy_constraints=["file_scope_bounded"],
+                    strategy_families=["Test", "Quality", "Safe"],
+                    acceptance_criteria=["regression test present"],
                 )
             )
 
@@ -79,11 +92,15 @@ class GoalDecomposer:
                     success_criteria=SuccessCriteria(
                         description="Structure improves without declared public API changes.",
                         required_validators=["tests", "lint"],
+                        acceptance_checks=["tests_pass", "lint_pass"],
                     ),
-                    allowed_tools=["read", "search", "edit", "diff", "test", "lint", "revert"],
+                    allowed_tools=["read_file", "search_code", "edit_file", "run_tests", "run_lint", "revert_to_checkpoint"],
                     rollback_conditions=["public_api_change", "regression"],
                     validator_requirements=["tests", "lint"],
                     candidate_files=candidate_files,
+                    policy_constraints=["public_api_guard"],
+                    strategy_families=["Quality", "Safe"],
+                    acceptance_criteria=["tests pass", "lint pass", "public api stable"],
                 )
             )
 
@@ -98,11 +115,15 @@ class GoalDecomposer:
                     success_criteria=SuccessCriteria(
                         description="A benchmark-backed optimization target is identified.",
                         required_validators=["benchmark"],
+                        acceptance_checks=["benchmark_target_identified"],
                     ),
-                    allowed_tools=["read", "search", "benchmark", "diff"],
+                    allowed_tools=["read_file", "search_code", "benchmark"],
                     rollback_conditions=[],
                     validator_requirements=["benchmark"],
                     candidate_files=candidate_files,
+                    policy_constraints=["benchmark_required"],
+                    strategy_families=["Performance", "Safe"],
+                    acceptance_criteria=["benchmark command available"],
                 )
             )
             tasks.append(
@@ -115,11 +136,15 @@ class GoalDecomposer:
                     success_criteria=SuccessCriteria(
                         description="Measured performance improves without breaking validators.",
                         required_validators=["benchmark", "tests"],
+                        acceptance_checks=["benchmark_improves", "tests_pass"],
                     ),
-                    allowed_tools=["read", "search", "edit", "diff", "benchmark", "test", "revert"],
+                    allowed_tools=["read_file", "search_code", "edit_file", "benchmark", "run_tests", "revert_to_checkpoint"],
                     rollback_conditions=["benchmark_regression", "regression"],
                     validator_requirements=["benchmark", "tests"],
                     candidate_files=candidate_files,
+                    policy_constraints=["benchmark_required", "rollback_ready"],
+                    strategy_families=["Performance", "Safe", "Quality"],
+                    acceptance_criteria=["benchmark improves", "tests pass"],
                 )
             )
 
@@ -133,12 +158,15 @@ class GoalDecomposer:
                 success_criteria=SuccessCriteria(
                     description="All required validators pass for the accepted diff.",
                     required_validators=["tests", "lint", "static"],
+                    acceptance_checks=["validators_green"],
                 ),
-                allowed_tools=["test", "lint", "static", "benchmark", "diff"],
-                rollback_conditions=["validation_failure"],
-                validator_requirements=["tests"],
+                allowed_tools=["run_tests", "run_lint", "static_analysis", "benchmark"],
+                rollback_conditions=["validation_failure", "policy_block"],
+                validator_requirements=["tests", "lint", "static"],
                 candidate_files=candidate_files,
+                policy_constraints=["guardrails_green"],
+                strategy_families=["Safe", "Test", "Quality"],
+                acceptance_criteria=["all validators pass", "guardrails clear"],
             )
         )
         return tasks
-

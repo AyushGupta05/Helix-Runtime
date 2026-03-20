@@ -71,10 +71,39 @@ class WorktreeManager:
             ) from exc
 
     def remove(self) -> None:
+        self.remove_path(str(self.worktree_path))
+
+    def remove_path(self, target_path: str) -> None:
         subprocess.run(
-            ["git", "worktree", "remove", "--force", str(self.worktree_path)],
+            ["git", "worktree", "remove", "--force", str(Path(target_path).resolve())],
             cwd=str(self.repo_path),
             check=False,
             capture_output=True,
             text=True,
         )
+
+    def ensure_detached(self, target_path: str, ref: str = "HEAD") -> None:
+        path = Path(target_path).resolve()
+        if path.exists() and (path / ".git").exists():
+            return
+        if path.exists() and not (path / ".git").exists():
+            rmtree(path, ignore_errors=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=str(self.repo_path),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(path), ref],
+                cwd=str(self.repo_path),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            details = (exc.stderr or exc.stdout or "git worktree add --detach failed").strip()
+            raise WorktreeSetupError(f"Failed to create scratch worktree for {self.repo_path}: {details}") from exc

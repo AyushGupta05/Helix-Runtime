@@ -16,8 +16,21 @@ def cluster_and_select(bids: list[Bid], per_family: int = 2) -> list[Bid]:
     for bid in bids:
         grouped[strategy_fingerprint(bid)].append(bid)
     selected: list[Bid] = []
+    family_first_pass: list[Bid] = []
     for family in grouped.values():
         ordered = sorted(family, key=lambda item: item.score or -999, reverse=True)
+        family_first_pass.extend(ordered[:1])
         selected.extend(ordered[:per_family])
-    return sorted(selected, key=lambda item: item.score or -999, reverse=True)
-
+    ordered_selected = sorted(selected, key=lambda item: item.score or -999, reverse=True)
+    seen_families: set[str] = set()
+    diversified: list[Bid] = []
+    for bid in sorted(family_first_pass, key=lambda item: item.score or -999, reverse=True):
+        if bid.strategy_family in seen_families:
+            continue
+        diversified.append(bid)
+        seen_families.add(bid.strategy_family)
+    for bid in ordered_selected:
+        if bid.bid_id in {item.bid_id for item in diversified}:
+            continue
+        diversified.append(bid)
+    return diversified
