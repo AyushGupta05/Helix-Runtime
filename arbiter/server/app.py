@@ -20,15 +20,18 @@ from arbiter.server.schemas import MissionCreateRequest
 
 
 def create_app(strategy_backend_factory=None) -> FastAPI:
+    service = MissionService(strategy_backend_factory=strategy_backend_factory)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.mission_service = MissionService(strategy_backend_factory=strategy_backend_factory)
+        app.state.mission_service = service
         try:
             yield
         finally:
-            app.state.mission_service.close()
+            service.close()
 
     app = FastAPI(title="Arbiter Mission Control", version="0.2.0", lifespan=lifespan)
+    app.state.mission_service = service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:8000", "http://localhost:8000"],
@@ -48,25 +51,25 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/missions")
-    def list_missions(repo: str, request: Request):
+    def list_missions(request: Request, repo: str | None = None):
         return request.app.state.mission_service.list_history(repo)
 
     @app.get("/api/missions/{mission_id}")
-    def get_mission(mission_id: str, repo: str, request: Request):
+    def get_mission(mission_id: str, request: Request, repo: str | None = None):
         try:
             return request.app.state.mission_service.snapshot(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.post("/api/missions/{mission_id}/pause")
-    def pause_mission(mission_id: str, repo: str, request: Request):
+    def pause_mission(mission_id: str, request: Request, repo: str | None = None):
         try:
             return request.app.state.mission_service.pause(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.post("/api/missions/{mission_id}/resume")
-    def resume_mission_route(mission_id: str, repo: str, request: Request):
+    def resume_mission_route(mission_id: str, request: Request, repo: str | None = None):
         try:
             return request.app.state.mission_service.resume(repo, mission_id)
         except MissionConflictError as exc:
@@ -75,14 +78,14 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.post("/api/missions/{mission_id}/cancel")
-    def cancel_mission(mission_id: str, repo: str, request: Request):
+    def cancel_mission(mission_id: str, request: Request, repo: str | None = None):
         try:
             return request.app.state.mission_service.cancel(repo, mission_id)
         except MissionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found") from exc
 
     @app.get("/api/missions/{mission_id}/events")
-    async def mission_events(mission_id: str, repo: str, request: Request, after_id: int | None = None):
+    async def mission_events(mission_id: str, request: Request, repo: str | None = None, after_id: int | None = None):
         try:
             snapshot = request.app.state.mission_service.snapshot(repo, mission_id)
         except MissionNotFoundError as exc:
@@ -92,7 +95,8 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
 
         async def event_generator():
             nonlocal last_seen
-            paths = build_mission_paths(repo, mission_id)
+            resolved_repo = request.app.state.mission_service.resolve_repo(mission_id, repo)
+            paths = build_mission_paths(resolved_repo, mission_id)
             migrate_legacy_mission(paths, mission_id)
             store = MissionStore(paths.db_path)
             try:
