@@ -92,6 +92,22 @@ def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path,
         assert body["bids"]
         assert body["events"]
         assert body["guardrail_state"]["policy_state"] in {"clear", "restricted", "blocked"}
+        assert body["usage_summary"]["mission"]["total_tokens"] >= 0
+        assert "worktree_state" in body
+        assert "recent_trace" in body
+        assert "provider_market_summary" in body
+
+        trace = client.get(f"/api/missions/{mission_id}/trace{repo_query(python_bug_repo)}")
+        assert trace.status_code == 200
+        assert any(item["trace_type"] == "proposal.selected" for item in trace.json())
+
+        diff = client.get(f"/api/missions/{mission_id}/diff{repo_query(python_bug_repo)}")
+        assert diff.status_code == 200
+        assert "worktree_state" in diff.json()
+
+        usage = client.get(f"/api/missions/{mission_id}/usage{repo_query(python_bug_repo)}")
+        assert usage.status_code == 200
+        assert "mission" in usage.json()
 
         history = client.get(f"/api/missions{repo_query(python_bug_repo)}")
         assert history.status_code == 200

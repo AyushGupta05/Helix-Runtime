@@ -49,12 +49,12 @@ export default function BidBoard({ bids, winnerBidId, standbyBidId, activeTaskId
       <div className="provider-market-head">
         <div className="bid-spotlight">
           <span>Winner</span>
-          <strong>{winner ? `${summarizeProvider(winner.provider)} · ${winner.strategy_family}` : "Waiting"}</strong>
+          <strong>{winner ? `${summarizeProvider(winner.provider)} - ${winner.strategy_family}` : "Waiting"}</strong>
           <p>{winner?.model_id ?? winner?.role ?? "No selection yet"}</p>
         </div>
         <div className="bid-spotlight">
           <span>Standby</span>
-          <strong>{standby ? `${summarizeProvider(standby.provider)} · ${standby.strategy_family}` : "Waiting"}</strong>
+          <strong>{standby ? `${summarizeProvider(standby.provider)} - ${standby.strategy_family}` : "Waiting"}</strong>
           <p>{standby?.model_id ?? standby?.role ?? "No standby yet"}</p>
         </div>
       </div>

@@ -60,9 +60,13 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     task_count = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     checkpoint_count = connection.execute("SELECT COUNT(*) FROM accepted_checkpoints").fetchone()[0]
     view_count = connection.execute("SELECT COUNT(*) FROM mission_view_cache").fetchone()[0]
+    invocation_count = connection.execute("SELECT COUNT(*) FROM model_invocations").fetchone()[0]
+    trace_count = connection.execute("SELECT COUNT(*) FROM trace_entries").fetchone()[0]
     assert task_count >= 1
     assert checkpoint_count >= 1
     assert view_count == 1
+    assert invocation_count >= 1
+    assert trace_count >= 1
     connection.close()
 
 
