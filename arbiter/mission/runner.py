@@ -70,7 +70,11 @@ class MissionRuntime:
         self.collector = RepoStateCollector(spec.repo_path)
         self.decomposer = GoalDecomposer()
         self.governance = GovernanceEngine()
-        self.simulation = SimulationFactory(self.config.max_parallel_bidders)
+        self.simulation = SimulationFactory(
+            max_workers=self.config.max_parallel_bidders,
+            backend=self.strategy_backend,
+            bidder_models=self.config.bidder_models,
+        )
         self.recovery = RecoveryEngine()
         self.civic = CivicRuntime(self.config)
         self.branch_name = f"codex/arbiter-{sanitize_branch_fragment(spec.mission_id)}"
@@ -315,6 +319,7 @@ class MissionRuntime:
         self.state.active_bid_round += 1
         failed = self.failed_families.setdefault(task.task_id, set())
         bids = self.simulation.generate(task, self.state.repo_snapshot)
+        self._merge_usage(self.simulation.market_token_usage, self.simulation.market_cost_usage)
         valid: list = []
         for bid in bids:
             decision = self.governance.evaluate_bid(task, bid, self.spec, failed)

@@ -56,6 +56,12 @@ class RuntimeConfig(BaseSettings):
 
     civic_url: str | None = Field(default=None, alias="CIVIC_URL")
     civic_token: str | None = Field(default=None, alias="CIVIC_TOKEN")
+    
+    bidder_models: list[str] = Field(
+        default_factory=lambda: ["triage", "bid_fast", "bid_deep"],
+        alias="ARBITER_BIDDER_MODELS",
+    )
+
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_model_triage: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL_TRIAGE")

@@ -23,15 +23,37 @@ ROLE_FAMILIES = {
 
 
 class SimulationFactory:
-    def __init__(self, max_workers: int = 8) -> None:
+    def __init__(self, max_workers: int = 8, backend=None, bidder_models: list[str] | None = None) -> None:
         self.max_workers = max_workers
+        self.backend = backend
+        self.bidder_models = bidder_models or []
+        self.market_token_usage: dict[str, int] = {}
+        self.market_cost_usage: dict[str, float] = {}
 
     def generate(self, task: TaskNode, snapshot: RepoSnapshot) -> list[Bid]:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [executor.submit(self._build_role_variants, role, task, snapshot) for role in ARCHETYPES]
+            llm_futures = []
+            if self.backend and self.bidder_models:
+                for model_lane in self.bidder_models:
+                    llm_futures.append(executor.submit(self._build_llm_bid, model_lane, task, snapshot))
+
+        self.market_token_usage.clear()
+        self.market_cost_usage.clear()
+        
         bids: list[Bid] = []
         for future in futures:
             bids.extend(future.result())
+        for future in llm_futures:
+            try:
+                bid, tokens, costs = future.result()
+                bids.append(bid)
+                for k, v in tokens.items():
+                    self.market_token_usage[k] = self.market_token_usage.get(k, 0) + v
+                for k, v in costs.items():
+                    self.market_cost_usage[k] = self.market_cost_usage.get(k, 0.0) + v
+            except Exception:
+                pass
         return bids
 
     def _build_role_variants(self, role: ArchetypeDefinition, task: TaskNode, snapshot: RepoSnapshot) -> list[Bid]:
@@ -72,6 +94,64 @@ class SimulationFactory:
                 base_id = bid.bid_id
             bids.append(bid)
         return bids
+
+    def _build_llm_bid(self, lane: str, task: TaskNode, snapshot: RepoSnapshot) -> tuple[Bid, dict, dict]:
+        import json
+        system = (
+            "You are an autonomous AI strategy bidder. Return only valid JSON with fields: "
+            '"strategy_summary" (short description), "exact_action" (tactical steps), '
+            '"utility" (0.0-1.0 float), "risk" (0.0-1.0 float), "confidence" (0.0-1.0 float), '
+            '"estimated_runtime_seconds" (int), "touched_files" (list of file paths).'
+        )
+        candidate_files = task.candidate_files or snapshot.complexity_hotspots[:3]
+        user = (
+            f"Task: {task.title}\n"
+            f"Type: {task.task_type.value}\n"
+            f"Candidate files: {', '.join(candidate_files)}\n"
+            "Generate a competitive bid strategy to solve this task safely and effectively."
+        )
+        result = self.backend.router.invoke(lane=lane, prompt={"system": system, "user": user})
+        
+        cleaned = result.content.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[-1].split("```")[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[-2].strip()
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+                
+        try:
+            data = json.loads(cleaned)
+        except Exception:
+            data = {}
+            
+        risk_val = float(data.get("risk", 0.3))
+        return Bid(
+            bid_id=uuid4().hex,
+            task_id=task.task_id,
+            role="AI-Bidder",
+            variant_id=f"llm-{lane}",
+            strategy_family=f"model-{lane}",
+            strategy_summary=data.get("strategy_summary", f"Custom strategy by {lane}"),
+            exact_action=data.get("exact_action", "Execute inferred AI plan"),
+            expected_benefit=float(data.get("utility", 0.7)),
+            utility=float(data.get("utility", 0.7)),
+            confidence=float(data.get("confidence", 0.7)),
+            risk=risk_val,
+            cost=0.3,
+            estimated_runtime_seconds=float(data.get("estimated_runtime_seconds", 60)),
+            touched_files=data.get("touched_files", candidate_files),
+            validator_plan=list(dict.fromkeys(task.validator_requirements or ["tests"])),
+            rollback_plan="Revert to checkpoint on failure.",
+            dependency_impact="localized" if len(data.get("touched_files", candidate_files)) <= 2 else "shared",
+            rollout_level=RolloutLevel.PARTIAL,
+            mutation_parent_id=None,
+            mutation_kind="llm_generated",
+            policy_feasibility=PolicyDecision(allowed=True, risk_score=risk_val),
+            civic_permission_footprint=list(task.allowed_tools),
+            promotion_hints=["validation_failure", "regression"],
+        )
+        return new_bid, result.token_usage, result.cost_usage
 
     def rollout_plan(self, task: TaskNode, bids: list[Bid], failure_count: int = 0) -> dict[str, list[str] | int]:
         ordered = sorted(bids, key=lambda item: (item.score or item.utility), reverse=True)
