@@ -468,7 +468,10 @@ def start_mission(
     Path(paths.metadata_path).write_text(json.dumps(spec.model_dump(mode="json"), indent=2), encoding="utf-8")
     runtime = MissionRuntime(spec, paths, strategy_backend=strategy_backend)
     try:
-        return runtime.run()
+        state = runtime.run()
+        final_status = "paused" if state.control.run_state == RunState.PAUSED else "finished"
+        runtime.persist(final_status)
+        return state
     finally:
         runtime.store.close()
 
@@ -487,7 +490,10 @@ def resume_mission(mission_id: str, repo: str, strategy_backend=None) -> Arbiter
     if checkpoint:
         runtime.state = ArbiterState.model_validate_json(checkpoint["state_json"])
     try:
-        return runtime.run()
+        state = runtime.run()
+        final_status = "paused" if state.control.run_state == RunState.PAUSED else "finished"
+        runtime.persist(final_status)
+        return state
     finally:
         runtime.store.close()
 

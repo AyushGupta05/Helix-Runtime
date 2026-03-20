@@ -1,0 +1,525 @@
+:root {
+  color-scheme: light;
+  --bg: #f4efe5;
+  --bg-accent: #efe4d2;
+  --panel: rgba(255, 251, 245, 0.92);
+  --panel-strong: rgba(252, 247, 240, 0.98);
+  --ink: #112033;
+  --muted: #526278;
+  --line: rgba(17, 32, 51, 0.12);
+  --accent: #005c6a;
+  --accent-soft: rgba(0, 92, 106, 0.12);
+  --success: #1c7c54;
+  --success-soft: rgba(28, 124, 84, 0.14);
+  --warning: #b56619;
+  --warning-soft: rgba(181, 102, 25, 0.15);
+  --danger: #b42318;
+  --danger-soft: rgba(180, 35, 24, 0.12);
+  --shadow: 0 22px 55px rgba(89, 75, 51, 0.12);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(199, 160, 110, 0.18), transparent 35%),
+    radial-gradient(circle at top right, rgba(0, 92, 106, 0.12), transparent 30%),
+    linear-gradient(180deg, var(--bg), #f8f5f0);
+  color: var(--ink);
+}
+
+button,
+input,
+textarea,
+summary {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: rgba(247, 240, 230, 0.85);
+  backdrop-filter: blur(12px);
+  padding: 28px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.sidebar-brand h1,
+.mission-header h1,
+.hero-panel h1 {
+  margin: 0;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  letter-spacing: -0.03em;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.74rem;
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+
+.panel,
+.panel-like,
+.hero-panel,
+.empty-panel {
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: var(--shadow);
+  border-radius: 22px;
+}
+
+.panel-like,
+.history,
+.composer {
+  padding: 18px;
+}
+
+.main-stage {
+  padding: 24px;
+  overflow: auto;
+}
+
+.hero-panel,
+.empty-panel {
+  padding: 42px;
+}
+
+.hero-copy,
+.hero-hint,
+.section-title p,
+.mission-subtitle,
+.history-item p,
+.panel-meta,
+.timeline-item p,
+.artifact-card p,
+.form-note {
+  color: var(--muted);
+}
+
+.composer-form,
+.advanced-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.composer-form label,
+.advanced-grid label {
+  display: grid;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.96rem;
+}
+
+input,
+textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fffdf8;
+  padding: 12px 14px;
+  color: var(--ink);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.advanced-drawer {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.advanced-drawer summary {
+  font-weight: 700;
+}
+
+.primary-button,
+.ghost-button,
+.danger-button {
+  border-radius: 999px;
+  padding: 10px 16px;
+  border: none;
+  transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.primary-button:hover,
+.ghost-button:hover,
+.danger-button:hover {
+  transform: translateY(-1px);
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #005c6a, #0d7283);
+  color: white;
+  box-shadow: 0 14px 28px rgba(0, 92, 106, 0.24);
+}
+
+.ghost-button {
+  background: rgba(17, 32, 51, 0.06);
+  color: var(--ink);
+}
+
+.danger-button {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.primary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.history-item {
+  text-align: left;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.58);
+  padding: 14px;
+}
+
+.history-item-head,
+.history-item-meta,
+.mission-badges,
+.panel-heading,
+.timeline-item-head,
+.task-node-head,
+.task-node-meta,
+.bid-spotlights,
+.bid-spotlight-metrics {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mission-room {
+  display: grid;
+  gap: 18px;
+}
+
+.mission-header {
+  padding: 22px;
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.mission-header-meta {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  justify-items: end;
+}
+
+.artifact-pill {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  min-width: 220px;
+  border-radius: 16px;
+  background: rgba(17, 32, 51, 0.05);
+}
+
+.mission-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.mission-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.9fr);
+  grid-template-areas:
+    "graph timeline"
+    "bids timeline"
+    "artifacts artifacts";
+  gap: 18px;
+}
+
+.panel {
+  padding: 18px;
+}
+
+.panel-graph {
+  grid-area: graph;
+}
+
+.panel-bids {
+  grid-area: bids;
+}
+
+.panel-timeline {
+  grid-area: timeline;
+}
+
+.panel-artifacts {
+  grid-area: artifacts;
+}
+
+.graph-shell {
+  height: 380px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.task-node {
+  min-width: 220px;
+  border-radius: 18px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+}
+
+.task-node-running {
+  box-shadow: 0 0 0 2px rgba(0, 92, 106, 0.18);
+}
+
+.task-node-completed {
+  background: rgba(28, 124, 84, 0.08);
+}
+
+.task-node-failed {
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.status-badge-quiet {
+  font-size: 0.68rem;
+  padding: 4px 8px;
+}
+
+.badge-neutral {
+  background: rgba(17, 32, 51, 0.08);
+  color: var(--ink);
+}
+
+.badge-running,
+.badge-market {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.badge-ready {
+  background: rgba(42, 97, 170, 0.12);
+  color: #25568e;
+}
+
+.badge-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.badge-warning,
+.badge-paused {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.bid-board,
+.timeline,
+.artifacts-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.bid-spotlight {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.empty-card {
+  opacity: 0.8;
+}
+
+.bid-table-shell {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.bid-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.bid-table th,
+.bid-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.bid-table td p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.row-winner {
+  background: rgba(0, 92, 106, 0.06);
+}
+
+.inline-warning,
+.warning-note {
+  color: var(--warning);
+}
+
+.error-note {
+  color: var(--danger);
+}
+
+.timeline-validation,
+.timeline-item,
+.artifact-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.timeline-list {
+  display: grid;
+  gap: 12px;
+  max-height: 680px;
+  overflow: auto;
+}
+
+.timeline-item {
+  animation: fade-slide 260ms ease;
+}
+
+.timeline-chip {
+  display: inline-flex;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: rgba(17, 32, 51, 0.06);
+  padding: 5px 9px;
+  font-size: 0.78rem;
+}
+
+.artifacts-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.artifact-card pre {
+  white-space: pre-wrap;
+  margin: 0;
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+}
+
+.artifact-bullets {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.artifact-list {
+  word-break: break-word;
+}
+
+.kv {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.empty-panel {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 420px;
+}
+
+@keyframes fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1280px) {
+  .mission-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "graph"
+      "bids"
+      "timeline"
+      "artifacts";
+  }
+
+  .artifacts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .mission-header {
+    flex-direction: column;
+  }
+
+  .mission-header-meta {
+    justify-items: stretch;
+  }
+
+  .artifacts-grid {
+    grid-template-columns: 1fr;
+  }
+}
