@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from arbiter.core.contracts import AcceptedCheckpoint, ArbiterState
+from arbiter.core.contracts import AcceptedCheckpoint, ArbiterState, utc_now
 from arbiter.runtime.store import MissionStore
 
 
@@ -9,7 +9,7 @@ class MissionCheckpointManager:
         self.store = store
 
     def save(self, label: str, state: ArbiterState) -> None:
-        self.store.add_checkpoint(label=label, state=state, created_at=state.mission.created_at.isoformat())
+        self.store.add_checkpoint(label=label, state=state, created_at=utc_now().isoformat())
 
 
 class RepoCheckpointManager:
@@ -22,4 +22,3 @@ class RepoCheckpointManager:
             accepted=accepted,
             payload=checkpoint,
         )
-

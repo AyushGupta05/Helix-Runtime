@@ -12,7 +12,7 @@ class MissionStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(db_path)
+        self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -77,6 +77,13 @@ class MissionStore:
                 lane TEXT,
                 replay_key TEXT,
                 payload_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS mission_control (
+                mission_id TEXT PRIMARY KEY,
+                run_state TEXT,
+                requested_action TEXT,
+                reason TEXT,
+                updated_at TEXT
             );
             """
         )
@@ -165,7 +172,44 @@ class MissionStore:
     def fetch_all(self, table: str) -> list[sqlite3.Row]:
         return self.connection.execute(f"SELECT * FROM {table}").fetchall()
 
+    def fetch_ordered(self, table: str, order_by: str) -> list[sqlite3.Row]:
+        return self.connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
+
     def fetch_latest_checkpoint(self) -> sqlite3.Row | None:
         return self.connection.execute(
             "SELECT * FROM mission_state_checkpoints ORDER BY id DESC LIMIT 1"
         ).fetchone()
+
+    def upsert_control_state(
+        self,
+        mission_id: str,
+        run_state: str,
+        requested_action: str | None,
+        reason: str | None,
+        updated_at: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO mission_control (mission_id, run_state, requested_action, reason, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(mission_id) DO UPDATE SET
+                run_state=excluded.run_state,
+                requested_action=excluded.requested_action,
+                reason=excluded.reason,
+                updated_at=excluded.updated_at
+            """,
+            (mission_id, run_state, requested_action, reason, updated_at),
+        )
+        self.connection.commit()
+
+    def fetch_control_state(self, mission_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM mission_control WHERE mission_id = ?",
+            (mission_id,),
+        ).fetchone()
+
+    def fetch_events_after(self, last_id: int = 0) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT * FROM events WHERE id > ? ORDER BY id ASC",
+            (last_id,),
+        ).fetchall()

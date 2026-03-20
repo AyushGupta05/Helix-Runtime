@@ -18,6 +18,26 @@ class MissionOutcome(str, Enum):
     FAILED_EXECUTION = "failed_execution"
 
 
+class RunState(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSED = "paused"
+    CANCELLING = "cancelling"
+    FINALIZED = "finalized"
+
+
+class ActivePhase(str, Enum):
+    IDLE = "idle"
+    COLLECT = "collect"
+    DECOMPOSE = "decompose"
+    SELECT_TASK = "select_task"
+    MARKET = "market"
+    EXECUTE = "execute"
+    VALIDATE = "validate"
+    RECOVER = "recover"
+    FINALIZE = "finalize"
+
+
 class TaskRequirementLevel(str, Enum):
     REQUIRED = "required"
     OPTIONAL = "optional"
@@ -108,6 +128,8 @@ class MissionPaths(BaseModel):
 
 class MissionSummary(BaseModel):
     mission_id: str
+    repo_path: str | None = None
+    objective: str | None = None
     outcome: MissionOutcome | None = None
     branch_name: str | None = None
     head_commit: str | None = None
@@ -247,6 +269,13 @@ class MissionEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class MissionControlState(BaseModel):
+    run_state: RunState = RunState.IDLE
+    requested_action: Literal["pause", "resume", "cancel"] | None = None
+    reason: str | None = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class ReplayRecord(BaseModel):
     lane: str
     key: str
@@ -258,6 +287,12 @@ class ReplayRecord(BaseModel):
 class ArbiterState(BaseModel):
     mission: MissionSpec
     summary: MissionSummary = Field(default_factory=lambda: MissionSummary(mission_id=""))
+    control: MissionControlState = Field(default_factory=MissionControlState)
+    active_phase: ActivePhase = ActivePhase.IDLE
+    active_bid_round: int = 0
+    active_bids: list[Bid] = Field(default_factory=list)
+    winner_bid_id: str | None = None
+    standby_bid_id: str | None = None
     repo_snapshot: RepoSnapshot | None = None
     tasks: list[TaskNode] = Field(default_factory=list)
     active_task_id: str | None = None
@@ -271,6 +306,6 @@ class ArbiterState(BaseModel):
     token_usage: dict[str, int] = Field(default_factory=dict)
     cost_usage: dict[str, float] = Field(default_factory=dict)
     decision_history: list[str] = Field(default_factory=list)
+    latest_diff_summary: str = ""
     no_valid_contenders: bool = False
     outcome: MissionOutcome | None = None
-
