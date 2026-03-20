@@ -91,6 +91,16 @@ class MissionRuntime:
         self.state.summary.branch_name = self.branch_name
         if self.state.accepted_checkpoint:
             self.state.summary.head_commit = self.state.accepted_checkpoint.commit_sha
+        control_row = self.store.fetch_control_state(self.spec.mission_id)
+        run_state = self.state.control.run_state.value
+        requested_action = self.state.control.requested_action
+        reason = self.state.control.reason
+        if control_row:
+            if not requested_action and control_row["requested_action"]:
+                requested_action = control_row["requested_action"]
+                reason = control_row["reason"] or reason
+            if run_state == RunState.RUNNING.value and control_row["run_state"] != RunState.RUNNING.value:
+                run_state = control_row["run_state"]
         self.store.upsert_mission(
             mission_id=self.spec.mission_id,
             status=status,
@@ -122,9 +132,9 @@ class MissionRuntime:
         )
         self.store.upsert_control_state(
             mission_id=self.spec.mission_id,
-            run_state=self.state.control.run_state.value,
-            requested_action=self.state.control.requested_action,
-            reason=self.state.control.reason,
+            run_state=run_state,
+            requested_action=requested_action,
+            reason=reason,
             updated_at=self.state.control.updated_at.isoformat(),
         )
         self.store.refresh_mission_view(self.spec.mission_id)

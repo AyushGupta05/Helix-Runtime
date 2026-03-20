@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -41,6 +42,26 @@ class LocalToolset:
     def _run_tool(self, command: list[str], timeout: int = 300) -> CommandResult:
         return _run(command, cwd=str(self.worktree), timeout=timeout)
 
+    def _run_tool_with_env(self, command: list[str], env_overrides: dict[str, str], timeout: int = 300) -> CommandResult:
+        env = os.environ.copy()
+        env.update(env_overrides)
+        completed = subprocess.run(
+            command,
+            cwd=str(self.worktree),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+        return CommandResult(
+            command=command,
+            exit_code=completed.returncode,
+            stdout=completed.stdout[-8000:],
+            stderr=completed.stderr[-8000:],
+            duration_seconds=0.0,
+        )
+
     def _include_path(self, relative_path: str) -> bool:
         path = Path(relative_path)
         if any(part in IGNORED_DIRECTORIES for part in path.parts):
@@ -61,6 +82,9 @@ class LocalToolset:
         return paths
 
     def run_tests(self, command: list[str]) -> CommandResult:
+        joined = " ".join(command).lower()
+        if "pytest" in joined:
+            return self._run_tool_with_env(command, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"})
         return self._run_tool(command)
 
     def run_lint(self, command: list[str]) -> CommandResult:
