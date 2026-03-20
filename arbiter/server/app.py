@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,19 +19,23 @@ from arbiter.server.schemas import MissionCreateRequest
 
 
 def create_app(strategy_backend_factory=None) -> FastAPI:
-    app = FastAPI(title="Arbiter Mission Control", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        service = MissionService(strategy_backend_factory=strategy_backend_factory)
+        app.state.mission_service = service
+        try:
+            yield
+        finally:
+            service.close()
+
+    app = FastAPI(title="Arbiter Mission Control", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:8000", "http://localhost:8000"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    service = MissionService(strategy_backend_factory=strategy_backend_factory)
-    app.state.mission_service = service
-
-    @app.on_event("shutdown")
-    def _shutdown() -> None:
-        service.close()
+    service: MissionService = app.state.mission_service
 
     @app.get("/api/health")
     def health() -> dict:

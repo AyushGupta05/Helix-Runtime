@@ -145,8 +145,14 @@ class MissionRuntime:
         if previous == RunState.PAUSED or self.state.control.run_state == RunState.PAUSED:
             self._set_control_state(RunState.RUNNING)
             self.emit("mission.resumed", "Mission resumed.", mission_id=self.spec.mission_id)
-        elif self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED} or not has_events:
-            self._set_control_state(RunState.RUNNING)
+        else:
+            if self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED}:
+                self._set_control_state(
+                    RunState.RUNNING,
+                    requested_action=self.state.control.requested_action,
+                    reason=self.state.control.reason,
+                )
+        if not has_events:
             self.emit("mission.started", "Mission runtime created.", repo_path=self.spec.repo_path, branch_name=self.branch_name)
         return self.state.active_phase.value if self.state.active_phase != ActivePhase.IDLE else ActivePhase.COLLECT.value
 

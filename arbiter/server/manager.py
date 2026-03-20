@@ -121,11 +121,14 @@ class MissionService:
 
     def resume(self, mission_id: str) -> MissionControlResponse:
         with self._lock:
-            if self._active and self._active.thread.is_alive():
-                raise MissionConflictError("Only one active mission is supported per process in V1.")
             record = self.registry.get(mission_id)
             if record is None:
                 raise MissionNotFoundError(mission_id)
+            if self._active and self._active.thread.is_alive():
+                if self._active.mission_id == mission_id and record["run_state"] == RunState.PAUSED.value:
+                    self._active.thread.join(timeout=2.0)
+                if self._active.thread.is_alive():
+                    raise MissionConflictError("Only one active mission is supported per process in V1.")
             self._update_control(record["repo_path"], mission_id, run_state=RunState.RUNNING.value, requested_action=None, reason=None)
             thread = threading.Thread(
                 target=self._run_resume,
