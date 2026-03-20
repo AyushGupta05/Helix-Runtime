@@ -11,3 +11,4 @@ build/
 node_modules/
 frontend/dist/
 frontend/node_modules/
+.claude/
