@@ -29,6 +29,26 @@ class ModelInvocationResult(BaseModel):
     cost_usage: dict[str, float] = Field(default_factory=dict)
 
 
+def _normalize_usage_metadata(usage: dict[str, Any] | None) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    if not usage:
+        return normalized
+    for key, value in usage.items():
+        if isinstance(value, bool):
+            normalized[key] = int(value)
+        elif isinstance(value, int):
+            normalized[key] = value
+        elif isinstance(value, float):
+            normalized[key] = int(value)
+        elif isinstance(value, dict):
+            for nested_key, nested_value in value.items():
+                if isinstance(nested_value, (int, float)) and not isinstance(nested_value, bool):
+                    normalized[f"{key}.{nested_key}"] = int(nested_value)
+        else:
+            continue
+    return normalized
+
+
 class BedrockModelRouter:
     def __init__(self, config: RuntimeConfig, replay: ReplayManager) -> None:
         self.config = config
@@ -38,20 +58,41 @@ class BedrockModelRouter:
     def _get_model(self, lane: str):
         lane_config = self.config.model_lanes[lane]
         if lane not in self._models:
-            if lane_config.provider != "bedrock":
-                raise ValueError(f"Unsupported active provider for V1: {lane_config.provider}")
-            if self.config.bedrock_profile:
-                os.environ["AWS_PROFILE"] = self.config.bedrock_profile
-            from langchain_aws import ChatBedrockConverse
+            if lane_config.provider == "bedrock":
+                if self.config.bedrock_profile:
+                    os.environ["AWS_PROFILE"] = self.config.bedrock_profile
+                from langchain_aws import ChatBedrockConverse
 
-            kwargs = {"model_id": lane_config.model_id, "region_name": self.config.bedrock_region, "temperature": lane_config.temperature}
-            if self.config.bedrock_access_key_id:
-                kwargs["aws_access_key_id"] = self.config.bedrock_access_key_id
-            if self.config.bedrock_secret_access_key:
-                kwargs["aws_secret_access_key"] = self.config.bedrock_secret_access_key
-            if self.config.bedrock_session_token:
-                kwargs["aws_session_token"] = self.config.bedrock_session_token
-            self._models[lane] = ChatBedrockConverse(**kwargs)
+                kwargs = {"model_id": lane_config.model_id, "region_name": self.config.bedrock_region, "temperature": lane_config.temperature}
+                if self.config.bedrock_access_key_id:
+                    kwargs["aws_access_key_id"] = self.config.bedrock_access_key_id
+                if self.config.bedrock_secret_access_key:
+                    kwargs["aws_secret_access_key"] = self.config.bedrock_secret_access_key
+                if self.config.bedrock_session_token:
+                    kwargs["aws_session_token"] = self.config.bedrock_session_token
+                self._models[lane] = ChatBedrockConverse(**kwargs)
+            elif lane_config.provider == "openai":
+                if not self.config.openai_api_key:
+                    raise ValueError("OPENAI_API_KEY is required when MODEL_PROVIDER=openai.")
+                from langchain_openai import ChatOpenAI
+
+                self._models[lane] = ChatOpenAI(
+                    model=lane_config.model_id,
+                    temperature=lane_config.temperature,
+                    api_key=self.config.openai_api_key,
+                )
+            elif lane_config.provider == "anthropic":
+                if not self.config.anthropic_api_key:
+                    raise ValueError("ANTHROPIC_API_KEY is required when MODEL_PROVIDER=anthropic.")
+                from langchain_anthropic import ChatAnthropic
+
+                self._models[lane] = ChatAnthropic(
+                    model=lane_config.model_id,
+                    temperature=lane_config.temperature,
+                    api_key=self.config.anthropic_api_key,
+                )
+            else:
+                raise ValueError(f"Unsupported provider: {lane_config.provider}")
         return self._models[lane]
 
     def invoke(self, lane: str, prompt: dict[str, Any]) -> ModelInvocationResult:
@@ -68,7 +109,7 @@ class BedrockModelRouter:
         content = response.content if isinstance(response.content, str) else json.dumps(response.content)
         result = ModelInvocationResult(
             content=content,
-            token_usage=getattr(response, "usage_metadata", {}) or {},
+            token_usage=_normalize_usage_metadata(getattr(response, "usage_metadata", {}) or {}),
             cost_usage={},
         )
         if self.replay.mode in {"record", "off"}:
@@ -147,4 +188,3 @@ def load_candidate_files(repo_path: str, files: list[str]) -> dict[str, str]:
         if path.exists() and path.is_file():
             loaded[relative] = path.read_text(encoding="utf-8", errors="ignore")
     return loaded
-
