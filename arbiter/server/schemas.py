@@ -22,6 +22,7 @@ class MissionControlResponse(BaseModel):
     run_state: str
     outcome: str | None = None
     branch_name: str | None = None
+    repo_path: str | None = None
 
 
 class TaskView(BaseModel):
@@ -61,10 +62,14 @@ class MissionView(BaseModel):
     mission_id: str
     repo_path: str
     objective: str
+    status: str | None = None
     outcome: str | None = None
     run_state: str
     active_phase: str
+    active_task_id: str | None = None
     active_bid_round: int
+    simulation_round: int = 0
+    recovery_round: int = 0
     branch_name: str | None = None
     head_commit: str | None = None
     latest_event_id: int = 0
@@ -77,6 +82,12 @@ class MissionView(BaseModel):
     bids: list[BidView] = Field(default_factory=list)
     events: list[TimelineEventView] = Field(default_factory=list)
     validation_report: dict[str, Any] | None = None
+    failure_context: dict[str, Any] | None = None
+    simulation_summary: dict[str, Any] | None = None
+    guardrail_state: dict[str, Any] = Field(default_factory=dict)
+    recovery_state: dict[str, Any] = Field(default_factory=dict)
+    stop_state: dict[str, Any] = Field(default_factory=dict)
+    civic_audit_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class MissionHistoryEntry(BaseModel):
