@@ -1,12 +1,29 @@
 from __future__ import annotations
 
-from typing import Callable
+import warnings
+from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
-
-from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from arbiter.core.contracts import ActionOutcome, ActionStatus, CivicAuditRecord, PolicyDecision, PolicyState
 from arbiter.runtime.config import RuntimeConfig
+
+if TYPE_CHECKING:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+
+def _load_multi_server_mcp_client():
+    # `langchain_core` still imports `pydantic.v1` during module import, which emits
+    # a Python 3.14 warning even though Arbiter uses Pydantic v2 models. Keep the
+    # import local and suppress that one upstream warning until LangChain removes it.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
+            category=UserWarning,
+        )
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    return MultiServerMCPClient
 
 
 class CivicRuntime:
@@ -19,6 +36,7 @@ class CivicRuntime:
     def client(self) -> MultiServerMCPClient:
         if not self.available():
             raise ValueError("Civic is not configured.")
+        MultiServerMCPClient = _load_multi_server_mcp_client()
         return MultiServerMCPClient(
             {
                 "civic": {
