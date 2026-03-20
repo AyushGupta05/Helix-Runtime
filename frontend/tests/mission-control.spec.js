@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const historyPayload = [];
+let historyPayload = [];
 
 const missionPayload = {
   mission_id: "mission-1",
@@ -42,6 +42,8 @@ const missionPayload = {
 };
 
 test.beforeEach(async ({ page }) => {
+  historyPayload = [];
+
   await page.addInitScript(() => {
     const eventSources = [];
     class MockEventSource extends EventTarget {
@@ -73,7 +75,7 @@ test.beforeEach(async ({ page }) => {
     };
   });
 
-  await page.route("**/api/missions", async (route) => {
+  await page.route("**/api/missions*", async (route) => {
     if (route.request().method() === "POST") {
       await route.fulfill({ json: { mission_id: "mission-1", run_state: "running" } });
       return;
@@ -81,30 +83,51 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({ json: historyPayload });
   });
 
-  await page.route("**/api/missions/mission-1", async (route) => {
+  await page.route("**/api/missions/mission-1*", async (route) => {
     await route.fulfill({ json: missionPayload });
   });
 
-  await page.route("**/api/missions/mission-1/pause", async (route) => {
+  await page.route("**/api/missions/mission-1/trace*", async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.route("**/api/missions/mission-1/diff*", async (route) => {
+    await route.fulfill({ json: { worktree_state: { changed_files: [] } } });
+  });
+
+  await page.route("**/api/missions/mission-1/usage*", async (route) => {
+    await route.fulfill({
+      json: {
+        mission: { total_tokens: 0, total_cost: 0 },
+        active_task: { total_tokens: 0, total_cost: 0 },
+        by_provider: {}
+      }
+    });
+  });
+
+  await page.route("**/api/missions/mission-1/pause*", async (route) => {
     await route.fulfill({ json: { mission_id: "mission-1", run_state: "pause_requested" } });
   });
 
-  await page.route("**/api/missions/mission-1/resume", async (route) => {
+  await page.route("**/api/missions/mission-1/resume*", async (route) => {
     await route.fulfill({ json: { mission_id: "mission-1", run_state: "running" } });
   });
 
-  await page.route("**/api/missions/mission-1/cancel", async (route) => {
+  await page.route("**/api/missions/mission-1/cancel*", async (route) => {
     await route.fulfill({ json: { mission_id: "mission-1", run_state: "cancelling" } });
   });
 });
 
 test("launches a mission and renders live event updates", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByText(/Launch with a prompt\. Open a live room only when you choose to\./i)).toBeVisible();
   await page.getByLabel("Repo Path").fill("C:\\repo");
   await page.getByLabel("Objective").fill("Fix checkout tests");
   await page.getByRole("button", { name: "Launch mission" }).click();
 
-  await expect(page.getByText("Fix checkout tests")).toBeVisible();
+  await expect(page.getByText("Live Bidding Arena")).toBeVisible();
+  await expect(page.getByText("Current Decision")).toBeVisible();
+  await expect(page.getByText("Live Event Strip")).toBeVisible();
   await page.waitForTimeout(150);
   await page.evaluate(() =>
     window.__emitMissionEvent(
@@ -120,10 +143,34 @@ test("launches a mission and renders live event updates", async ({ page }) => {
   await expect(page.getByText(/Standby promoted after failure/i)).toBeVisible();
 });
 
-test("keeps the control room after reload", async ({ page }) => {
-  await page.goto("/missions/mission-1");
-  await expect(page.getByText("Task Graph")).toBeVisible();
+test("keeps an active mission secondary until explicitly opened", async ({ page }) => {
+  historyPayload = [
+    {
+      mission_id: "mission-1",
+      repo_path: "C:\\repo",
+      objective: "Fix checkout tests",
+      run_state: "running",
+      outcome: null,
+      branch_name: "codex/arbiter-mission-1",
+      updated_at: "2026-03-20T10:00:00Z"
+    }
+  ];
+
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByText(/Launch with a prompt\. Open a live room only when you choose to\./i)).toBeVisible();
+  await expect(
+    page.locator(".launcher-active").getByRole("button", { name: "Open live room" })
+  ).toBeVisible();
+
+  await page.locator(".launcher-active").getByRole("button", { name: "Open live room" }).click();
+  await expect(page.getByText("Live Bidding Arena")).toBeVisible();
+});
+
+test("keeps the simplified control room after reload", async ({ page }) => {
+  await page.goto("/missions/mission-1?repo=C%3A%5Crepo");
+  await expect(page.getByText("Live Bidding Arena")).toBeVisible();
   await page.reload();
-  await expect(page.getByText("Bid Market")).toBeVisible();
-  await expect(page.getByText("Live Timeline")).toBeVisible();
+  await expect(page.getByText("Current Decision")).toBeVisible();
+  await expect(page.getByText("Repo State")).toBeVisible();
 });

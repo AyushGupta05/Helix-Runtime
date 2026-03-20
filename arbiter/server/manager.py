@@ -160,16 +160,39 @@ class MissionService:
             mission_id = mission_root.name
             try:
                 self._normalize_mission_state(str(repo_path), mission_id)
-                view = materialize_mission_view(repo_path, mission_id)
+                paths = build_mission_paths(repo_path, mission_id)
+                migrate_legacy_mission(paths, mission_id)
+                store = MissionStore(paths.db_path)
+                try:
+                    view = materialize_mission_view(repo_path, mission_id)
+                    mission = store.fetch_mission(mission_id)
+                    runtime = store.fetch_runtime(mission_id)
+                    control = store.fetch_control_state(mission_id)
+                finally:
+                    store.close()
             except Exception:
                 continue
+            if mission is None:
+                continue
+            updated_at = max(
+                (
+                    timestamp
+                    for timestamp in (
+                        mission["updated_at"],
+                        runtime["updated_at"] if runtime else None,
+                        control["updated_at"] if control else None,
+                    )
+                    if timestamp
+                ),
+                default=mission["created_at"],
+            )
             entries.append(
                 MissionHistoryEntry(
                     mission_id=mission_id,
                     repo_path=view.repo_path,
                     objective=view.objective,
-                    created_at=utc_now().isoformat(),
-                    updated_at=utc_now().isoformat(),
+                    created_at=mission["created_at"],
+                    updated_at=updated_at,
                     run_state=view.run_state,
                     status=view.status or view.active_phase,
                     outcome=view.outcome,

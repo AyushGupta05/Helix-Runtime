@@ -3,13 +3,19 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from arbiter.agents.backend import EditProposal, FileUpdate, ScriptedStrategyBackend
+from arbiter.core.contracts import MissionSummary, RunState, utc_now
+from arbiter.runtime.paths import build_mission_paths
+from arbiter.runtime.store import MissionStore
 from arbiter.server.app import create_app
+from arbiter.server.manager import MissionService
+from arbiter.server.schemas import MissionCreateRequest
 
 
 class SlowScriptedStrategyBackend(ScriptedStrategyBackend):
@@ -195,3 +201,61 @@ def test_api_blocks_second_active_mission_and_allows_cancel(python_bug_repo: Pat
         snapshot = client.get(f"/api/missions/{mission_id}{repo_query(python_bug_repo)}").json()
         assert snapshot["run_state"] == "finalized"
         assert snapshot["outcome"] == "failed_safe_stop"
+
+
+def test_list_history_refreshes_stale_cached_run_state(python_bug_repo: Path) -> None:
+    repo_path = str(python_bug_repo.resolve())
+    mission_id = "stale-view-cache"
+    base_time = utc_now()
+    created_at = (base_time - timedelta(minutes=2)).isoformat()
+    running_updated_at = (base_time - timedelta(minutes=1)).isoformat()
+    finalized_updated_at = (base_time + timedelta(minutes=1)).isoformat()
+    paths = build_mission_paths(repo_path, mission_id)
+    store = MissionStore(paths.db_path)
+    try:
+        store.upsert_mission(
+            mission_id=mission_id,
+            status="running",
+            repo_path=repo_path,
+            objective="Fix the failing checkout tests",
+            branch_name="codex/test",
+            outcome=None,
+            spec=MissionCreateRequest(repo=repo_path, objective="Fix the failing checkout tests"),
+            summary=MissionSummary(
+                mission_id=mission_id,
+                repo_path=repo_path,
+                objective="Fix the failing checkout tests",
+            ),
+            created_at=created_at,
+        )
+        store.connection.execute(
+            "UPDATE mission SET updated_at = ? WHERE id = ?",
+            (running_updated_at, mission_id),
+        )
+        store.connection.commit()
+        store.upsert_control_state(
+            mission_id,
+            RunState.RUNNING.value,
+            None,
+            None,
+            running_updated_at,
+        )
+        stale_view = store.refresh_mission_view(mission_id)
+        assert stale_view["run_state"] == RunState.RUNNING.value
+
+        store.upsert_control_state(
+            mission_id,
+            RunState.FINALIZED.value,
+            None,
+            "session_ended",
+            finalized_updated_at,
+        )
+    finally:
+        store.close()
+
+    history = MissionService().list_history(repo_path)
+    stale_entry = next(item for item in history if item.mission_id == mission_id)
+
+    assert stale_entry.run_state == RunState.FINALIZED.value
+    assert stale_entry.created_at == created_at
+    assert stale_entry.updated_at == finalized_updated_at

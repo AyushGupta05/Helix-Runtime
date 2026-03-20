@@ -5,12 +5,12 @@ export default function MissionHistoryList({ missions, loading, onSelect }) {
   return (
     <section className="history panel-like">
       <div className="section-title">
-        <h2>Mission History</h2>
-        <p>Single active mission per process, plus resumable local history.</p>
+        <h2>Recent Missions</h2>
+        <p>Manual open only. Finished runs stay available here for review or resume.</p>
       </div>
       {loading ? <div className="history-empty">Loading missions...</div> : null}
       {!loading && missions.length === 0 ? (
-        <div className="history-empty">No missions yet. Start one from the composer above.</div>
+        <div className="history-empty">No finished missions yet.</div>
       ) : null}
       <div className="history-list">
         {missions.map((mission) => (

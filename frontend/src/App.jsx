@@ -1,12 +1,5 @@
 import { useMemo, useState } from "react";
-import {
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-  useParams,
-  useSearchParams
-} from "react-router-dom";
+import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -20,58 +13,85 @@ import {
   resumeMission
 } from "./lib/api";
 import { useMissionStream } from "./lib/missionStream";
+import { relativeTime } from "./lib/format";
 import MissionComposer from "./components/MissionComposer";
 import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";
 import BidBoard from "./components/BidBoard";
 import ArtifactsPanel from "./components/ArtifactsPanel";
 import EventStrip from "./components/EventStrip";
+import StatusBadge from "./components/StatusBadge";
 
-function HomePanel({ activeMission, onOpenActiveMission }) {
+function HomePanel({
+  activeMission,
+  missions,
+  loading,
+  busy,
+  error,
+  onSubmit,
+  onOpenActiveMission,
+  onSelectHistory
+}) {
+  const history = missions.filter(
+    (mission) => !["running", "paused", "cancelling"].includes(mission.run_state)
+  );
+
   return (
     <div className="home-stack">
-      <section className="hero-panel">
-        <p className="eyebrow">Arbiter Operator Console</p>
-        <h1>Run a mission room that feels alive: market pressure, tool activity, reasoning, and recovery in one place.</h1>
-        <p className="hero-copy">
-          The new console is built around operator signals instead of bland panels. You can
-          track the active task, see which strategy won, inspect live model calls, and follow
-          validation or rollback events as they land.
-        </p>
-        <div className="hero-grid">
-          <article className="hero-stat-card">
-            <span>Strategy Market</span>
-            <strong>Win / standby / fail cards</strong>
-            <p>Clear contender status, provider identity, and risk at a glance.</p>
-          </article>
-          <article className="hero-stat-card">
-            <span>Action Tape</span>
-            <strong>Live operator feed</strong>
-            <p>Bidding, execution, validation, checkpoints, and recovery stream in order.</p>
-          </article>
-          <article className="hero-stat-card">
-            <span>Reasoning Stream</span>
-            <strong>Prompt and response previews</strong>
-            <p>Provider invocations and proposal selection stay visible instead of buried.</p>
-          </article>
+      <section className="panel launcher-header">
+        <p className="eyebrow">Arbiter Mission Launcher</p>
+        <div className="launcher-title-row">
+          <h1>Launch with a prompt. Open a live room only when you choose to.</h1>
+          {activeMission ? <StatusBadge value={activeMission.outcome ?? activeMission.run_state} /> : null}
         </div>
+        <p className="launcher-copy">
+          The default state is idle. Arbiter should only move once a user submits an
+          objective, while any existing live mission stays visible but secondary.
+        </p>
       </section>
-      {activeMission ? (
-        <section className="hero-panel hero-panel-compact">
-          <div className="hero-active-head">
-            <div>
-              <p className="eyebrow">Live Mission</p>
-              <h2>{activeMission.objective}</h2>
+
+      <div className="launcher-grid">
+        <MissionComposer
+          busy={busy}
+          blocked={Boolean(activeMission)}
+          error={error}
+          onSubmit={onSubmit}
+          onOpenActiveMission={() => activeMission && onOpenActiveMission(activeMission)}
+        />
+
+        <div className="launcher-secondary">
+          <section className="panel-like launcher-active">
+            <div className="section-title">
+              <h2>{activeMission ? "Live Mission" : "Ready State"}</h2>
+              <p>
+                {activeMission
+                  ? "A live run exists, but it does not take over the screen unless you open it."
+                  : "No mission is active. Launch a new run from the left panel."}
+              </p>
             </div>
-            <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
-              Open live room
-            </button>
-          </div>
-          <p className="hero-hint">
-            A mission is already running. It will stay secondary until you open it explicitly.
-          </p>
-        </section>
-      ) : null}
+            {activeMission ? (
+              <div className="launcher-active-card">
+                <div className="launcher-active-head">
+                  <strong>{activeMission.objective}</strong>
+                  <StatusBadge value={activeMission.outcome ?? activeMission.run_state} quiet />
+                </div>
+                <div className="launcher-active-meta">
+                  <span>{activeMission.repo_path}</span>
+                  <span>{activeMission.branch_name ?? "branch pending"}</span>
+                  <span>{relativeTime(activeMission.updated_at)}</span>
+                </div>
+                <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
+                  Open live room
+                </button>
+              </div>
+            ) : (
+              <div className="history-empty">No mission is running in this process.</div>
+            )}
+          </section>
+
+          <MissionHistoryList missions={history} loading={loading} onSelect={onSelectHistory} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -150,7 +170,7 @@ function MissionRoute() {
     : null;
 
   return (
-    <div className="mission-room operator-console">
+    <div className="mission-room">
       <MissionHeader
         mission={mission}
         usageSummary={usageSummary}
@@ -195,9 +215,7 @@ function MissionRoute() {
 
 function Shell() {
   const navigate = useNavigate();
-  const location = useLocation();
   const queryClient = useQueryClient();
-  const isMissionView = location.pathname.startsWith("/missions/");
   const [repoScope, setRepoScope] = useState(() => {
     try {
       return JSON.parse(window.localStorage.getItem("arbiter:recent-repos") ?? "[]")[0] ?? "";
@@ -205,6 +223,7 @@ function Shell() {
       return "";
     }
   });
+
   const missionsQuery = useQuery({
     queryKey: ["missions", repoScope],
     queryFn: () => getMissions(repoScope),
@@ -235,37 +254,23 @@ function Shell() {
   });
 
   return (
-    <div className={`app-shell ${isMissionView ? "app-shell-mission" : ""}`}>
-      {!isMissionView ? (
-        <aside className="sidebar">
-          <div className="sidebar-brand">
-            <p className="eyebrow">Autonomous Mission Runner</p>
-            <h1>Arbiter</h1>
-          </div>
-          <MissionComposer
-            busy={createMutation.isPending}
-            blocked={Boolean(activeMission)}
-            activeMission={activeMission}
-            error={createMutation.error?.message}
-            onSubmit={(payload) => createMutation.mutate(payload)}
-            onOpenActiveMission={() => activeMission && openMission(activeMission)}
-          />
-          <MissionHistoryList
-            missions={missionsQuery.data ?? []}
-            loading={missionsQuery.isLoading}
-            onSelect={(mission) =>
-              navigate(
-                `/missions/${mission.mission_id}?repo=${encodeURIComponent(repoScope || mission.repo_path || "")}`
-              )
-            }
-          />
-        </aside>
-      ) : null}
-      <main className={`main-stage ${isMissionView ? "main-stage-mission" : ""}`}>
+    <div className="app-shell">
+      <main className="main-stage">
         <Routes>
           <Route
             path="/"
-            element={<HomePanel activeMission={activeMission} onOpenActiveMission={openMission} />}
+            element={
+              <HomePanel
+                activeMission={activeMission}
+                missions={missionsQuery.data ?? []}
+                loading={missionsQuery.isLoading}
+                busy={createMutation.isPending}
+                error={createMutation.error?.message}
+                onSubmit={(payload) => createMutation.mutate(payload)}
+                onOpenActiveMission={openMission}
+                onSelectHistory={openMission}
+              />
+            }
           />
           <Route path="/missions/:missionId" element={<MissionRoute />} />
         </Routes>

@@ -724,7 +724,20 @@ class MissionStore:
 
     def get_mission_view(self, mission_id: str) -> dict[str, Any]:
         row = self.connection.execute("SELECT * FROM mission_view_cache WHERE mission_id = ?", (mission_id,)).fetchone()
-        return json.loads(row["payload_json"]) if row else self.refresh_mission_view(mission_id)
+        if row:
+            cache_updated_at = row["updated_at"]
+            source_updated_at = [
+                mission_row["updated_at"]
+                for mission_row in (
+                    self.fetch_mission(mission_id),
+                    self.fetch_runtime(mission_id),
+                    self.fetch_control_state(mission_id),
+                )
+                if mission_row and mission_row["updated_at"]
+            ]
+            if not source_updated_at or max(source_updated_at) <= cache_updated_at:
+                return json.loads(row["payload_json"])
+        return self.refresh_mission_view(mission_id)
 
     def rebuild_state(self, mission_id: str) -> ArbiterState:
         mission = self.fetch_mission(mission_id)

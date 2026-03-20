@@ -10,7 +10,6 @@ function parseList(value) {
 export default function MissionComposer({
   busy,
   blocked,
-  activeMission,
   error,
   onSubmit,
   onOpenActiveMission
@@ -51,15 +50,15 @@ export default function MissionComposer({
   return (
     <section className="composer panel-like">
       <div className="section-title">
-        <h2>Launch Mission</h2>
-        <p>Point Arbiter at a repo, define the change, and open a live operator room.</p>
+        <h2>New Mission</h2>
+        <p>Enter the repo and user prompt. Nothing starts until you submit this form.</p>
       </div>
       <form onSubmit={handleSubmit} className="composer-form">
         <label>
           Repo Path
           <input
             list="recent-repos"
-            placeholder="C:\\projects\\target-repo"
+            placeholder="C:\\path\\to\\target-repo"
             value={repo}
             onChange={(event) => setRepo(event.target.value)}
           />
@@ -73,7 +72,7 @@ export default function MissionComposer({
           Objective
           <textarea
             rows={4}
-            placeholder="Fix the failing checkout tests and improve reliability without changing the public API."
+            placeholder="Describe the user request Arbiter should execute."
             value={objective}
             onChange={(event) => setObjective(event.target.value)}
           />
@@ -142,8 +141,7 @@ export default function MissionComposer({
             <div>
               <strong>Live mission already active</strong>
               <p className="form-note warning-note">
-                {activeMission?.objective ??
-                  "Pause, finish, or cancel the current mission before starting another."}
+                Open the live room to inspect, pause, or cancel the current run before starting a new mission.
               </p>
             </div>
             {onOpenActiveMission ? (
