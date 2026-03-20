@@ -1,5 +1,12 @@
-import { useMemo, useState } from "react";
-import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams
+} from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -18,24 +25,56 @@ import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";
 import TaskRail from "./components/TaskRail";
 import BidBoard from "./components/BidBoard";
-import TimelinePanel from "./components/TimelinePanel";
 import ArtifactsPanel from "./components/ArtifactsPanel";
+import LiveFeedPanel from "./components/LiveFeedPanel";
 
-function HomePanel({ activeMissionId }) {
+function HomePanel({ activeMission, onOpenActiveMission }) {
   return (
-    <section className="hero-panel">
-      <p className="eyebrow">Arbiter Operator Console</p>
-      <h1>Launch a repo mission and watch every market, provider race, edit, and recovery live.</h1>
-      <p className="hero-copy">
-        Arbiter now exposes the active task rail, provider market, live trace, isolated
-        worktree state, accepted checkpoints, and token burn in one dense control room.
-      </p>
-      <p className="hero-hint">
-        {activeMissionId
-          ? "An active mission is already running. Open it from the left rail to inspect the full operator console."
-          : "Start with a local repo path and a concrete software objective. The console will hydrate as soon as the mission is created."}
-      </p>
-    </section>
+    <div className="home-stack">
+      <section className="hero-panel">
+        <p className="eyebrow">Arbiter Operator Console</p>
+        <h1>Run a mission room that feels alive: market pressure, tool activity, reasoning, and recovery in one place.</h1>
+        <p className="hero-copy">
+          The new console is built around operator signals instead of bland panels. You can
+          track the active task, see which strategy won, inspect live model calls, and follow
+          validation or rollback events as they land.
+        </p>
+        <div className="hero-grid">
+          <article className="hero-stat-card">
+            <span>Strategy Market</span>
+            <strong>Win / standby / fail cards</strong>
+            <p>Clear contender status, provider identity, and risk at a glance.</p>
+          </article>
+          <article className="hero-stat-card">
+            <span>Action Tape</span>
+            <strong>Live operator feed</strong>
+            <p>Bidding, execution, validation, checkpoints, and recovery stream in order.</p>
+          </article>
+          <article className="hero-stat-card">
+            <span>Reasoning Stream</span>
+            <strong>Prompt and response previews</strong>
+            <p>Provider invocations and proposal selection stay visible instead of buried.</p>
+          </article>
+        </div>
+      </section>
+
+      {activeMission ? (
+        <section className="hero-panel hero-panel-compact">
+          <div className="hero-active-head">
+            <div>
+              <p className="eyebrow">Live Mission</p>
+              <h2>{activeMission.objective}</h2>
+            </div>
+            <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
+              Open live room
+            </button>
+          </div>
+          <p className="hero-hint">
+            A mission is already active in this process. Use the live room instead of launching a second run.
+          </p>
+        </section>
+      ) : null}
+    </div>
   );
 }
 
@@ -103,6 +142,7 @@ function MissionRoute() {
   const trace = traceQuery.data ?? mission.recent_trace ?? [];
   const diffState = diffQuery.data ?? { worktree_state: mission.worktree_state ?? {} };
   const usageSummary = usageQuery.data ?? mission.usage_summary ?? {};
+  const invocations = usageSummary.invocations ?? [];
   const latestProposalTrace = [...trace].reverse().find((entry) => entry.trace_type === "proposal.selected");
   const selectedBid =
     mission.bids.find((bid) => bid.bid_id === mission.winner_bid_id) ??
@@ -141,16 +181,24 @@ function MissionRoute() {
 
         <section className="panel panel-trace">
           <div className="panel-heading">
-            <h2>Live Trace</h2>
-            <span className="panel-meta">Reasoning, provider calls, validation, recovery</span>
+            <h2>Mission Pulse</h2>
+            <span className="panel-meta">
+              {mission.events.length} events, {trace.length} trace entries, {invocations.length} model calls
+            </span>
           </div>
-          <TimelinePanel trace={trace} validationReport={mission.validation_report} />
+          <LiveFeedPanel
+            events={mission.events}
+            trace={trace}
+            invocations={invocations}
+            validationReport={mission.validation_report}
+            executionSteps={mission.execution_steps ?? []}
+          />
         </section>
 
         <section className="panel panel-market">
           <div className="panel-heading">
-            <h2>Provider Market</h2>
-            <span className="panel-meta">Grouped by strategy family and provider</span>
+            <h2>Strategy Market</h2>
+            <span className="panel-meta">Contenders, outcomes, risk, and provider posture</span>
           </div>
           <BidBoard
             bids={mission.bids}
@@ -180,6 +228,7 @@ function MissionRoute() {
 
 function Shell() {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const [repoScope, setRepoScope] = useState(() => {
     try {
@@ -191,18 +240,29 @@ function Shell() {
   const missionsQuery = useQuery({
     queryKey: ["missions", repoScope],
     queryFn: () => getMissions(repoScope),
-    enabled: Boolean(repoScope),
-    refetchInterval: repoScope ? 3000 : false
+    refetchInterval: 3000
   });
 
-  const activeMissionId = useMemo(() => {
+  const activeMission = useMemo(() => {
     const missions = missionsQuery.data ?? [];
-    return (
-      missions.find((mission) =>
-        ["running", "paused", "cancelling"].includes(mission.run_state)
-      )?.mission_id ?? null
-    );
+    return missions.find((mission) =>
+      ["running", "paused", "cancelling"].includes(mission.run_state)
+    ) ?? null;
   }, [missionsQuery.data]);
+
+  const openMission = (mission) => {
+    navigate(`/missions/${mission.mission_id}?repo=${encodeURIComponent(repoScope || mission.repo_path || "")}`);
+  };
+
+  useEffect(() => {
+    if (!activeMission || location.pathname !== "/") {
+      return;
+    }
+    navigate(
+      `/missions/${activeMission.mission_id}?repo=${encodeURIComponent(repoScope || activeMission.repo_path || "")}`,
+      { replace: true }
+    );
+  }, [activeMission, location.pathname, navigate, repoScope]);
 
   const createMutation = useMutation({
     mutationFn: createMission,
@@ -225,19 +285,28 @@ function Shell() {
         </div>
         <MissionComposer
           busy={createMutation.isPending}
-          blocked={Boolean(activeMissionId)}
+          blocked={Boolean(activeMission)}
+          activeMission={activeMission}
           error={createMutation.error?.message}
           onSubmit={(payload) => createMutation.mutate(payload)}
+          onOpenActiveMission={() => activeMission && openMission(activeMission)}
         />
         <MissionHistoryList
           missions={missionsQuery.data ?? []}
           loading={missionsQuery.isLoading}
-          onSelect={(missionId) => navigate(`/missions/${missionId}?repo=${encodeURIComponent(repoScope)}`)}
+          onSelect={(mission) =>
+            navigate(
+              `/missions/${mission.mission_id}?repo=${encodeURIComponent(repoScope || mission.repo_path || "")}`
+            )
+          }
         />
       </aside>
       <main className="main-stage">
         <Routes>
-          <Route path="/" element={<HomePanel activeMissionId={activeMissionId} />} />
+          <Route
+            path="/"
+            element={<HomePanel activeMission={activeMission} onOpenActiveMission={openMission} />}
+          />
           <Route path="/missions/:missionId" element={<MissionRoute />} />
         </Routes>
       </main>

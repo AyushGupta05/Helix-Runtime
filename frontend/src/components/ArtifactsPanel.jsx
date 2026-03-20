@@ -15,12 +15,13 @@ export default function ArtifactsPanel({ mission, diffState, usageSummary, selec
   const latestTrace = mission.recent_trace ?? [];
   const latestProposal = [...latestTrace].reverse().find((entry) => entry.trace_type === "proposal.selected");
   const usageRows = usageSummary?.invocations ?? [];
+  const failureContext = mission.failure_context ?? null;
 
   return (
     <div className="inspector-grid">
       <section className="artifact-card">
         <div className="artifact-card-head">
-          <h3>Repo Changes</h3>
+          <h3>Worktree State</h3>
           <span>{worktree.has_changes ? "Isolated worktree dirty" : "No changes"}</span>
         </div>
         <p>{worktree.reason || "No repo changes yet."}</p>
@@ -58,7 +59,7 @@ export default function ArtifactsPanel({ mission, diffState, usageSummary, selec
 
       <section className="artifact-card">
         <div className="artifact-card-head">
-          <h3>Selected Proposal</h3>
+          <h3>Winning Thesis</h3>
           <span>{latestProposal?.provider ? summarizeProvider(latestProposal.provider) : "Pending"}</span>
         </div>
         {latestProposal ? (
@@ -67,6 +68,9 @@ export default function ArtifactsPanel({ mission, diffState, usageSummary, selec
             <KeyValue label="Lane" value={latestProposal.lane} />
             <KeyValue label="Model" value={latestProposal.payload?.model_id} />
             <p>{latestProposal.payload?.summary || latestProposal.message}</p>
+            {failureContext?.details ? (
+              <p className="warning-note">Latest failure context: {failureContext.details}</p>
+            ) : null}
           </>
         ) : selectedBid ? (
           <>
@@ -74,6 +78,9 @@ export default function ArtifactsPanel({ mission, diffState, usageSummary, selec
             <KeyValue label="Provider" value={summarizeProvider(selectedBid.provider)} />
             <KeyValue label="Score" value={formatNumber(selectedBid.score)} />
             <p>{selectedBid.strategy_summary}</p>
+            {failureContext?.details ? (
+              <p className="warning-note">Latest failure context: {failureContext.details}</p>
+            ) : null}
           </>
         ) : (
           <p>No provider proposal selected yet.</p>
@@ -82,7 +89,7 @@ export default function ArtifactsPanel({ mission, diffState, usageSummary, selec
 
       <section className="artifact-card">
         <div className="artifact-card-head">
-          <h3>Usage Ledger</h3>
+          <h3>Provider Burn</h3>
           <span>{formatInteger(usageSummary?.mission?.total_tokens ?? 0)} tok</span>
         </div>
         <div className="usage-summary-grid">

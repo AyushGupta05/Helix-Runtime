@@ -46,14 +46,28 @@ export default function MissionHeader({
 
   return (
     <header className="mission-ribbon panel">
-      <div className="mission-ribbon-main">
-        <p className="eyebrow">Mission {mission.mission_id}</p>
-        <h1>{mission.objective}</h1>
-        <p className="mission-subtitle">{mission.repo_path}</p>
-        <div className="mission-badges">
-          <StatusBadge value={mission.run_state} />
-          <StatusBadge value={mission.active_phase} />
-          {mission.outcome ? <StatusBadge value={mission.outcome} /> : null}
+      <div className="mission-ribbon-topline">
+        <div className="mission-ribbon-main">
+          <p className="eyebrow">Mission {mission.mission_id}</p>
+          <h1>{mission.objective}</h1>
+          <p className="mission-subtitle">{mission.repo_path}</p>
+          <div className="mission-badges">
+            <StatusBadge value={mission.run_state} />
+            <StatusBadge value={mission.active_phase} />
+            {mission.outcome ? <StatusBadge value={mission.outcome} /> : null}
+          </div>
+        </div>
+        <div className="mission-controls">
+          {controls.map((control) => (
+            <button
+              key={control.label}
+              className={`${control.type}-button`}
+              disabled={busy || control.disabled}
+              onClick={control.action ?? undefined}
+            >
+              {control.label}
+            </button>
+          ))}
         </div>
       </div>
       <div className="mission-ribbon-metrics">
@@ -66,17 +80,19 @@ export default function MissionHeader({
         <Metric label="Branch" value={mission.branch_name} />
         <Metric label="Head" value={mission.head_commit?.slice(0, 12)} />
       </div>
-      <div className="mission-controls">
-        {controls.map((control) => (
-          <button
-            key={control.label}
-            className={`${control.type}-button`}
-            disabled={busy || control.disabled}
-            onClick={control.action ?? undefined}
-          >
-            {control.label}
-          </button>
-        ))}
+      <div className="mission-ribbon-footer">
+        <div className="mission-signal">
+          <span>Selected provider</span>
+          <strong>{summarizeProvider(currentProvider)}</strong>
+        </div>
+        <div className="mission-signal">
+          <span>Latest validation</span>
+          <strong>{latestValidation}</strong>
+        </div>
+        <div className="mission-signal">
+          <span>Accepted checkpoint</span>
+          <strong>{latestCheckpoint?.commit_sha?.slice(0, 12) ?? mission.head_commit?.slice(0, 12) ?? "pending"}</strong>
+        </div>
       </div>
     </header>
   );

@@ -20,6 +20,7 @@ const EVENT_TYPES = [
   "standby.selected",
   "standby.promoted",
   "simulation.rollout",
+  "simulation.completed",
   "provider.invocation.started",
   "provider.invocation.completed",
   "provider.invocation.failed",

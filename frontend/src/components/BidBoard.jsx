@@ -1,89 +1,166 @@
 import { formatCurrency, formatInteger, formatNumber, summarizeProvider } from "../lib/format";
 import StatusBadge from "./StatusBadge";
 
-function BidCell({ bid, winnerBidId, standbyBidId }) {
-  if (!bid) {
-    return <div className="market-cell market-cell-empty">No contender</div>;
-  }
+function humanizeStrategy(value) {
+  return String(value || "untitled strategy")
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
 
+function statusLabelForBid(bid, winnerBidId, standbyBidId) {
+  if (bid.bid_id === winnerBidId) return "WIN";
+  if (bid.bid_id === standbyBidId) return "STBY";
+  if (bid.rejection_reason) return "FAIL";
+  return "LIVE";
+}
+
+function riskLabel(value) {
+  const numeric = Number(value ?? 0);
+  if (numeric >= 0.66) return "high";
+  if (numeric >= 0.33) return "med";
+  return "low";
+}
+
+function BidCard({ bid, winnerBidId, standbyBidId }) {
   const tone =
-    bid.bid_id === winnerBidId ? "winner" : bid.bid_id === standbyBidId ? "standby" : bid.rejection_reason ? "failed" : "idle";
-  const totalTokens = Object.values(bid.token_usage ?? {}).reduce((total, value) => total + Number(value || 0), 0);
-  const totalCost = Object.values(bid.cost_usage ?? {}).reduce((total, value) => total + Number(value || 0), 0);
+    bid.bid_id === winnerBidId
+      ? "winner"
+      : bid.bid_id === standbyBidId
+        ? "standby"
+        : bid.rejection_reason
+          ? "failed"
+          : "live";
+  const statusLabel = statusLabelForBid(bid, winnerBidId, standbyBidId);
+  const totalTokens = Object.values(bid.token_usage ?? {}).reduce(
+    (total, value) => total + Number(value || 0),
+    0
+  );
+  const totalCost = Object.values(bid.cost_usage ?? {}).reduce(
+    (total, value) => total + Number(value || 0),
+    0
+  );
 
   return (
-    <article className={`market-cell market-cell-${tone}`}>
-      <div className="market-cell-head">
-        <strong>{summarizeProvider(bid.provider)}</strong>
-        <StatusBadge value={bid.bid_id === winnerBidId ? "running" : bid.bid_id === standbyBidId ? "ready" : bid.rejection_reason ? "failed" : "pending"} quiet />
+    <article className={`market-card market-card-${tone}`}>
+      <div className="market-card-head">
+        <div>
+          <span className="market-card-kicker">Strategy</span>
+          <strong>{humanizeStrategy(bid.strategy_family || bid.role)}</strong>
+        </div>
+        <span className={`market-status market-status-${tone}`}>{statusLabel}</span>
       </div>
-      <p className="market-cell-model">{bid.model_id ?? bid.role}</p>
-      <div className="market-cell-metrics">
-        <span>score {formatNumber(bid.score)}</span>
-        <span>risk {formatNumber(bid.risk)}</span>
-        <span>conf {formatNumber(bid.confidence)}</span>
+      <p className="market-card-provider">
+        {summarizeProvider(bid.provider)} {bid.model_id ? `- ${bid.model_id}` : ""}
+      </p>
+      <div className="market-card-meta">
+        <span className={`risk-pill risk-pill-${riskLabel(bid.risk)}`}>risk {riskLabel(bid.risk)}</span>
+        <StatusBadge
+          value={
+            bid.bid_id === winnerBidId
+              ? "running"
+              : bid.bid_id === standbyBidId
+                ? "ready"
+                : bid.rejection_reason
+                  ? "failed"
+                  : "pending"
+          }
+          quiet
+        />
       </div>
-      <div className="market-cell-metrics">
-        <span>{formatInteger(totalTokens)} tok</span>
-        <span>{formatCurrency(totalCost)}</span>
+      <div className="market-card-stats">
+        <div>
+          <span>Score</span>
+          <strong>{formatNumber(bid.score)}</strong>
+        </div>
+        <div>
+          <span>Confidence</span>
+          <strong>{formatNumber(bid.confidence)}</strong>
+        </div>
+        <div>
+          <span>Tokens</span>
+          <strong>{formatInteger(totalTokens)}</strong>
+        </div>
+        <div>
+          <span>Cost</span>
+          <strong>{formatCurrency(totalCost)}</strong>
+        </div>
       </div>
-      <p>{bid.strategy_summary}</p>
-      {bid.search_summary ? <p className="market-cell-note">Rollout: {bid.search_summary}</p> : null}
+      <p className="market-card-summary">{bid.strategy_summary}</p>
+      {bid.search_summary ? <p className="market-card-note">Plan: {bid.search_summary}</p> : null}
       {bid.rejection_reason ? <p className="inline-warning">{bid.rejection_reason}</p> : null}
     </article>
   );
 }
 
-export default function BidBoard({ bids, winnerBidId, standbyBidId, activeTaskId, providerMarketSummary }) {
+export default function BidBoard({
+  bids,
+  winnerBidId,
+  standbyBidId,
+  activeTaskId,
+  providerMarketSummary
+}) {
   const activeBids = bids.filter((bid) => bid.task_id === activeTaskId);
-  const providerOrder = [...new Set(activeBids.map((bid) => bid.provider || "system"))];
-  const families = Object.entries(providerMarketSummary?.families ?? {}).filter(([_, familyBids]) =>
-    familyBids.some((bid) => bid.task_id === activeTaskId)
-  );
-
   const winner = activeBids.find((bid) => bid.bid_id === winnerBidId) ?? null;
   const standby = activeBids.find((bid) => bid.bid_id === standbyBidId) ?? null;
+  const contenderCount =
+    Object.values(providerMarketSummary?.families ?? {}).filter((familyBids) =>
+      familyBids.some((bid) => bid.task_id === activeTaskId)
+    ).length || activeBids.length;
+  const orderedBids = [...activeBids].sort((left, right) => {
+    const leftRank =
+      left.bid_id === winnerBidId
+        ? 3
+        : left.bid_id === standbyBidId
+          ? 2
+          : left.rejection_reason
+            ? 0
+            : 1;
+    const rightRank =
+      right.bid_id === winnerBidId
+        ? 3
+        : right.bid_id === standbyBidId
+          ? 2
+          : right.rejection_reason
+            ? 0
+            : 1;
+    if (leftRank !== rightRank) {
+      return rightRank - leftRank;
+    }
+    return Number(right.score ?? -1) - Number(left.score ?? -1);
+  });
 
   return (
     <div className="provider-market">
-      <div className="provider-market-head">
+      <div className="provider-market-overview">
         <div className="bid-spotlight">
           <span>Winner</span>
-          <strong>{winner ? `${summarizeProvider(winner.provider)} - ${winner.strategy_family}` : "Waiting"}</strong>
-          <p>{winner?.model_id ?? winner?.role ?? "No selection yet"}</p>
+          <strong>{winner ? humanizeStrategy(winner.strategy_family) : "Waiting"}</strong>
+          <p>{winner ? summarizeProvider(winner.provider) : "No selection yet"}</p>
         </div>
         <div className="bid-spotlight">
           <span>Standby</span>
-          <strong>{standby ? `${summarizeProvider(standby.provider)} - ${standby.strategy_family}` : "Waiting"}</strong>
-          <p>{standby?.model_id ?? standby?.role ?? "No standby yet"}</p>
+          <strong>{standby ? humanizeStrategy(standby.strategy_family) : "Waiting"}</strong>
+          <p>{standby ? summarizeProvider(standby.provider) : "No standby yet"}</p>
+        </div>
+        <div className="bid-spotlight">
+          <span>Active task</span>
+          <strong>{activeTaskId || "Waiting"}</strong>
+          <p>{contenderCount} strategies in play</p>
         </div>
       </div>
-      <div className="provider-market-grid">
-        <div className="provider-market-grid-head family-head">Strategy family</div>
-        {providerOrder.map((provider) => (
-          <div key={provider} className="provider-market-grid-head">
-            {summarizeProvider(provider)}
-          </div>
-        ))}
-        {families.map(([family, familyBids]) => (
-          <div key={family} className="provider-market-row">
-            <div className="provider-market-family">
-              <strong>{family}</strong>
-              <span>{familyBids.length} contenders</span>
-            </div>
-            {providerOrder.map((provider) => {
-              const bid = familyBids.find((item) => (item.provider || "system") === provider);
-              return (
-                <BidCell
-                  key={`${family}-${provider}`}
-                  bid={bid}
-                  winnerBidId={winnerBidId}
-                  standbyBidId={standbyBidId}
-                />
-              );
-            })}
-          </div>
-        ))}
+      <div className="market-card-grid">
+        {orderedBids.length ? (
+          orderedBids.map((bid) => (
+            <BidCard
+              key={bid.bid_id}
+              bid={bid}
+              winnerBidId={winnerBidId}
+              standbyBidId={standbyBidId}
+            />
+          ))
+        ) : (
+          <div className="market-card market-card-empty">Waiting for bids on the active task.</div>
+        )}
       </div>
     </div>
   );

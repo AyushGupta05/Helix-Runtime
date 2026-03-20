@@ -17,7 +17,7 @@ export default function MissionHistoryList({ missions, loading, onSelect }) {
           <button
             key={mission.mission_id}
             className="history-item"
-            onClick={() => onSelect(mission.mission_id)}
+            onClick={() => onSelect(mission)}
           >
             <div className="history-item-head">
               <strong>{mission.objective}</strong>

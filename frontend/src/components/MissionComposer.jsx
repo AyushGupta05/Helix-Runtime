@@ -7,7 +7,14 @@ function parseList(value) {
     .filter(Boolean);
 }
 
-export default function MissionComposer({ busy, blocked, error, onSubmit }) {
+export default function MissionComposer({
+  busy,
+  blocked,
+  activeMission,
+  error,
+  onSubmit,
+  onOpenActiveMission
+}) {
   const [repo, setRepo] = useState("");
   const [objective, setObjective] = useState("");
   const [constraints, setConstraints] = useState("");
@@ -44,8 +51,8 @@ export default function MissionComposer({ busy, blocked, error, onSubmit }) {
   return (
     <section className="composer panel-like">
       <div className="section-title">
-        <h2>New Mission</h2>
-        <p>Prompt Arbiter with a repo path and a software-change objective.</p>
+        <h2>Launch Mission</h2>
+        <p>Point Arbiter at a repo, define the change, and open a live operator room.</p>
       </div>
       <form onSubmit={handleSubmit} className="composer-form">
         <label>
@@ -131,9 +138,20 @@ export default function MissionComposer({ busy, blocked, error, onSubmit }) {
           </div>
         </details>
         {blocked ? (
-          <p className="form-note warning-note">
-            One mission is already active in this process. Pause, finish, or cancel it before starting another.
-          </p>
+          <div className="mission-lockout">
+            <div>
+              <strong>Live mission already active</strong>
+              <p className="form-note warning-note">
+                {activeMission?.objective ??
+                  "Pause, finish, or cancel the current mission before starting another."}
+              </p>
+            </div>
+            {onOpenActiveMission ? (
+              <button type="button" className="ghost-button" onClick={onOpenActiveMission}>
+                Open live room
+              </button>
+            ) : null}
+          </div>
         ) : null}
         {error ? <p className="form-note error-note">{error}</p> : null}
         <button type="submit" className="primary-button" disabled={disabled}>

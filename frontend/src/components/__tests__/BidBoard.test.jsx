@@ -44,7 +44,7 @@ const bids = [
 ];
 
 describe("BidBoard", () => {
-  it("renders provider-family market cells with winner and standby", () => {
+  it("renders compact strategy cards with winner and standby states", () => {
     render(
       <BidBoard
         bids={bids}
@@ -64,7 +64,9 @@ describe("BidBoard", () => {
     expect(screen.getByText("Standby")).toBeInTheDocument();
     expect(screen.getAllByText("Openai").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Anthropic").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("localized-fix").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("shared-helper").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Localized Fix").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Shared Helper").length).toBeGreaterThan(0);
+    expect(screen.getByText("WIN")).toBeInTheDocument();
+    expect(screen.getByText("STBY")).toBeInTheDocument();
   });
 });

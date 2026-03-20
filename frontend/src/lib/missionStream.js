@@ -123,6 +123,15 @@ function mergeMissionEvent(snapshot, event) {
     case "bid.generated":
       next = { ...next, active_phase: "market", bids: ensureBid(next.bids, event) };
       break;
+    case "market.opened":
+      next = { ...next, active_phase: "market" };
+      break;
+    case "simulation.rollout":
+      next = { ...next, active_phase: "simulate" };
+      break;
+    case "simulation.completed":
+      next = { ...next, active_phase: "select" };
+      break;
     case "task.selected":
       next = {
         ...next,
@@ -165,10 +174,16 @@ function mergeMissionEvent(snapshot, event) {
         }))
       };
       break;
+    case "validation.started":
+      next = { ...next, active_phase: "validate" };
+      break;
     case "validation.passed":
       next = { ...next, active_phase: "validate" };
       break;
     case "validation.failed":
+      next = { ...next, active_phase: "recover" };
+      break;
+    case "recovery.started":
       next = { ...next, active_phase: "recover" };
       break;
     case "checkpoint.accepted":
