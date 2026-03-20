@@ -101,22 +101,20 @@ def test_api_streams_ordered_sse_events(python_bug_repo: Path, tmp_path: Path, m
     mission_id = client.post("/api/missions", json=payload(python_bug_repo)).json()["mission_id"]
 
     received: list[dict[str, object]] = []
-    with client.stream("GET", f"/api/missions/{mission_id}/events?after_id=0") as stream:
-        current_event: dict[str, object] = {}
-        for raw_line in stream.iter_lines():
-            if not raw_line:
-                continue
-            line = raw_line.decode() if isinstance(raw_line, bytes) else raw_line
-            if line.startswith("id:"):
-                current_event["id"] = int(line.split(":", 1)[1].strip())
-            elif line.startswith("event:"):
-                current_event["event"] = line.split(":", 1)[1].strip()
-            elif line.startswith("data:"):
-                current_event["data"] = json.loads(line.split(":", 1)[1].strip())
-                received.append(current_event)
-                current_event = {}
-                if len(received) >= 5:
-                    break
+    response = client.get(f"/api/missions/{mission_id}/events?after_id=0")
+    assert response.status_code == 200
+    current_event: dict[str, object] = {}
+    for line in response.text.splitlines():
+        if not line:
+            continue
+        if line.startswith("id:"):
+            current_event["id"] = int(line.split(":", 1)[1].strip())
+        elif line.startswith("event:"):
+            current_event["event"] = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            current_event["data"] = json.loads(line.split(":", 1)[1].strip())
+            received.append(current_event)
+            current_event = {}
 
     assert [item["id"] for item in received] == sorted(item["id"] for item in received)
     event_types = [item["event"] for item in received]

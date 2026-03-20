@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
+from arbiter.core.contracts import RunState
 from arbiter.runtime.paths import build_mission_paths
 from arbiter.runtime.store import MissionStore
 from arbiter.server.manager import MissionConflictError, MissionNotFoundError, MissionService
@@ -107,6 +108,9 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
                             "event": payload["event_type"],
                             "data": json.dumps(payload),
                         }
+                    control = store.fetch_control_state(mission_id)
+                    if not rows and control and control["run_state"] == RunState.FINALIZED.value:
+                        break
                     await asyncio.sleep(0.5)
             finally:
                 store.close()

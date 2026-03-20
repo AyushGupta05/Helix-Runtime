@@ -141,10 +141,11 @@ class MissionRuntime:
             self.repo_checkpoints.save(self.accepted_checkpoint)
         previous = self.state.control.run_state
         self._hydrate_control_state()
+        has_events = bool(self.store.fetch_all("events"))
         if previous == RunState.PAUSED or self.state.control.run_state == RunState.PAUSED:
             self._set_control_state(RunState.RUNNING)
             self.emit("mission.resumed", "Mission resumed.", mission_id=self.spec.mission_id)
-        elif self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED}:
+        elif self.state.control.run_state in {RunState.IDLE, RunState.FINALIZED} or not has_events:
             self._set_control_state(RunState.RUNNING)
             self.emit("mission.started", "Mission runtime created.", repo_path=self.spec.repo_path, branch_name=self.branch_name)
         return self.state.active_phase.value if self.state.active_phase != ActivePhase.IDLE else ActivePhase.COLLECT.value
