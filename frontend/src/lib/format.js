@@ -177,3 +177,18 @@ export function summarizeInvocationMode(invocation) {
   }
   return invocation.status ? humanizeGenerationMode(invocation.status) : "Unknown";
 }
+
+export function humanizePhase(phase) {
+  const labels = {
+    strategize: "Strategizing",
+    simulate: "Simulating",
+    select: "Selecting",
+    execute: "Executing",
+    validate: "Validating",
+    recover: "Recovering",
+    collect: "Scanning",
+    finalize: "Finalizing",
+    idle: "Idle"
+  };
+  return labels[phase] || humanizeToken(phase || "idle");
+}

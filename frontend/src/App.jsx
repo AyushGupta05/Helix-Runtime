@@ -20,6 +20,9 @@ import MissionHeader from "./components/MissionHeader";
 import MissionIntelligenceView from "./components/MissionIntelligenceView";
 import MissionOutcomeView from "./components/MissionOutcomeView";
 import MissionLiveView from "./components/MissionLiveView";
+import StrategyBiddingScreen from "./components/StrategyBiddingScreen";
+import SimulationIntelligenceScreen from "./components/SimulationIntelligenceScreen";
+import OutcomeResultsScreen from "./components/OutcomeResultsScreen";
 import StatusBadge from "./components/StatusBadge";
 
 const FEATURE_COLUMNS = [
@@ -257,41 +260,30 @@ function MissionRoute() {
       />
 
       {activeTab === "live" ? (
-        <MissionLiveView
+        <StrategyBiddingScreen
           mission={mission}
-          trace={trace}
+          winnerBidId={mission.winner_bid_id}
+          standbyBidId={mission.standby_bid_id}
+          activePhase={mission.active_phase}
           usageSummary={usageSummary}
-          selectedBid={selectedBid}
-          latestProposalTrace={latestProposalTrace}
         />
       ) : null}
 
       {activeTab === "intelligence" ? (
-        <MissionIntelligenceView
+        <SimulationIntelligenceScreen
           mission={mission}
-          history={history}
-          trace={trace}
-          diffState={diffState}
+          winnerBidId={mission.winner_bid_id}
+          standbyBidId={mission.standby_bid_id}
+          activePhase={mission.active_phase}
           usageSummary={usageSummary}
-          selectedBid={selectedBid}
-          latestProposalTrace={latestProposalTrace}
-          initialSection={intelligenceSection}
-          onSelectMission={(nextMission) =>
-            navigate(`/missions/${nextMission.mission_id}?repo=${encodeURIComponent(repo || nextMission.repo_path || "")}`)
-          }
         />
       ) : null}
 
       {activeTab === "outcome" ? (
-        <MissionOutcomeView
+        <OutcomeResultsScreen
           mission={mission}
-          trace={trace}
-          diffState={diffState}
+          winnerBidId={mission.winner_bid_id}
           usageSummary={usageSummary}
-          selectedBid={selectedBid}
-          latestProposalTrace={latestProposalTrace}
-          onOpenIntelligence={handleOutcomeJump}
-          onOpenLiveMarket={() => setActiveTab("live")}
         />
       ) : null}
     </div>

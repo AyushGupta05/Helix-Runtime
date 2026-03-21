@@ -128,8 +128,8 @@ export default function CivicPanel({ mission }) {
                 className="ledger-row"
               >
                 <div>
-                  <strong>{envelope.bid_id ?? "Governed envelope"}</strong>
-                  <p>{(envelope.reasoning ?? []).join(" ") || "Governed constraints recorded."}</p>
+                  <strong>{envelope.role ?? envelope.strategy_family ?? envelope.bid_id ?? "Governed envelope"}</strong>
+                  <p>{(Array.isArray(envelope.reasoning) ? envelope.reasoning : []).join(" ") || envelope.constraints?.join(", ") || "Governed constraints recorded."}</p>
                 </div>
                 <span>{envelopeStatus(envelope)}</span>
               </article>

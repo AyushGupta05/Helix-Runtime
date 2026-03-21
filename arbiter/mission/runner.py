@@ -587,6 +587,23 @@ class MissionRuntime:
             bid.active_envelope_id = envelope.envelope_id
             self.state.governed_bid_envelopes[bid.bid_id] = envelope
             self._save_governed_bid_envelope(envelope)
+            self.emit(
+                "civic.bid.preflighted",
+                f"Governed envelope for {bid.bid_id}: {envelope.status}.",
+                bid_id=bid.bid_id,
+                task_id=task.task_id,
+                governed_envelope={
+                    "envelope_id": envelope.envelope_id,
+                    "bid_id": bid.bid_id,
+                    "task_id": task.task_id,
+                    "role": bid.role,
+                    "strategy_family": bid.strategy_family,
+                    "status": envelope.status,
+                    "allowed_skills": envelope.allowed_skills,
+                    "reasoning": envelope.reasoning,
+                    "constraints": envelope.constraints,
+                },
+            )
             if envelope.status != "approved":
                 bid.policy_friction_score = max(bid.policy_friction_score, 0.65)
                 if bid.required_skills:
@@ -1904,7 +1921,7 @@ class MissionRuntime:
             self.state.standby_bid = None
             self.state.standby_bid_id = None
             self._save_bid(self.state.current_bid, self.state.active_bid_round)
-            self.emit("standby.promoted", "Standby promoted after failure.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id, reason=plan.reason, evidence=plan.evidence, refresh_view=True)
+            self.emit("standby.promoted", "Standby promoted after failure.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id, role=self.state.current_bid.role, provider=self.state.current_bid.provider, lane=self.state.current_bid.lane, score=self.state.current_bid.score, strategy_family=self.state.current_bid.strategy_family, reason=plan.reason, evidence=plan.evidence, refresh_view=True)
             self.trace("recovery.completed", "Standby promoted", f"Standby {self.state.current_bid.bid_id} promoted after failure.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id, provider=self.state.current_bid.provider, lane=self.state.current_bid.lane, status="success", reason=plan.reason, evidence=plan.evidence, refresh_view=True)
             return {"status": ActivePhase.EXECUTE.value}
         if self.state.current_bid:

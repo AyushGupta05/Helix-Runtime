@@ -852,7 +852,16 @@ class MissionStore:
         return [json.loads(row["payload_json"]) for row in self.fetch_ordered("execution_steps", "timestamp ASC", mission_id)]
 
     def _governed_bid_envelopes_for_view(self, mission_id: str) -> list[dict[str, Any]]:
-        return [json.loads(row["payload_json"]) for row in self.fetch_ordered("governed_bid_envelopes", "created_at ASC", mission_id)]
+        envelopes = [json.loads(row["payload_json"]) for row in self.fetch_ordered("governed_bid_envelopes", "created_at ASC", mission_id)]
+        bid_rows = {row["id"]: row for row in self.fetch_all("bids", mission_id)}
+        for envelope in envelopes:
+            bid_row = bid_rows.get(envelope.get("bid_id"))
+            if bid_row:
+                if not envelope.get("role"):
+                    envelope["role"] = bid_row["role"]
+                if not envelope.get("strategy_family"):
+                    envelope["strategy_family"] = bid_row["strategy_family"]
+        return envelopes
 
     def _governed_action_records_for_view(self, mission_id: str) -> list[dict[str, Any]]:
         return [json.loads(row["payload_json"]) for row in self.fetch_ordered("governed_action_records", "created_at ASC", mission_id)]

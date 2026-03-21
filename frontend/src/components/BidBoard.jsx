@@ -181,7 +181,7 @@ function StrategyCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
       </p>
 
       <div className="leaderboard-line">
-        <span>Score {formatNumber(bid.score)}</span>
+        <span>Score {bid.score != null ? formatNumber(bid.score) : "pending"}</span>
         <span>Conf {formatNumber(bid.confidence)}</span>
         <span>Risk {riskLabel(bid.risk)}</span>
       </div>

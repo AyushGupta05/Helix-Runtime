@@ -58,8 +58,17 @@ const EVENT_PHASE_MAP = {
 
 function appendBounded(items, nextItem, limit = STREAM_LIMIT, key = "id") {
   const existingIndex = items.findIndex((item) => item?.[key] === nextItem?.[key]);
-  const merged = existingIndex === -1 ? [...items, nextItem] : items.map((item, index) => (index === existingIndex ? { ...item, ...nextItem } : item));
-  return merged.slice(-limit);
+  if (existingIndex === -1) {
+    return [...items, nextItem].slice(-limit);
+  }
+  return items.map((item, index) => {
+    if (index !== existingIndex) return item;
+    const patch = {};
+    for (const [k, v] of Object.entries(nextItem)) {
+      if (v !== null && v !== undefined) patch[k] = v;
+    }
+    return { ...item, ...patch };
+  }).slice(-limit);
 }
 
 function replaceTaskStatus(tasks, taskId, nextStatus, extra = {}) {
@@ -105,7 +114,11 @@ function mergeCivicSnapshot(snapshot, payload = {}) {
       ...(snapshot?.skill_outputs ?? {}),
       ...(payload.skill_outputs ?? {})
     },
-    governed_bid_envelopes: payload.governed_bid_envelopes ?? snapshot?.governed_bid_envelopes ?? [],
+    governed_bid_envelopes: payload.governed_bid_envelopes
+      ? payload.governed_bid_envelopes
+      : payload.governed_envelope
+        ? appendBounded(snapshot?.governed_bid_envelopes ?? [], payload.governed_envelope, STREAM_LIMIT, "envelope_id")
+        : snapshot?.governed_bid_envelopes ?? [],
     recent_civic_actions: appendBounded(
       snapshot?.recent_civic_actions ?? [],
       payload.recent_civic_action ?? payload.civic_action ?? payload.action ?? payload,
@@ -169,7 +182,7 @@ export function normalizeIncomingBid(event) {
   return {
     bid_id: payload.bid_id,
     task_id: payload.task_id,
-    role: payload.role ?? "Unknown",
+    role: payload.role ?? null,
     provider: payload.provider ?? null,
     lane: payload.lane ?? null,
     model_id: payload.model_id ?? null,
