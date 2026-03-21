@@ -12,6 +12,7 @@ from arbiter.core.contracts import (
     ActivePhase,
     Bid,
     BidGenerationMode,
+    BidStatus,
     CapabilitySet,
     CivicAuditRecord,
     CivicCapability,
@@ -32,21 +33,58 @@ from arbiter.core.contracts import (
     utc_now,
 )
 from arbiter.mission.runner import MissionRuntime, build_mission_spec, mission_status, start_mission
-from arbiter.runtime.paths import build_mission_paths
+from arbiter.runtime.paths import build_managed_branch_name, build_mission_paths
 from arbiter.repo.worktree import WorktreeSetupError
 
 
 class FakeGovernedCivic:
-    def __init__(self, *, available_skills: list[str] | None = None, connected: bool = True) -> None:
+    def __init__(self, *, available_skills: list[str] | None = None, connected: bool = True, configured: bool = False) -> None:
         self.available_skills = available_skills or []
         self.connected = connected
+        self.configured = configured
         self.actions: list[str] = []
+
+    def available(self) -> bool:
+        return self.configured
 
     def refresh_capability_state(self, repo_snapshot=None, force: bool = False):
         del force
+        capabilities: list[CivicCapability] = []
+        if self.connected:
+            capabilities.extend(
+                [
+                    CivicCapability(
+                        capability_id="github_read",
+                        display_name="GitHub Read Context",
+                        tools=["fetch_ci_status", "open_pr_metadata", "open_issue_metadata"],
+                    ),
+                    CivicCapability(
+                        capability_id="github_write",
+                        display_name="GitHub Branch and Pull Request Delivery",
+                        read_only=False,
+                        tools=["github-remote-create_branch", "github-remote-push_files", "github-remote-create_pull_request"],
+                    ),
+                ]
+            )
+            if "knowledge_context" in self.available_skills:
+                capabilities.append(
+                    CivicCapability(
+                        capability_id="knowledge_read",
+                        display_name="Knowledge Retrieval",
+                        tools=["knowledge_retrieval"],
+                    )
+                )
+            if "trusted_external_context" in self.available_skills:
+                capabilities.append(
+                    CivicCapability(
+                        capability_id="guardrail_proxy",
+                        display_name="Trusted External Context",
+                        tools=["guardrail_proxy", "pass_through_proxy", "bodyguard"],
+                    )
+                )
         return {
             "connection": CivicConnectionStatus(
-                configured=True,
+                configured=self.configured or self.connected,
                 connected=self.connected,
                 available=self.connected,
                 required=False,
@@ -55,13 +93,7 @@ class FakeGovernedCivic:
                 toolkit_id="toolkit-demo",
                 last_checked_at=utc_now(),
             ),
-            "capabilities": [
-                CivicCapability(
-                    capability_id="github_read",
-                    display_name="GitHub Read Context",
-                    tools=["fetch_ci_status", "open_pr_metadata", "open_issue_metadata"],
-                )
-            ] if self.connected else [],
+            "capabilities": capabilities,
             "available_skills": list(self.available_skills) if repo_snapshot is not None else [],
             "skill_health": {
                 "github_context": SkillHealth(
@@ -71,7 +103,31 @@ class FakeGovernedCivic:
                     required_tools=["fetch_ci_status", "open_pr_metadata", "open_issue_metadata"],
                     available_tools=["fetch_ci_status", "open_pr_metadata", "open_issue_metadata"] if self.connected else [],
                     last_checked_at=utc_now(),
-                )
+                ),
+                "github_publish": SkillHealth(
+                    skill_id="github_publish",
+                    status="available" if "github_publish" in self.available_skills else "inactive",
+                    available="github_publish" in self.available_skills,
+                    required_tools=["github-remote-create_branch", "github-remote-push_files", "github-remote-create_pull_request"],
+                    available_tools=["github-remote-create_branch", "github-remote-push_files", "github-remote-create_pull_request"] if self.connected else [],
+                    last_checked_at=utc_now(),
+                ),
+                "knowledge_context": SkillHealth(
+                    skill_id="knowledge_context",
+                    status="available" if "knowledge_context" in self.available_skills else "inactive",
+                    available="knowledge_context" in self.available_skills,
+                    required_tools=["knowledge_retrieval"],
+                    available_tools=["knowledge_retrieval"] if self.connected and "knowledge_context" in self.available_skills else [],
+                    last_checked_at=utc_now(),
+                ),
+                "trusted_external_context": SkillHealth(
+                    skill_id="trusted_external_context",
+                    status="available" if "trusted_external_context" in self.available_skills else "inactive",
+                    available="trusted_external_context" in self.available_skills,
+                    required_tools=["guardrail_proxy", "pass_through_proxy", "bodyguard"],
+                    available_tools=["guardrail_proxy", "pass_through_proxy", "bodyguard"] if self.connected and "trusted_external_context" in self.available_skills else [],
+                    last_checked_at=utc_now(),
+                ),
             },
         }
 
@@ -98,6 +154,44 @@ class FakeGovernedCivic:
             record.output_payload = {"number": payload["pr_number"], "title": "Fix regression"}
         elif action_type == "open_issue_metadata":
             record.output_payload = {"number": payload["issue_number"], "title": "Broken flow"}
+        elif action_type == "github-remote-create_branch":
+            record.output_payload = {"branch": payload["branch"], "base": payload.get("from_branch")}
+        elif action_type == "github-remote-push_files":
+            record.output_payload = {
+                "branch": payload["branch"],
+                "pushed_files": [item["path"] for item in payload.get("files", [])],
+            }
+        elif action_type == "github-remote-create_pull_request":
+            record.output_payload = {
+                "number": 42,
+                "html_url": f"https://github.com/{payload['owner']}/{payload['repo']}/pull/42",
+                "title": payload["title"],
+                "head": payload["head"],
+                "base": payload["base"],
+            }
+        elif action_type == "knowledge_retrieval":
+            query = str(payload.get("query") or "governed research").strip()
+            record.output_payload = {
+                "summary": f"Research brief for {query}. Civic found the latest guidance and safety notes for this task.",
+                "source_urls": [
+                    "https://docs.langchain.com/langgraph",
+                    "https://docs.civic.com/guardrails",
+                ],
+                "results": [
+                    {
+                        "title": "LangGraph docs",
+                        "snippet": "Checkpointer setup and workflow recovery guidance.",
+                        "url": "https://docs.langchain.com/langgraph",
+                    },
+                    {
+                        "title": "Civic guardrails",
+                        "snippet": "Use governed tools and safety checks around external actions.",
+                        "url": "https://docs.civic.com/guardrails",
+                    },
+                ],
+                "confidence": 0.91,
+                "freshness": {"checked_at": utc_now().isoformat(), "age_seconds": 0},
+            }
         return type("GovernedActionResult", (), {"success": True, "result": record.output_payload, "record": record})()
 
     def record_audit(self, record: GovernedActionRecord) -> CivicAuditRecord:
@@ -128,6 +222,15 @@ class FakeGovernedCivic:
                 "GovernedExecutionResult",
                 (),
                 {"success": False, "result": {"blocked": True}, "audit": audit},
+            )()
+        if self.configured and not self.connected:
+            audit.status = "blocked"
+            audit.policy_state = PolicyState.RESTRICTED
+            audit.reasons.append("civic_transport_unavailable")
+            return type(
+                "GovernedExecutionResult",
+                (),
+                {"success": False, "result": {"blocked": True, "reasons": list(audit.reasons)}, "audit": audit},
             )()
         result = executor() if executor is not None else {}
         return type(
@@ -383,11 +486,12 @@ def test_execute_prefers_winning_provider_before_widening(python_bug_repo: Path)
             mission_objective,
             candidate_files,
             failure_context=None,
+            research_context=None,
             preview=False,
             providers=None,
             on_invocation=None,
         ):
-            del task, bid, mission_objective, candidate_files, failure_context, preview, on_invocation
+            del task, bid, mission_objective, candidate_files, failure_context, research_context, preview, on_invocation
             requested = list(providers or [])
             self.calls.append(requested)
             provider = requested[0] if requested else "anthropic"
@@ -579,6 +683,79 @@ def test_collect_activates_github_context_before_bidding(python_bug_repo: Path) 
     assert "Civic CI summary: ci-failing" in runtime.state.repo_snapshot.failure_signals
 
 
+def test_build_managed_branch_name_uses_repo_and_objective_context(python_bug_repo: Path) -> None:
+    branch_name = build_managed_branch_name(
+        python_bug_repo,
+        "Fix failing tests and improve reliability",
+        "missionabcdef12",
+    )
+
+    assert branch_name.startswith("codex/")
+    assert "python_bug_repo" in branch_name
+    assert "fix-failing-tests" in branch_name
+    assert not branch_name.startswith("codex/helix-")
+
+
+def test_build_mission_spec_defaults_to_unbounded_runtime(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests without a hard runtime budget",
+        mission_id="runtime-unbounded",
+    )
+
+    assert spec.max_runtime_minutes is None
+    assert spec.stop_policy.max_runtime_minutes is None
+
+
+def test_governance_keeps_unbounded_runtime_missions_running(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests without a hard runtime budget",
+        mission_id="runtime-unbounded-governance",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime._prepare_run()
+        runtime.state.runtime_seconds = 60 * 60 * 12
+        runtime.state.repo_snapshot = runtime.collector.collect(run_commands=False, objective=spec.objective)
+        task = TaskNode(
+            task_id="task-1",
+            title="Implement the fix",
+            task_type=TaskType.BUGFIX,
+            requirement_level=TaskRequirementLevel.REQUIRED,
+            success_criteria=SuccessCriteria(description="Tests pass"),
+            candidate_files=["calc.py"],
+        )
+        bid = Bid(
+            bid_id="bid-unbounded",
+            task_id=task.task_id,
+            role="Safe",
+            variant_id="safe-base",
+            strategy_family="localized-fix",
+            strategy_summary="Patch the calculator defect with minimal churn.",
+            exact_action="Fix calc.py and validate tests.",
+            expected_benefit=0.8,
+            utility=0.81,
+            confidence=0.84,
+            risk=0.18,
+            cost=0.1,
+            estimated_runtime_seconds=60 * 60 * 18,
+            touched_files=["calc.py"],
+            rollback_plan="revert",
+        )
+
+        decision = runtime.governance.evaluate_bid(task, bid, spec, failed_families=set())
+        progress = runtime.governance.evaluate_mission_progress(runtime.state)
+        stop = runtime.governance.evaluate_stop(runtime.state)
+    finally:
+        runtime.store.close()
+
+    assert "runtime_budget_exceeded" not in decision.reasons
+    assert progress["budget_remaining_pct"] is None
+    assert stop.should_stop is False
+
+
 def test_preflight_governed_bids_rejects_blocked_strategy(python_bug_repo: Path) -> None:
     spec = build_mission_spec(
         repo=str(python_bug_repo),
@@ -617,9 +794,28 @@ def test_preflight_governed_bids_rejects_blocked_strategy(python_bug_repo: Path)
             rollback_plan="revert",
             required_skills=["github_context"],
             governed_action_plan=["fetch_ci_status"],
+            score=0.92,
         )
-        blocked_bid = allowed_bid.model_copy(update={"bid_id": "bid-blocked"})
-        runtime.state.active_bids = [allowed_bid, blocked_bid]
+        plain_allowed_bid = allowed_bid.model_copy(
+            update={
+                "bid_id": "bid-plain-allowed",
+                "required_skills": [],
+                "optional_skills": [],
+                "governed_action_plan": [],
+                "score": 0.88,
+            }
+        )
+        blocked_bid = allowed_bid.model_copy(
+            update={
+                "bid_id": "bid-plain-blocked",
+                "required_skills": [],
+                "optional_skills": [],
+                "governed_action_plan": [],
+                "score": 0.84,
+            }
+        )
+        lower_ranked_bid = allowed_bid.model_copy(update={"bid_id": "bid-lower-ranked", "score": 0.33})
+        runtime.state.active_bids = [allowed_bid, plain_allowed_bid, blocked_bid, lower_ranked_bid]
         runtime.state.active_bid_round = 1
 
         runtime._preflight_governed_bids(task)
@@ -631,12 +827,43 @@ def test_preflight_governed_bids_rejects_blocked_strategy(python_bug_repo: Path)
         "read_write_scope:read_only",
         "civic_connection:connected",
     ]
-    assert runtime.state.governed_bid_envelopes["bid-blocked"].status == "blocked"
-    assert runtime.state.governed_bid_envelopes["bid-blocked"].constraints == [
+    assert runtime.state.governed_bid_envelopes["bid-plain-allowed"].status == "approved"
+    assert runtime.state.governed_bid_envelopes["bid-plain-blocked"].status == "blocked"
+    assert runtime.state.governed_bid_envelopes["bid-plain-blocked"].constraints == [
         "read_write_scope:read_only",
         "civic_connection:connected",
     ]
+    assert "bid-lower-ranked" not in runtime.state.governed_bid_envelopes
     assert blocked_bid.rejection_reason == "civic_policy_block"
+    assert blocked_bid.status == BidStatus.REJECTED
+
+
+def test_collect_enriches_knowledge_context_before_bidding(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Investigate the LangGraph checkpoint issue using Civic and Firecrawl-style research",
+        mission_id="civic-knowledge-context",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    runtime.civic = FakeGovernedCivic(
+        available_skills=["knowledge_context", "trusted_external_context"],
+        connected=True,
+        configured=True,
+    )
+    try:
+        runtime._prepare_run()
+        result = runtime.node_collect()
+    finally:
+        runtime.store.close()
+
+    knowledge = runtime.state.skill_outputs["knowledge_context"]
+    assert result == {"status": ActivePhase.STRATEGIZE.value}
+    assert knowledge["summary"]
+    assert knowledge["source_urls"]
+    assert knowledge["queries"]
+    assert knowledge["provenance"]["trusted"] is True
+    assert any(record.action_type == "knowledge_retrieval" for record in runtime.state.recent_civic_actions)
 
 
 def test_provider_backed_mission_reaches_civic_preflight_and_executes_with_openai_usage(python_bug_repo: Path) -> None:
@@ -690,6 +917,120 @@ def test_provider_backed_mission_reaches_civic_preflight_and_executes_with_opena
         for row in invocations
     )
     assert execution_steps >= 1
+
+
+def test_provider_backed_mission_threads_governed_research_into_bid_and_proposal_prompts(python_bug_repo: Path) -> None:
+    from tests.fake_provider_backend import FakeProviderRouter
+
+    backend = DefaultStrategyBackend(FakeProviderRouter(providers=("openai",)))
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix the LangGraph checkpoint error with Civic-safe research and provider-backed execution",
+        mission_id="provider-civic-research",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=backend)
+    runtime.civic = FakeGovernedCivic(
+        available_skills=["knowledge_context", "trusted_external_context"],
+        connected=True,
+        configured=True,
+    )
+    try:
+        state = runtime.run()
+    finally:
+        runtime.store.close()
+
+    assert state.outcome is not None
+    assert state.outcome.value == "success"
+    assert state.skill_outputs["knowledge_context"]["summary"]
+
+    mission_root = python_bug_repo / ".arbiter" / "missions" / spec.mission_id
+    connection = sqlite3.connect(mission_root / "state.db")
+    connection.row_factory = sqlite3.Row
+    try:
+        bid_prompts = connection.execute(
+            "SELECT prompt_preview FROM model_invocations WHERE invocation_kind = 'bid_generation' ORDER BY id ASC"
+        ).fetchall()
+        proposal_prompts = connection.execute(
+            "SELECT prompt_preview FROM model_invocations WHERE invocation_kind = 'proposal_generation' ORDER BY id ASC"
+        ).fetchall()
+        bid_rows = connection.execute("SELECT payload_json FROM bids ORDER BY id ASC").fetchall()
+    finally:
+        connection.close()
+
+    assert any("Governed research brief:" in str(row["prompt_preview"]) for row in bid_prompts)
+    assert any("Governed external research:" in str(row["prompt_preview"]) for row in proposal_prompts)
+    assert any(
+        "knowledge_context" in (json.loads(row["payload_json"]).get("required_skills") or [])
+        or "knowledge_context" in (json.loads(row["payload_json"]).get("optional_skills") or [])
+        for row in bid_rows
+    )
+    assert any(
+        "knowledge_retrieval" in (json.loads(row["payload_json"]).get("external_evidence_plan") or [])
+        for row in bid_rows
+    )
+
+
+def test_successful_github_mission_publishes_pull_request_via_civic(python_bug_repo: Path) -> None:
+    from tests.fake_provider_backend import FakeProviderRouter
+
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/python_bug_repo.git"],
+        cwd=str(python_bug_repo),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    backend = DefaultStrategyBackend(FakeProviderRouter(providers=("openai",)))
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests and open a review branch",
+        mission_id="github-pr-publish",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=backend)
+    runtime.civic = FakeGovernedCivic(
+        available_skills=["github_context", "github_publish"],
+        connected=True,
+        configured=True,
+    )
+    try:
+        state = runtime.run()
+    finally:
+        runtime.store.close()
+
+    assert state.outcome is not None
+    assert state.outcome.value == "success"
+    assert state.summary.branch_name.startswith("codex/")
+    assert "python_bug_repo" in state.summary.branch_name
+    assert not state.summary.branch_name.startswith("codex/helix-")
+    publish = state.skill_outputs["github_publish"]
+    assert publish["published"] is True
+    assert publish["pull_request"]["number"] == 42
+    assert publish["pull_request"]["base"] == "main"
+    assert "github-remote-create_branch" in runtime.civic.actions
+    assert "github-remote-push_files" in runtime.civic.actions
+    assert "github-remote-create_pull_request" in runtime.civic.actions
+
+
+def test_collect_safe_stops_when_configured_civic_is_unavailable_without_requested_skills(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests",
+        mission_id="civic-always-governed",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    runtime.civic = FakeGovernedCivic(available_skills=[], connected=False, configured=True)
+    try:
+        runtime._prepare_run()
+        result = runtime.node_collect()
+    finally:
+        runtime.store.close()
+
+    assert result == {"status": ActivePhase.FINALIZE.value}
+    assert runtime.state.outcome == MissionOutcome.FAILED_SAFE_STOP
+    assert runtime.state.governance.stop_reason == "civic_connection_unavailable"
 
 
 def test_collect_safe_stops_when_requested_skill_is_unavailable(python_bug_repo: Path) -> None:

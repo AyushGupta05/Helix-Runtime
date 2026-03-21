@@ -49,6 +49,28 @@ function tokenTotal(bid) {
   return Object.values(usage).reduce((acc, value) => acc + Number(value || 0), 0);
 }
 
+function winnerEnvelope(mission, winnerBidId) {
+  return (mission?.governed_bid_envelopes ?? []).find((item) => item.bid_id === winnerBidId) ?? null;
+}
+
+function reviewedBidCount(mission, bids) {
+  const reviewed = new Set((mission?.governed_bid_envelopes ?? []).map((item) => item.bid_id));
+  return bids.filter((bid) => reviewed.has(bid.bid_id)).slice(0, 3).length;
+}
+
+function researchContextSummary(mission) {
+  const knowledge = mission?.skill_outputs?.knowledge_context;
+  if (!knowledge || typeof knowledge !== "object") {
+    return null;
+  }
+  return {
+    summary: String(knowledge.summary ?? "").trim(),
+    queries: Array.isArray(knowledge.queries) ? knowledge.queries.filter(Boolean) : [],
+    sourceUrls: Array.isArray(knowledge.source_urls) ? knowledge.source_urls.filter(Boolean) : [],
+    trusted: Boolean(knowledge?.provenance?.trusted)
+  };
+}
+
 function winnerInsights(bids, winnerBidId) {
   const active = bids.filter((bid) => !bid.rejection_reason);
   const winner = active.find((bid) => bid.bid_id === winnerBidId) ?? active[0] ?? null;
@@ -101,6 +123,9 @@ export default React.memo(function SimulationIntelligenceScreen({
     rankedBids.find((bid) => bid.bid_id === winnerBidId) ?? rankedBids[0] ?? null;
   const insightRows = useMemo(() => winnerInsights(rankedBids, winnerBidId), [rankedBids, winnerBidId]);
   const governanceImpact = rankedBids.filter((bid) => Boolean(bid.rejection_reason)).length;
+  const civicReviewed = reviewedBidCount(mission, rankedBids);
+  const envelope = winnerEnvelope(mission, winnerBidId);
+  const research = researchContextSummary(mission);
   const explanation =
     winner?.search_summary ??
     winner?.mission_rationale ??
@@ -185,6 +210,27 @@ export default React.memo(function SimulationIntelligenceScreen({
             <p>
               Civic constraints clipped {formatInteger(governanceImpact)} candidate
               {governanceImpact === 1 ? "" : "s"} in this cycle.
+            </p>
+            <p>
+              Civic reviewed {formatInteger(civicReviewed)} of the top {formatInteger(Math.min(3, rankedBids.length))} bids
+              before the current winner advanced.
+            </p>
+            <p>
+              Winner envelope:{" "}
+              {envelope
+                ? `${String(envelope.status ?? envelope.policy_decision ?? "approved").replace(/[_-]/g, " ")}${
+                    Array.isArray(envelope.constraints) && envelope.constraints.length
+                      ? ` | ${envelope.constraints.join(", ")}`
+                      : ""
+                  }`
+                : "pending"}
+            </p>
+            <p>
+              {research
+                ? `${research.trusted ? "Trusted" : "Governed"} research informed the prompt set with ${formatInteger(
+                    research.sourceUrls.length
+                  )} sources.`
+                : "No governed research was needed for this cycle."}
             </p>
           </div>
         </aside>

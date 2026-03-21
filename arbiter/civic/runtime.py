@@ -624,22 +624,19 @@ class CivicRuntime:
         missing_skills = [skill for skill in required_skills if skill not in available_skills]
         discovered = {tool_name: object() for tool_name in available_tools}
         missing_actions = [action for action in governed_action_plan if not self._action_available(action, discovered)]
-        blocked = bool(missing_skills or (required_skills and not connection.connected))
-        if required_skills and missing_actions:
-            blocked = True
+        needs_governed_capability = bool(required_skills or optional_skills or governed_action_plan)
+        blocked = bool(missing_skills or missing_actions or (needs_governed_capability and not connection.connected))
         reasoning: list[str] = []
         constraints = ["read_write_scope:read_only"]
+        constraints.append("civic_connection:connected" if connection.connected else "civic_connection:unavailable")
         if missing_skills:
             reasoning.append(f"Missing required skills: {', '.join(missing_skills)}.")
             constraints.append(f"missing_skills:{','.join(missing_skills)}")
         if missing_actions:
             reasoning.append(f"Missing governed actions: {', '.join(missing_actions)}.")
             constraints.append(f"missing_governed_actions:{','.join(missing_actions)}")
-        if required_skills and not connection.connected:
-            reasoning.append("Civic connection is unavailable for required governed capabilities.")
-            constraints.append("civic_connection:unavailable")
-        elif required_skills:
-            constraints.append("civic_connection:connected")
+        if needs_governed_capability and not connection.connected:
+            reasoning.append("Civic connection is unavailable for governed capabilities.")
         if not reasoning:
             reasoning.append("Bid is admissible under the current Civic capability surface.")
         matched_actions = [

@@ -30,7 +30,7 @@ def start(
     constraints: list[str] = typer.Option(None, "--constraint"),
     preferences: list[str] = typer.Option(None, "--preference"),
     requested_skills: list[str] = typer.Option(None, "--requested-skill"),
-    max_runtime: int = typer.Option(10, "--max-runtime"),
+    max_runtime: int | None = typer.Option(None, "--max-runtime"),
     benchmark_requirement: str | None = typer.Option(None, "--benchmark-requirement"),
     protected_paths: list[str] = typer.Option(None, "--protected-path"),
     public_api_surface: list[str] = typer.Option(None, "--public-api-surface"),

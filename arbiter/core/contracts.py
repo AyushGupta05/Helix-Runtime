@@ -111,7 +111,7 @@ class ActionStatus(str, Enum):
 
 
 class StopPolicy(BaseModel):
-    max_runtime_minutes: int = 10
+    max_runtime_minutes: int | None = None
     max_recovery_rounds: int = 3
     max_policy_collisions: int = 2
     max_file_churn: int = 8
@@ -149,7 +149,7 @@ class MissionSpec(BaseModel):
     objective: str
     constraints: list[str] = Field(default_factory=list)
     preferences: list[str] = Field(default_factory=list)
-    max_runtime_minutes: int = 10
+    max_runtime_minutes: int | None = None
     allowed_tool_classes: list[str] = Field(
         default_factory=lambda: [
             "read_file",

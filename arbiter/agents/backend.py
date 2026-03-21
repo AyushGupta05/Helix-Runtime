@@ -168,6 +168,46 @@ def _preview_text(text: str, limit: int = 1200) -> str:
     return cleaned[:limit]
 
 
+def _research_source_urls(value: dict[str, Any] | None) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    candidates = value.get("source_urls") or value.get("sources") or []
+    urls: list[str] = []
+    if isinstance(candidates, str):
+        stripped = candidates.strip()
+        return [stripped] if stripped else []
+    if isinstance(candidates, list):
+        for item in candidates:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    urls.append(stripped)
+            elif isinstance(item, dict):
+                candidate = item.get("url") or item.get("source_url") or item.get("link")
+                if isinstance(candidate, str) and candidate.strip():
+                    urls.append(candidate.strip())
+    return list(dict.fromkeys(urls))
+
+
+def _research_prompt_block(research_context: dict[str, Any] | None) -> str:
+    if not isinstance(research_context, dict):
+        return ""
+    summary = str(research_context.get("summary") or "").strip()
+    queries = research_context.get("queries") if isinstance(research_context.get("queries"), list) else []
+    normalized_queries = [str(item).strip() for item in queries if str(item).strip()][:2]
+    source_urls = _research_source_urls(research_context)[:3]
+    if not summary and not normalized_queries and not source_urls:
+        return ""
+    lines = ["Governed external research:"]
+    if summary:
+        lines.append(f"- Summary: {summary}")
+    if normalized_queries:
+        lines.append(f"- Queries: {', '.join(normalized_queries)}")
+    if source_urls:
+        lines.append(f"- Sources: {', '.join(source_urls)}")
+    return "\n".join(lines)
+
+
 def _nested_mapping(payload: dict[str, Any] | None, *path: str) -> dict[str, Any]:
     current: Any = payload or {}
     for key in path:
@@ -546,6 +586,7 @@ class DefaultStrategyBackend:
         mission_objective: str,
         candidate_files: dict[str, str],
         failure_context: str | None = None,
+        research_context: dict[str, Any] | None = None,
         preview: bool = False,
         providers: list[str] | None = None,
         on_invocation=None,
@@ -605,6 +646,7 @@ class DefaultStrategyBackend:
             f"FILE: {path}\n```\n{content[:char_limit]}\n```"
             for path, content in scoped_candidate_files.items()
         )
+        research_block = _research_prompt_block(research_context)
         user = (
             f"Objective: {mission_objective}\n"
             f"Task: {task.title}\n"
@@ -612,6 +654,7 @@ class DefaultStrategyBackend:
             f"Strategy: {bid.strategy_summary}\n"
             f"Exact action: {bid.exact_action}\n"
             f"Failure context: {failure_context or 'none'}\n"
+            f"{research_block + '\n' if research_block else ''}"
             f"Candidate files:\n{file_blob}\n"
             "This is an executable bounded work unit chosen by Arbiter. "
             "Do not change the task type or return analysis-only output. "
@@ -725,6 +768,7 @@ class DefaultStrategyBackend:
         mission_objective: str,
         candidate_files: dict[str, str],
         failure_context: str | None = None,
+        research_context: dict[str, Any] | None = None,
         preview: bool = False,
         on_invocation=None,
     ) -> tuple[EditProposal, ModelInvocationResult]:
@@ -735,6 +779,7 @@ class DefaultStrategyBackend:
             mission_objective=mission_objective,
             candidate_files=candidate_files,
             failure_context=failure_context,
+            research_context=research_context,
             preview=preview,
             providers=provider_pool,
             on_invocation=on_invocation,
@@ -786,9 +831,11 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         mission_objective: str,
         candidate_files: dict[str, str],
         failure_context: str | None = None,
+        research_context: dict[str, Any] | None = None,
         preview: bool = False,
         on_invocation=None,
     ) -> tuple[EditProposal, ModelInvocationResult]:
+        del mission_objective, candidate_files, failure_context, research_context
         proposal = self.scripted[self.index]
         if not preview:
             self.index = min(self.index + 1, len(self.scripted) - 1)
@@ -812,11 +859,12 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         mission_objective: str,
         candidate_files: dict[str, str],
         failure_context: str | None = None,
+        research_context: dict[str, Any] | None = None,
         preview: bool = False,
         providers: list[str] | None = None,
         on_invocation=None,
     ) -> list[ProposalCandidate]:
-        del mission_objective, candidate_files, failure_context, providers
+        del mission_objective, candidate_files, failure_context, research_context, providers
         proposal, invocation = self.generate_edit_proposal(task, bid, "scripted", {}, preview=preview)
         if on_invocation:
             invocation_id = uuid4().hex

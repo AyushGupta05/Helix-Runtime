@@ -238,6 +238,68 @@ def test_generate_edit_proposal_uses_execution_timeout_for_real_edits() -> None:
     assert captured["timeout"] == 23.0
 
 
+def test_generate_edit_proposal_includes_governed_research_context_in_prompt() -> None:
+    captured: dict[str, object] = {}
+    lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
+
+    class _Router:
+        def __init__(self) -> None:
+            self.replay = SimpleNamespace(mode="off")
+            self.config = SimpleNamespace(
+                enabled_providers=["openai"],
+                default_provider="openai",
+                model_lanes={"proposal_gen": lane_config, "proposal_gen.openai": lane_config},
+            )
+
+        def invoke(
+            self,
+            lane: str,
+            prompt: dict[str, str],
+            *,
+            request_timeout_seconds: float | None = None,
+        ):
+            del lane, request_timeout_seconds
+            captured["prompt"] = prompt["user"]
+            from arbiter.agents.backend import ModelInvocationResult
+
+            content = json.dumps(
+                {
+                    "summary": "Apply the patch with governed context.",
+                    "files": [{"path": "calc.py", "content": "def add(a, b):\n    return a + b\n"}],
+                    "notes": ["research_informed"],
+                }
+            )
+            return ModelInvocationResult(
+                content=content,
+                provider="openai",
+                model_id="gpt-5-mini",
+                lane="proposal_gen.openai",
+                prompt_preview=prompt["user"],
+                response_preview=content,
+                token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                cost_usage={"usd": 0.001},
+            )
+
+    backend = DefaultStrategyBackend(_Router())
+
+    proposal, invocation = backend.generate_edit_proposal(
+        task=_task(),
+        bid=_bid(provider="openai"),
+        mission_objective="Fix the LangGraph checkpoint issue",
+        candidate_files=_candidate_files(),
+        research_context={
+            "summary": "Latest LangGraph docs recommend persisting checkpoints through the configured saver.",
+            "queries": ["langgraph checkpoint saver best practices"],
+            "source_urls": ["https://docs.langchain.com/langgraph"],
+        },
+    )
+
+    assert proposal.files
+    assert invocation.provider == "openai"
+    assert "Governed external research:" in str(captured["prompt"])
+    assert "langgraph checkpoint saver best practices" in str(captured["prompt"])
+
+
 def test_parse_edit_proposal_accepts_compact_operations_payload() -> None:
     payload = json.dumps(
         {

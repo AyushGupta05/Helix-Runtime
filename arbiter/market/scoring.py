@@ -4,6 +4,11 @@ from arbiter.core.contracts import Bid, MissionSpec, TaskNode
 
 
 def hard_filter_reason(bid: Bid, task: TaskNode, spec: MissionSpec, available_tools: set[str], failed_families: set[str]) -> str | None:
+    runtime_cap_seconds = (
+        spec.stop_policy.max_runtime_minutes * 60
+        if spec.stop_policy.max_runtime_minutes is not None
+        else None
+    )
     if any(path in spec.protected_paths for path in bid.touched_files):
         return "touches_protected_path"
     if bid.strategy_family in failed_families:
@@ -14,7 +19,7 @@ def hard_filter_reason(bid: Bid, task: TaskNode, spec: MissionSpec, available_to
         return "requires_unavailable_tool"
     if task.validator_requirements and not set(task.validator_requirements).issubset(set(bid.validator_plan)):
         return "missing_required_validator"
-    if bid.estimated_runtime_seconds > spec.stop_policy.max_runtime_minutes * 60:
+    if runtime_cap_seconds is not None and bid.estimated_runtime_seconds > runtime_cap_seconds:
         return "exceeds_runtime_budget"
     if len(bid.touched_files) > spec.stop_policy.max_file_scope:
         return "file_scope_exceeded"

@@ -108,40 +108,88 @@ function compactSkillRows(mission) {
   }));
 }
 
-function winnerEnvelopeRows(mission, winnerBidId, totalTokens, budgetCap) {
+function reviewedBidEnvelopes(mission, bids) {
+  const byBid = new Map((mission?.governed_bid_envelopes ?? []).map((item) => [item.bid_id, item]));
+  return bids
+    .filter((bid) => byBid.has(bid.bid_id))
+    .slice(0, 3)
+    .map((bid) => ({ bid, envelope: byBid.get(bid.bid_id) }));
+}
+
+function researchContextSummary(mission) {
+  const knowledge = mission?.skill_outputs?.knowledge_context;
+  if (!knowledge || typeof knowledge !== "object") {
+    return null;
+  }
+  const summary = String(knowledge.summary ?? "").trim();
+  const queries = Array.isArray(knowledge.queries) ? knowledge.queries.filter(Boolean) : [];
+  const sourceUrls = Array.isArray(knowledge.source_urls) ? knowledge.source_urls.filter(Boolean) : [];
+  return {
+    summary,
+    queries,
+    sourceUrls,
+    trusted: Boolean(knowledge?.provenance?.trusted)
+  };
+}
+
+function winnerEnvelopeRows(mission, winnerBidId, reviewedBids, research) {
   const envelope = (mission?.governed_bid_envelopes ?? []).find(
     (item) => item.bid_id === winnerBidId
   );
   const policyState = envelope?.status ?? envelope?.policy_decision ?? "approved";
+  const constraints = Array.isArray(envelope?.constraints) ? envelope.constraints : [];
+  const reviewTarget = Math.min(3, Math.max(reviewedBids.length, (mission?.bids ?? []).length));
   return [
     {
-      label: "Read Access",
-      state: (mission?.available_skills ?? []).includes("github_context"),
-      detail: (mission?.available_skills ?? []).includes("github_context") ? "Granted" : "Not available"
+      label: "Top 3 Reviewed",
+      state: reviewedBids.length > 0,
+      detail:
+        reviewTarget > 0
+          ? `${formatInteger(reviewedBids.length)} of ${formatInteger(reviewTarget)} bids screened by Civic`
+          : "Waiting for the first review set"
     },
     {
-      label: "Budget Cap",
-      state: totalTokens <= budgetCap,
-      detail: `${formatInteger(totalTokens)} / ${formatInteger(budgetCap)} tokens`
-    },
-    {
-      label: "Policy",
+      label: "Winner Status",
       state: !String(policyState).includes("block"),
       detail: String(policyState).replace(/[_-]/g, " ")
+    },
+    {
+      label: "Winner Constraints",
+      state: !constraints.some((item) => String(item).includes("missing_") || String(item).includes("unavailable")),
+      detail: constraints.length ? constraints.join(", ") : "No extra constraints"
+    },
+    {
+      label: "Research",
+      state: Boolean(research),
+      detail: research
+        ? `${formatInteger(research.sourceUrls.length)} sources across ${formatInteger(research.queries.length)} queries`
+        : "No governed research used"
     }
   ];
 }
 
-function policyImpactRows(bids, mission) {
+function policyImpactRows(bids, mission, reviewedBids, research) {
   const blocked = bids.filter((bid) => Boolean(bid.rejection_reason));
   const rows = blocked.slice(0, 3).map((bid) => ({
     tone: "danger",
     text: `${bid.role ?? bid.strategy_family} blocked: ${bid.rejection_reason}`
   }));
+  if (reviewedBids.length) {
+    rows.push({
+      tone: "accent",
+      text: `Civic reviewed ${reviewedBids.length} of the top ${Math.min(3, bids.length)} bids before selection`
+    });
+  }
   if (mission?.winner_bid_id) {
     rows.push({
       tone: "neutral",
       text: "Winner chosen with governed context"
+    });
+  }
+  if (research?.summary) {
+    rows.push({
+      tone: research.trusted ? "success" : "neutral",
+      text: `Governed research shaped the prompts: ${research.summary}`
     });
   }
   if (!rows.length) {
@@ -164,8 +212,6 @@ export default React.memo(function StrategyBiddingScreen({
   const rankedBids = useBidRanking(mission);
   const missionUsage = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
   const missionTokens = Number(missionUsage.total_tokens ?? 0);
-  const budgetCap =
-    Number(mission?.mission_meta?.token_budget ?? 0) || Math.max(500, missionTokens + 200);
   const spendDetail = usageCostStatusDetail(missionUsage);
   const topEvents = useMemo(
     () =>
@@ -176,8 +222,14 @@ export default React.memo(function StrategyBiddingScreen({
   );
   const civicStatus = String(mission?.civic_connection?.status ?? "idle").replace(/[_-]/g, " ");
   const skillRows = compactSkillRows(mission);
-  const envelopeRows = winnerEnvelopeRows(mission, winnerBidId, missionTokens, budgetCap);
-  const policyRows = policyImpactRows(rankedBids, mission);
+  const envelopeIndex = useMemo(
+    () => new Map((mission?.governed_bid_envelopes ?? []).map((item) => [item.bid_id, item])),
+    [mission?.governed_bid_envelopes]
+  );
+  const reviewedBids = useMemo(() => reviewedBidEnvelopes(mission, rankedBids), [mission, rankedBids]);
+  const research = useMemo(() => researchContextSummary(mission), [mission]);
+  const envelopeRows = winnerEnvelopeRows(mission, winnerBidId, reviewedBids, research);
+  const policyRows = policyImpactRows(rankedBids, mission, reviewedBids, research);
 
   return (
     <section className="console-screen console-screen-bidding panel">
@@ -188,9 +240,7 @@ export default React.memo(function StrategyBiddingScreen({
           <span>Status: {String(mission?.run_state ?? "idle")}</span>
           <span>Phase: {humanizePhase(activePhase)}</span>
           <span>Elapsed: {formatRuntime(elapsedSeconds)}</span>
-          <span>
-            Budget: {formatInteger(missionTokens)} / {formatInteger(budgetCap)} tokens
-          </span>
+          <span>Top 3 Civic Review: {formatInteger(reviewedBids.length)}</span>
           <span>Spend: {formatUsageCost(missionUsage)}</span>
           {spendDetail ? <span>{spendDetail}</span> : null}
         </div>
@@ -224,6 +274,10 @@ export default React.memo(function StrategyBiddingScreen({
                 const status = bidStatus(bid, winnerBidId, standbyBidId);
                 const tokens = tokenUsageTotal(bid);
                 const confidence = Math.round(Number(bid.confidence ?? 0) * 100);
+                const envelope = envelopeIndex.get(bid.bid_id);
+                const envelopeConstraints = Array.isArray(envelope?.constraints)
+                  ? envelope.constraints.slice(0, 2)
+                  : [];
                 return (
                   <article key={bid.bid_id} className={`console-bid-row tone-${status.tone}`}>
                     <div className="console-bid-head">
@@ -253,6 +307,12 @@ export default React.memo(function StrategyBiddingScreen({
                         {bid.search_summary ?? bid.mission_rationale ?? bid.strategy_summary ?? "Competing in current round."}
                       </p>
                     )}
+                    {envelope ? (
+                      <p className="console-bid-note">
+                        Civic review: {String(envelope.status ?? "approved").replace(/[_-]/g, " ")}
+                        {envelopeConstraints.length ? ` | Constraints: ${envelopeConstraints.join(", ")}` : " | No extra constraints"}
+                      </p>
+                    ) : null}
                     {status.tone === "blocked" ? (
                       <button type="button" className="console-inline-detail" disabled>
                         Details
@@ -280,6 +340,10 @@ export default React.memo(function StrategyBiddingScreen({
               <div className="console-kv-row">
                 <span>Total Tokens</span>
                 <strong>{formatInteger(missionTokens)}</strong>
+              </div>
+              <div className="console-kv-row">
+                <span>Research Signals</span>
+                <strong>{research ? formatInteger(research.sourceUrls.length) : "0"}</strong>
               </div>
               {spendDetail ? (
                 <div className="console-kv-row">
@@ -310,6 +374,10 @@ export default React.memo(function StrategyBiddingScreen({
                     ? relativeTime(mission.civic_connection.last_checked_at)
                     : "waiting"}
                 </strong>
+              </div>
+              <div className="console-kv-row">
+                <span>Reviewed This Round</span>
+                <strong>{formatInteger(reviewedBids.length)}</strong>
               </div>
             </div>
           </section>

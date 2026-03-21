@@ -35,4 +35,27 @@ describe("MissionComposer", () => {
       max_runtime: 15
     });
   });
+
+  it("submits an unbounded runtime when the field is left blank", async () => {
+    const user = userEvent.setup();
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<MissionComposer busy={false} blocked={false} onSubmit={handleSubmit} />);
+
+    await user.type(screen.getByLabelText(/Repo Path/i), "C:\\repo");
+    await user.type(screen.getByLabelText(/Objective/i), "Fix tests without a hard budget");
+    await user.click(screen.getByRole("button", { name: /Launch mission/i }));
+
+    expect(handleSubmit).toHaveBeenCalledWith({
+      repo: "C:\\repo",
+      objective: "Fix tests without a hard budget",
+      constraints: [],
+      preferences: [],
+      requested_skills: [],
+      protected_paths: [],
+      public_api_surface: [],
+      benchmark_requirement: null,
+      max_runtime: null
+    });
+  });
 });

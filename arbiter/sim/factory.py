@@ -178,6 +178,43 @@ class SimulationFactory:
             return self.backend.market_generation_mode()
         return BidGenerationMode.DETERMINISTIC_FALLBACK
 
+    @staticmethod
+    def _research_source_urls(value: object) -> list[str]:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return [stripped] if stripped else []
+        urls: list[str] = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    stripped = item.strip()
+                    if stripped:
+                        urls.append(stripped)
+                elif isinstance(item, dict):
+                    candidate = item.get("url") or item.get("source_url") or item.get("link")
+                    if isinstance(candidate, str) and candidate.strip():
+                        urls.append(candidate.strip())
+        return list(dict.fromkeys(urls))
+
+    @classmethod
+    def _research_prompt_brief(cls, skill_outputs: dict[str, object]) -> str:
+        if not isinstance(skill_outputs, dict):
+            return ""
+        research = skill_outputs.get("knowledge_context")
+        if not isinstance(research, dict):
+            return ""
+        summary = _text_value(research.get("summary"), "").strip()
+        queries = _list_value(research.get("queries"))[:2]
+        source_urls = cls._research_source_urls(research.get("source_urls") or research.get("sources"))[:3]
+        lines: list[str] = []
+        if summary:
+            lines.append(f"Governed research brief: {summary}")
+        if queries:
+            lines.append(f"Research queries: {', '.join(queries)}")
+        if source_urls:
+            lines.append(f"Source URLs: {', '.join(source_urls)}")
+        return "\n".join(lines)
+
     def generate(
         self,
         task: TaskNode,
@@ -343,7 +380,7 @@ class SimulationFactory:
         ceiling = runtime_budget * 1.35
         mission_context = self._current_mission_context or {}
         max_runtime_seconds = mission_context.get("max_runtime_seconds")
-        if max_runtime_seconds:
+        if max_runtime_seconds is not None:
             ceiling = min(ceiling, max(45.0, float(max_runtime_seconds) * 0.7))
         return max(30.0, ceiling)
 
@@ -389,7 +426,8 @@ class SimulationFactory:
             completed = mc.get("completed_moves", [])
             failed = mc.get("failed_moves", [])
             landscape = mc.get("mission_landscape", [])
-            runtime_budget = int(self._runtime_ceiling_seconds(task))
+            runtime_cap = mc.get("max_runtime_seconds")
+            research_brief = self._research_prompt_brief(mc.get("skill_outputs", {}))
             mission_section = (
                 f"Mission objective: {mc.get('objective', task.title)}\n"
                 f"Strategy round: {mc.get('strategy_round', 1)}\n"
@@ -397,8 +435,13 @@ class SimulationFactory:
                 f"Failed moves: {', '.join(failed) if failed else 'none'}\n"
                 f"Mission landscape: {'; '.join(landscape[:4]) if landscape else 'not yet mapped'}\n"
                 f"Constraints: {', '.join(mc.get('constraints', [])) or 'none'}\n"
-                f"Runtime budget target: keep estimated runtime at or below {runtime_budget} seconds.\n"
             )
+            if runtime_cap is not None:
+                mission_section += (
+                    "Runtime posture: keep the move efficient and bounded to the current task type.\n"
+                )
+            if research_brief:
+                mission_section += f"{research_brief}\n"
         user_prompt = (
             f"{mission_section}"
             f"Current move type: {task.task_type.value}\n"
@@ -670,6 +713,26 @@ class SimulationFactory:
                 optional_skills = list(dict.fromkeys([*optional_skills, "github_context"]))
             governed_action_plan = list(dict.fromkeys([*governed_action_plan, *github_actions]))
             external_evidence_plan = list(dict.fromkeys([*external_evidence_plan, *github_actions]))
+
+        knowledge_output = skill_outputs.get("knowledge_context", {}) if isinstance(skill_outputs, dict) else {}
+        knowledge_actions = ["knowledge_retrieval"]
+        knowledge_has_context = isinstance(knowledge_output, dict) and bool(
+            _text_value(knowledge_output.get("summary"), "").strip()
+            or self._research_source_urls(knowledge_output.get("source_urls") or knowledge_output.get("sources"))
+        )
+        if "knowledge_context" in available_skills and knowledge_has_context:
+            if (
+                "knowledge_context" in requested_skills
+                or role_name in {"Test", "Performance"}
+                or task.task_type.value in {"localize", "perf_diagnosis", "validate"}
+            ):
+                required_skills = list(dict.fromkeys([*required_skills, "knowledge_context"]))
+            else:
+                optional_skills = list(dict.fromkeys([*optional_skills, "knowledge_context"]))
+            if "trusted_external_context" in available_skills and "trusted_external_context" not in required_skills:
+                optional_skills = list(dict.fromkeys([*optional_skills, "trusted_external_context"]))
+            governed_action_plan = list(dict.fromkeys([*governed_action_plan, *knowledge_actions]))
+            external_evidence_plan = list(dict.fromkeys([*external_evidence_plan, *knowledge_actions]))
 
         required_skills = [skill for skill in required_skills if skill in available_skills or skill in requested_skills]
         optional_skills = [skill for skill in optional_skills if skill in available_skills and skill not in required_skills]

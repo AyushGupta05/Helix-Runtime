@@ -70,7 +70,7 @@ class RuntimeConfig(BaseSettings):
     preview_request_timeout_seconds: float = Field(default=18.0, alias="ARBITER_PREVIEW_REQUEST_TIMEOUT_SECONDS")
     proposal_request_timeout_seconds: float = Field(default=24.0, alias="ARBITER_PROPOSAL_REQUEST_TIMEOUT_SECONDS")
     proposal_generation_max_tokens: int = Field(default=4096, alias="ARBITER_PROPOSAL_GENERATION_MAX_TOKENS")
-    max_runtime_minutes: int = Field(default=10, alias="ARBITER_MAX_RUNTIME_MINUTES")
+    max_runtime_minutes: int | None = Field(default=None, alias="ARBITER_MAX_RUNTIME_MINUTES")
     max_file_churn: int = Field(default=8, alias="ARBITER_MAX_FILE_CHURN")
     max_recovery_rounds: int = Field(default=3, alias="ARBITER_MAX_RECOVERY_ROUNDS")
     replay_mode: Literal["off", "record", "replay"] = Field(default="off", alias="ARBITER_REPLAY_MODE")

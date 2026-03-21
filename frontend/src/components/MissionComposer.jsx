@@ -21,7 +21,7 @@ export default function MissionComposer({
   const [protectedPaths, setProtectedPaths] = useState("");
   const [publicApiSurface, setPublicApiSurface] = useState("");
   const [benchmarkRequirement, setBenchmarkRequirement] = useState("");
-  const [maxRuntime, setMaxRuntime] = useState(10);
+  const [maxRuntime, setMaxRuntime] = useState("");
   const [useGithubContext, setUseGithubContext] = useState(false);
 
   const recentRepos = useMemo(() => {
@@ -46,7 +46,7 @@ export default function MissionComposer({
         protected_paths: parseList(protectedPaths),
         public_api_surface: parseList(publicApiSurface),
         benchmark_requirement: benchmarkRequirement.trim() || null,
-        max_runtime: Number(maxRuntime) || 10
+        max_runtime: Number(maxRuntime) > 0 ? Number(maxRuntime) : null
       });
     } catch {
       // The launcher surfaces mutation failures through the shared error prop.
@@ -139,7 +139,7 @@ export default function MissionComposer({
               />
             </label>
             <label>
-              Max Runtime (minutes)
+              Max Runtime (minutes, optional)
               <input
                 type="number"
                 min={1}

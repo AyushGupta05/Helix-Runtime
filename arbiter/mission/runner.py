@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from arbiter.agents.backend import DefaultStrategyBackend, ProviderModelRouter, load_candidate_files
@@ -526,6 +527,297 @@ class MissionRuntime:
         successes = sum(1 for record in records if record.status == "executed")
         return round(successes / len(records), 3)
 
+    @staticmethod
+    def _research_source_urls(payload: Any) -> list[str]:
+        urls: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith(("http://", "https://")):
+                    urls.append(stripped.rstrip(".,);"))
+                return
+            if isinstance(value, dict):
+                candidate = value.get("url") or value.get("source_url") or value.get("link")
+                if isinstance(candidate, str) and candidate.strip():
+                    urls.append(candidate.strip())
+                for nested in value.values():
+                    collect(nested)
+                return
+            if isinstance(value, list):
+                for item in value[:10]:
+                    collect(item)
+
+        collect(payload)
+        return list(dict.fromkeys(urls))
+
+    @classmethod
+    def _research_summary_text(cls, payload: Any) -> str:
+        if isinstance(payload, str):
+            return " ".join(payload.split())[:320]
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("summary", "answer", "abstract", "content", "message", "text"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:320]
+            if isinstance(value, dict):
+                nested = cls._research_summary_text(value)
+                if nested:
+                    return nested
+        result_value = payload.get("result")
+        if isinstance(result_value, str) and result_value.strip():
+            return " ".join(result_value.split())[:320]
+        if isinstance(result_value, dict):
+            nested = cls._research_summary_text(result_value)
+            if nested:
+                return nested
+        results = payload.get("results") or payload.get("items") or payload.get("sources") or []
+        if isinstance(results, list):
+            parts: list[str] = []
+            for item in results[:3]:
+                if isinstance(item, dict):
+                    title = str(item.get("title") or item.get("name") or "").strip()
+                    snippet = str(item.get("snippet") or item.get("summary") or item.get("excerpt") or "").strip()
+                    if title and snippet:
+                        parts.append(f"{title}: {snippet}")
+                    elif title:
+                        parts.append(title)
+                    elif snippet:
+                        parts.append(snippet)
+                elif isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+            if parts:
+                return " ".join(parts)[:320]
+        return ""
+
+    def _knowledge_skill_confidence(self, records: list[GovernedActionRecord], packets: list[dict[str, Any]]) -> float:
+        if not records:
+            return 0.0
+        success_ratio = sum(1 for record in records if record.status == "executed") / len(records)
+        payload_scores: list[float] = []
+        for packet in packets:
+            try:
+                confidence = packet.get("confidence")
+                if confidence is not None:
+                    payload_scores.append(float(confidence))
+            except (TypeError, ValueError):
+                continue
+        if not payload_scores:
+            return round(success_ratio, 3)
+        blended = (success_ratio + (sum(payload_scores) / len(payload_scores))) / 2
+        return round(max(0.0, min(1.0, blended)), 3)
+
+    def _should_collect_external_research(self) -> bool:
+        if self.state.repo_snapshot is None or "knowledge_context" not in self.state.available_skills:
+            return False
+        objective = f" {self.spec.objective.lower()} "
+        external_markers = (
+            " api ",
+            " sdk ",
+            " docs ",
+            " documentation ",
+            " version ",
+            " versions ",
+            " provider ",
+            " vendor ",
+            " oauth ",
+            " endpoint ",
+            " integration ",
+            " migration ",
+            " release ",
+            " dependency ",
+            " package ",
+            " library ",
+            " ci ",
+            " workflow ",
+            " langgraph ",
+            " civic ",
+            " firecrawl ",
+            " github ",
+            " prompt injection ",
+            " unsafe tool ",
+            " sensitive data ",
+            " guardrail ",
+        )
+        if any(marker in objective for marker in external_markers):
+            return True
+        github_context = self.state.skill_outputs.get("github_context") or {}
+        if github_context.get("issues") or github_context.get("discussion"):
+            return True
+        failing_checks = github_context.get("failing_checks") or []
+        if failing_checks:
+            return True
+        ci_summary = str(github_context.get("ci_summary") or "").lower()
+        if any(marker in ci_summary for marker in ("fail", "error", "blocked", "auth", "timeout", "version", "deprecat")):
+            return True
+        failure_text = str(self.state.failure_context.details if self.state.failure_context else "").lower()
+        if any(
+            marker in failure_text
+            for marker in (
+                "upstream",
+                "provider",
+                "schema",
+                "auth",
+                "version",
+                "integration",
+                "endpoint",
+                "sdk",
+                "dependency",
+                "prompt injection",
+                "unsafe tool",
+            )
+        ):
+            return True
+        hints = self.state.repo_snapshot.objective_hints or {}
+        return bool(hints.get("issue_numbers") or hints.get("discussion_numbers") or hints.get("pr_numbers"))
+
+    def _research_queries(self) -> list[str]:
+        objective = " ".join(self.spec.objective.split())
+        queries: list[str] = []
+
+        def add_query(text: str | None) -> None:
+            if not text:
+                return
+            normalized = " ".join(str(text).split())
+            if not normalized:
+                return
+            lowered = normalized.lower()
+            if lowered in {item.lower() for item in queries}:
+                return
+            queries.append(normalized[:220])
+
+        add_query(f"{objective} documentation best practices")
+        github_context = self.state.skill_outputs.get("github_context") or {}
+        issue_titles = [
+            str(item.get("title")).strip()
+            for item in github_context.get("issues") or []
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ]
+        if issue_titles:
+            add_query(f"{objective} {' '.join(issue_titles[:2])}")
+        discussion = github_context.get("discussion")
+        if isinstance(discussion, dict) and str(discussion.get("title") or "").strip():
+            add_query(f"{objective} {str(discussion['title']).strip()}")
+        ci_summary = str(github_context.get("ci_summary") or "").strip()
+        failing_checks = [str(item).strip() for item in (github_context.get("failing_checks") or []) if str(item).strip()]
+        if ci_summary or failing_checks:
+            add_query(f"{objective} {ci_summary} {' '.join(failing_checks[:3])} troubleshooting")
+        failure_text = str(self.state.failure_context.details if self.state.failure_context else "").strip()
+        if failure_text:
+            add_query(f"{objective} {failure_text[:120]} documentation")
+        if not queries:
+            add_query(objective)
+        return queries[:3]
+
+    def _normalize_research_packet(self, query: str, payload: dict[str, Any]) -> dict[str, Any]:
+        source_urls = self._research_source_urls(payload)
+        summary = self._research_summary_text(payload)
+        freshness = payload.get("freshness") if isinstance(payload.get("freshness"), dict) else None
+        if freshness is None:
+            freshness = {"checked_at": utc_now().isoformat(), "age_seconds": 0}
+        raw_confidence = payload.get("confidence")
+        confidence: float | None = None
+        try:
+            if raw_confidence is not None:
+                confidence = max(0.0, min(1.0, float(raw_confidence)))
+        except (TypeError, ValueError):
+            confidence = None
+        return {
+            "query": query,
+            "summary": summary or f"Governed research returned {len(source_urls)} source(s) for {query}.",
+            "source_urls": source_urls,
+            "freshness": freshness,
+            "confidence": confidence,
+            "raw": payload,
+        }
+
+    def _enrich_knowledge_context(self) -> None:
+        if self.state.repo_snapshot is None or not self._should_collect_external_research():
+            return
+        queries = self._research_queries()
+        if not queries:
+            return
+        records: list[GovernedActionRecord] = []
+        packets: list[dict[str, Any]] = []
+        repo = self.state.repo_snapshot
+        for query in queries:
+            result = self.civic.execute_governed_action(
+                mission_id=self.spec.mission_id,
+                task_id=self.state.active_task_id or "collect",
+                bid_id=None,
+                action_type="knowledge_retrieval",
+                payload={
+                    "query": query,
+                    "objective": self.spec.objective,
+                    "repo": repo.remote_slug,
+                    "branch": repo.branch,
+                    "max_results": 5,
+                },
+                skill_id="knowledge_context",
+            )
+            records.append(result.record)
+            self._register_governed_action(result.record, refresh_view=False)
+            if result.success:
+                packets.append(self._normalize_research_packet(query, result.result))
+        if not records:
+            return
+        usable_packets = [packet for packet in packets if packet.get("summary") or packet.get("source_urls")]
+        audit_ids = [record.audit_id for record in records if record.audit_id]
+        if not usable_packets:
+            self.trace(
+                "civic.skill.knowledge_context",
+                "Governed research unavailable",
+                "Civic research ran, but no usable external context was returned.",
+                status="warning",
+                refresh_view=True,
+                queries=queries,
+                audit_ids=audit_ids,
+            )
+            return
+        source_urls = list(
+            dict.fromkeys(
+                url
+                for packet in usable_packets
+                for url in packet.get("source_urls", [])
+            )
+        )
+        summary = " ".join(packet["summary"] for packet in usable_packets[:2] if packet.get("summary")).strip()
+        if len(summary) > 480:
+            summary = f"{summary[:477].rstrip()}..."
+        output = {
+            "summary": summary or "Governed external research enriched the mission context.",
+            "queries": queries,
+            "source_urls": source_urls,
+            "sources": [
+                {
+                    "query": packet["query"],
+                    "summary": packet["summary"],
+                    "source_urls": packet["source_urls"],
+                }
+                for packet in usable_packets[:4]
+            ],
+            "packets": usable_packets[:4],
+            "provenance": {
+                "source": "civic",
+                "toolkit_id": self.config.civic_toolkit_id,
+                "skill_id": "knowledge_context",
+                "trusted": "trusted_external_context" in self.state.available_skills,
+            },
+            "audit_ids": audit_ids,
+            "freshness": {"checked_at": utc_now().isoformat(), "age_seconds": 0},
+            "confidence": self._knowledge_skill_confidence(records, usable_packets),
+        }
+        self.state.skill_outputs["knowledge_context"] = output
+        self.trace(
+            "civic.skill.knowledge_context",
+            "Governed research enriched",
+            "Collected Civic-governed external research before strategy generation.",
+            status="info",
+            refresh_view=True,
+            skill_output=output,
+        )
+
     def _enrich_github_context(self) -> None:
         if "github_context" not in self.state.available_skills or self.state.repo_snapshot is None:
             return
@@ -605,6 +897,208 @@ class MissionRuntime:
         )
 
     @staticmethod
+    def _github_base_branch(repo_snapshot) -> str:
+        tracking_branch = repo_snapshot.tracking_branch or ""
+        if "/" in tracking_branch:
+            return tracking_branch.split("/", 1)[1]
+        return repo_snapshot.branch or "main"
+
+    @staticmethod
+    def _split_repo_slug(repo_slug: str | None) -> tuple[str | None, str | None]:
+        if not repo_slug or "/" not in repo_slug:
+            return None, None
+        owner, repo = repo_slug.split("/", 1)
+        return owner, repo
+
+    @staticmethod
+    def _action_error_text(result: dict | None) -> str:
+        if not result:
+            return ""
+        return str(result.get("error") or result.get("message") or result.get("detail") or "").strip()
+
+    @classmethod
+    def _result_looks_like_existing_branch(cls, result: dict | None) -> bool:
+        text = cls._action_error_text(result).lower()
+        return "already exists" in text or "reference exists" in text or "branch exists" in text
+
+    @classmethod
+    def _result_looks_like_existing_pull_request(cls, result: dict | None) -> bool:
+        text = cls._action_error_text(result).lower()
+        return "pull request already exists" in text or "already has an open pull request" in text
+
+    def _pull_request_title(self) -> str:
+        objective = " ".join(self.spec.objective.split())
+        if len(objective) > 72:
+            objective = f"{objective[:69].rstrip()}..."
+        return f"Arbiter: {objective}"
+
+    def _pull_request_body(self, checkpoint: AcceptedCheckpoint, base_branch: str) -> str:
+        changed_files = checkpoint.affected_files or []
+        changed_lines = "\n".join(f"- `{path}`" for path in changed_files[:12]) or "- No changed files recorded."
+        return (
+            f"## Arbiter mission\n"
+            f"- Mission ID: `{self.spec.mission_id}`\n"
+            f"- Objective: {self.spec.objective}\n"
+            f"- Managed branch: `{self.branch_name}`\n"
+            f"- Base branch: `{base_branch}`\n"
+            f"- Accepted commit: `{checkpoint.commit_sha}`\n\n"
+            f"## Changed files\n"
+            f"{changed_lines}\n"
+        )
+
+    def _publish_github_pull_request(self, *, refresh_view: bool = False) -> dict[str, object] | None:
+        repo = self.state.repo_snapshot
+        if repo is None or repo.remote_provider != "github" or not repo.remote_slug:
+            return None
+        checkpoint = self.state.accepted_checkpoint
+        if checkpoint is None:
+            return {
+                "published": False,
+                "summary": "GitHub publication skipped because no accepted checkpoint is available.",
+                "detail": "A pull request can only be created after a validated checkpoint is accepted.",
+                "repo": repo.remote_slug,
+            }
+        if "github_publish" not in self.state.available_skills:
+            return {
+                "published": False,
+                "summary": "GitHub publication skipped because Civic publish tools are unavailable.",
+                "detail": "The managed branch was created locally, but Civic did not expose the publish skill for branch and pull request delivery.",
+                "repo": repo.remote_slug,
+            }
+        owner, repo_name = self._split_repo_slug(repo.remote_slug)
+        if not owner or not repo_name:
+            return {
+                "published": False,
+                "summary": "GitHub publication skipped because the repo slug could not be resolved.",
+                "detail": f"Remote slug `{repo.remote_slug}` is not in the expected owner/repo format.",
+                "repo": repo.remote_slug,
+            }
+        changed_files: list[dict[str, str]] = []
+        missing_files: list[str] = []
+        for relative_path in checkpoint.affected_files:
+            path = Path(self.paths.worktree_dir) / relative_path
+            if not path.exists():
+                missing_files.append(relative_path)
+                continue
+            changed_files.append(
+                {
+                    "path": relative_path,
+                    "content": path.read_text(encoding="utf-8", errors="ignore"),
+                }
+            )
+        if missing_files:
+            return {
+                "published": False,
+                "summary": "GitHub publication skipped because some changed files no longer exist in the worktree.",
+                "detail": f"Missing files: {', '.join(missing_files)}",
+                "repo": repo.remote_slug,
+            }
+        base_branch = self._github_base_branch(repo)
+        audit_ids: list[str] = []
+
+        create_branch = self.civic.execute_governed_action(
+            mission_id=self.spec.mission_id,
+            task_id=self.state.active_task_id,
+            bid_id=self.state.current_bid.bid_id if self.state.current_bid else None,
+            action_type="github-remote-create_branch",
+            payload={"owner": owner, "repo": repo_name, "branch": self.branch_name, "from_branch": base_branch},
+            skill_id="github_publish",
+        )
+        self._register_governed_action(create_branch.record, refresh_view=refresh_view)
+        if create_branch.record.audit_id:
+            audit_ids.append(create_branch.record.audit_id)
+        if not create_branch.success and not self._result_looks_like_existing_branch(create_branch.result):
+            return {
+                "published": False,
+                "summary": "GitHub branch publication failed during branch creation.",
+                "detail": self._action_error_text(create_branch.result) or "Civic could not create the remote branch.",
+                "repo": repo.remote_slug,
+                "branch_name": self.branch_name,
+                "base_branch": base_branch,
+                "audit_ids": audit_ids,
+            }
+
+        push_files = self.civic.execute_governed_action(
+            mission_id=self.spec.mission_id,
+            task_id=self.state.active_task_id,
+            bid_id=self.state.current_bid.bid_id if self.state.current_bid else None,
+            action_type="github-remote-push_files",
+            payload={
+                "owner": owner,
+                "repo": repo_name,
+                "branch": self.branch_name,
+                "files": changed_files,
+                "message": f"Arbiter mission {self.spec.mission_id}: {checkpoint.summary or self.spec.objective}",
+            },
+            skill_id="github_publish",
+        )
+        self._register_governed_action(push_files.record, refresh_view=refresh_view)
+        if push_files.record.audit_id:
+            audit_ids.append(push_files.record.audit_id)
+        if not push_files.success:
+            return {
+                "published": False,
+                "summary": "GitHub branch publication failed while pushing changed files.",
+                "detail": self._action_error_text(push_files.result) or "Civic could not push the managed file set.",
+                "repo": repo.remote_slug,
+                "branch_name": self.branch_name,
+                "base_branch": base_branch,
+                "audit_ids": audit_ids,
+            }
+
+        pull_request = self.civic.execute_governed_action(
+            mission_id=self.spec.mission_id,
+            task_id=self.state.active_task_id,
+            bid_id=self.state.current_bid.bid_id if self.state.current_bid else None,
+            action_type="github-remote-create_pull_request",
+            payload={
+                "owner": owner,
+                "repo": repo_name,
+                "title": self._pull_request_title(),
+                "head": self.branch_name,
+                "base": base_branch,
+                "body": self._pull_request_body(checkpoint, base_branch),
+                "draft": False,
+                "maintainer_can_modify": True,
+            },
+            skill_id="github_publish",
+        )
+        self._register_governed_action(pull_request.record, refresh_view=refresh_view)
+        if pull_request.record.audit_id:
+            audit_ids.append(pull_request.record.audit_id)
+        if not pull_request.success and not self._result_looks_like_existing_pull_request(pull_request.result):
+            return {
+                "published": False,
+                "summary": "GitHub pull request creation failed.",
+                "detail": self._action_error_text(pull_request.result) or "Civic could not open the pull request.",
+                "repo": repo.remote_slug,
+                "branch_name": self.branch_name,
+                "base_branch": base_branch,
+                "audit_ids": audit_ids,
+            }
+
+        pr_payload = pull_request.result if pull_request.success else {}
+        pr_number = pr_payload.get("number") or pr_payload.get("pull_number")
+        pr_url = pr_payload.get("html_url") or pr_payload.get("url")
+        summary = (
+            f"Pull request #{pr_number} opened from {self.branch_name} into {base_branch}."
+            if pr_number
+            else f"Pull request opened from {self.branch_name} into {base_branch}."
+        )
+        detail = pr_url or "Civic published the managed branch and opened a pull request."
+        return {
+            "published": True,
+            "summary": summary,
+            "detail": detail,
+            "repo": repo.remote_slug,
+            "branch_name": self.branch_name,
+            "base_branch": base_branch,
+            "pull_request": pr_payload,
+            "audit_ids": audit_ids,
+            "confidence": 1.0,
+        }
+
+    @staticmethod
     def _civic_rejection_reason(envelope: GovernedBidEnvelope) -> str:
         joined = " ".join(envelope.reasoning).lower()
         if "missing required skills" in joined:
@@ -621,7 +1115,6 @@ class MissionRuntime:
         candidates = [
             bid
             for bid in sorted(self.state.active_bids, key=lambda item: item.score or -999, reverse=True)
-            if bid.required_skills or bid.optional_skills or bid.governed_action_plan or bid.external_evidence_plan
         ][:3]
         for bid in candidates:
             envelope = self.civic.preflight_bid(
@@ -656,31 +1149,30 @@ class MissionRuntime:
             )
             if envelope.status != "approved":
                 bid.policy_friction_score = max(bid.policy_friction_score, 0.65)
-                if bid.required_skills:
-                    bid.rejection_reason = self._civic_rejection_reason(envelope)
-                    bid.status = BidStatus.REJECTED
-                    self._save_bid(bid, self.state.active_bid_round)
-                    self.emit(
-                        "bid.rejected",
-                        f"Strategy {bid.bid_id} rejected by Civic preflight.",
-                        bid_id=bid.bid_id,
-                        task_id=task.task_id,
-                        reason=bid.rejection_reason,
-                        envelope_id=envelope.envelope_id,
-                        required_skills=bid.required_skills,
-                        refresh_view=True,
-                    )
-                    self.trace(
-                        "civic.bid.preflight_blocked",
-                        "Civic preflight blocked bid",
-                        f"{bid.bid_id} was blocked by Civic preflight.",
-                        task_id=task.task_id,
-                        bid_id=bid.bid_id,
-                        status="danger",
-                        reason=bid.rejection_reason,
-                        envelope=envelope.model_dump(mode="json"),
-                        refresh_view=True,
-                    )
+                bid.rejection_reason = self._civic_rejection_reason(envelope)
+                bid.status = BidStatus.REJECTED
+                self._save_bid(bid, self.state.active_bid_round)
+                self.emit(
+                    "bid.rejected",
+                    f"Strategy {bid.bid_id} rejected by Civic preflight.",
+                    bid_id=bid.bid_id,
+                    task_id=task.task_id,
+                    reason=bid.rejection_reason,
+                    envelope_id=envelope.envelope_id,
+                    required_skills=bid.required_skills,
+                    refresh_view=True,
+                )
+                self.trace(
+                    "civic.bid.preflight_blocked",
+                    "Civic preflight blocked bid",
+                    f"{bid.bid_id} was blocked by Civic preflight.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    status="danger",
+                    reason=bid.rejection_reason,
+                    envelope=envelope.model_dump(mode="json"),
+                    refresh_view=True,
+                )
             else:
                 bid.policy_friction_score = max(0.05, bid.policy_friction_score)
                 self.trace(
@@ -803,6 +1295,7 @@ class MissionRuntime:
 
     def _generate_execution_candidates(self, task, bid, candidate_files: dict[str, str]):
         failure_context = self.state.failure_context.details if self.state.failure_context else None
+        research_context = self.state.skill_outputs.get("knowledge_context")
         preferred_providers = [bid.provider] if bid.provider and bid.provider not in {"system", "scripted"} else None
         candidates = self.strategy_backend.generate_edit_proposals(
             task=task,
@@ -810,6 +1303,7 @@ class MissionRuntime:
             mission_objective=self.spec.objective,
             candidate_files=candidate_files,
             failure_context=failure_context,
+            research_context=research_context,
             providers=preferred_providers,
             on_invocation=self._record_model_invocation,
         )
@@ -840,6 +1334,7 @@ class MissionRuntime:
             mission_objective=self.spec.objective,
             candidate_files=candidate_files,
             failure_context=failure_context,
+            research_context=research_context,
             providers=fallback_providers,
             on_invocation=self._record_model_invocation,
         )
@@ -1168,6 +1663,8 @@ class MissionRuntime:
             return {"status": ActivePhase.FINALIZE.value}
         if "github_context" in self.state.available_skills:
             self._enrich_github_context()
+        if "knowledge_context" in self.state.available_skills or "trusted_external_context" in self.state.available_skills:
+            self._enrich_knowledge_context()
         return {"status": ActivePhase.STRATEGIZE.value}
 
     def _build_mission_context(self) -> dict:
@@ -1178,7 +1675,11 @@ class MissionRuntime:
             "objective": self.spec.objective,
             "constraints": self.spec.constraints,
             "preferences": self.spec.preferences,
-            "max_runtime_seconds": self.spec.stop_policy.max_runtime_minutes * 60,
+            "max_runtime_seconds": (
+                self.spec.stop_policy.max_runtime_minutes * 60
+                if self.spec.stop_policy.max_runtime_minutes is not None
+                else None
+            ),
             "completed_moves": [f"{t.task_id}: {t.title}" for t in completed],
             "failed_moves": [f"{t.task_id}: {t.title}" for t in failed],
             "strategy_round": self.state.strategy_round,
@@ -1534,6 +2035,7 @@ class MissionRuntime:
                             mission_objective=self.spec.objective,
                             candidate_files=files,
                             failure_context=self.state.failure_context.details if self.state.failure_context else None,
+                            research_context=self.state.skill_outputs.get("knowledge_context"),
                             preview=True,
                             on_invocation=self._record_model_invocation,
                         )
@@ -1789,7 +2291,14 @@ class MissionRuntime:
             payload=intent.model_dump(mode="json"),
             executor=lambda: {"touched": self._apply_proposal(self.toolset, proposal)},
         )
-        self._record_audit(outcome.audit)
+        self._register_local_governed_action(
+            outcome,
+            action_type=intent.action_type,
+            task_id=task.task_id,
+            bid_id=bid.bid_id,
+            envelope=envelope,
+            refresh_view=True,
+        )
         if not outcome.success:
             if outcome.result.get("blocked"):
                 self.state.policy_collisions += 1
@@ -1847,36 +2356,168 @@ class MissionRuntime:
     def node_validate(self) -> dict:
         task = self._active_task()
         assert self.state.repo_snapshot is not None
-        self.trace("validation.started", "Validation started", f"Validation started for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="info")
-        if task.task_type.value in {"localize", "perf_diagnosis"}:
-            report = ValidationReport(task_id=task.task_id, passed=bool(task.candidate_files), notes=[] if task.candidate_files else ["No candidate files identified during evidence gathering."], policy_conformance=True)
-        elif task.task_type.value == "validate" and not self.toolset.changed_files() and self.state.validation_report and self.state.validation_report.passed:
-            report = ValidationReport(
-                task_id=task.task_id,
-                passed=True,
-                command_results=self.state.validation_report.command_results,
-                baseline_command_results=self.state.validation_report.baseline_command_results,
-                file_churn=self.state.validation_report.file_churn,
-                changed_files=self.state.validation_report.changed_files,
-                api_guard_passed=self.state.validation_report.api_guard_passed,
-                benchmark_delta=self.state.validation_report.benchmark_delta,
-                notes=["Reused latest accepted validator report because the worktree is unchanged."],
-                policy_conformance=self.state.validation_report.policy_conformance,
-                validator_deltas=[],
+        bid = self.state.current_bid
+        self.trace("validation.started", "Validation started", f"Validation started for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="info")
+        report: ValidationReport | None = None
+
+        validation_intent = ActionIntent(
+            action_type="run_tests",
+            task_id=task.task_id,
+            bid_id=bid.bid_id if bid else None,
+            file_scope=self.toolset.changed_files() or list(bid.touched_files if bid else task.candidate_files),
+            payload={
+                "task_type": task.task_type.value,
+                "reused_previous_report": bool(
+                    task.task_type.value == "validate"
+                    and not self.toolset.changed_files()
+                    and self.state.validation_report
+                    and self.state.validation_report.passed
+                ),
+            },
+        )
+        validation_action_decision = (
+            self.governance.authorize_action(task, bid, validation_intent, self.spec)
+            if bid is not None
+            else PolicyDecision(allowed=True)
+        )
+
+        def _run_validation() -> dict[str, object]:
+            nonlocal report
+            if task.task_type.value in {"localize", "perf_diagnosis"}:
+                report = ValidationReport(
+                    task_id=task.task_id,
+                    passed=bool(task.candidate_files),
+                    notes=[] if task.candidate_files else ["No candidate files identified during evidence gathering."],
+                    policy_conformance=True,
+                )
+            elif task.task_type.value == "validate" and not self.toolset.changed_files() and self.state.validation_report and self.state.validation_report.passed:
+                report = ValidationReport(
+                    task_id=task.task_id,
+                    passed=True,
+                    command_results=self.state.validation_report.command_results,
+                    baseline_command_results=self.state.validation_report.baseline_command_results,
+                    file_churn=self.state.validation_report.file_churn,
+                    changed_files=self.state.validation_report.changed_files,
+                    api_guard_passed=self.state.validation_report.api_guard_passed,
+                    benchmark_delta=self.state.validation_report.benchmark_delta,
+                    notes=["Reused latest accepted validator report because the worktree is unchanged."],
+                    policy_conformance=self.state.validation_report.policy_conformance,
+                    validator_deltas=[],
+                )
+            else:
+                report = ValidationEngine(self.toolset, self.spec, self.state.repo_snapshot).validate(task)
+            return {"validation_report": report.model_dump(mode="json")}
+
+        validation_outcome = self.civic.authorize_and_execute(
+            mission_id=self.spec.mission_id,
+            task_id=task.task_id,
+            action_type=validation_intent.action_type,
+            decision=validation_action_decision,
+            payload=validation_intent.model_dump(mode="json"),
+            executor=_run_validation,
+        )
+        self._register_local_governed_action(
+            validation_outcome,
+            action_type=validation_intent.action_type,
+            task_id=task.task_id,
+            bid_id=bid.bid_id if bid else None,
+            refresh_view=True,
+        )
+        if not validation_outcome.success:
+            details = (
+                "; ".join(validation_action_decision.reasons)
+                if validation_outcome.result.get("blocked")
+                else str(validation_outcome.result.get("error") or "Validation execution failed.")
             )
-        else:
-            report = ValidationEngine(self.toolset, self.spec, self.state.repo_snapshot).validate(task)
+            if validation_outcome.result.get("blocked"):
+                self.state.policy_collisions += 1
+                self.state.governance.policy_state = PolicyState.BLOCKED
+            self.state.failure_context = FailureContext(
+                task_id=task.task_id,
+                failure_type="policy_block" if validation_outcome.result.get("blocked") else "validation_execution_failure",
+                details=details,
+                diff_summary=self.toolset.diff(),
+                validator_deltas=[],
+                recommended_recovery_scope="standby_or_rebid",
+                strategy_family=bid.strategy_family if bid else None,
+                attempted_file_scope=validation_intent.file_scope,
+                rollout_evidence=[value for value in [bid.search_summary if bid else None, bid.selection_reason if bid else None] if value],
+                civic_action_history=[validation_outcome.audit.audit_id],
+            )
+            self.state.latest_diff_summary = self.state.failure_context.diff_summary
+            self._save_failure(self.state.failure_context)
+            self.emit("validation.failed", "Validation could not complete under Civic governance.", task_id=task.task_id, details=details, refresh_view=True)
+            self.trace("validation.completed", "Validation blocked", f"Validation could not complete for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="danger", details=details, refresh_view=True)
+            return {"status": ActivePhase.RECOVER.value}
+
+        assert report is not None
         self.state.validation_report = report
         self._save_validation(report)
         validation_decision = self.governance.evaluate_validation(task, report, self.spec)
         self.state.governance.last_decision = validation_decision
         self.state.governance.current_risk_score = max(self.state.governance.current_risk_score, validation_decision.risk_score)
         if validation_decision.allowed:
-            task.status = TaskStatus.COMPLETED
-            self._save_task(task)
             changed = self.toolset.changed_files()
             if changed:
-                commit_sha = self.toolset.commit(f"Helix mission {self.spec.mission_id}: {task.title}")
+                commit_message = f"Helix mission {self.spec.mission_id}: {task.title}"
+                commit_intent = ActionIntent(
+                    action_type="create_commit",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id if bid else None,
+                    file_scope=changed,
+                    payload={"message": commit_message, "changed_files": changed},
+                )
+                commit_action_decision = (
+                    self.governance.authorize_action(task, bid, commit_intent, self.spec)
+                    if bid is not None
+                    else PolicyDecision(allowed=True)
+                )
+                commit_outcome = self.civic.authorize_and_execute(
+                    mission_id=self.spec.mission_id,
+                    task_id=task.task_id,
+                    action_type=commit_intent.action_type,
+                    decision=commit_action_decision,
+                    payload=commit_intent.model_dump(mode="json"),
+                    executor=lambda: {
+                        "commit_sha": self.toolset.commit(commit_message),
+                        "changed_files": changed,
+                        "message": commit_message,
+                    },
+                )
+                self._register_local_governed_action(
+                    commit_outcome,
+                    action_type=commit_intent.action_type,
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id if bid else None,
+                    refresh_view=True,
+                )
+                if not commit_outcome.success:
+                    details = (
+                        "; ".join(commit_action_decision.reasons)
+                        if commit_outcome.result.get("blocked")
+                        else str(commit_outcome.result.get("error") or "Commit creation failed.")
+                    )
+                    if commit_outcome.result.get("blocked"):
+                        self.state.policy_collisions += 1
+                        self.state.governance.policy_state = PolicyState.BLOCKED
+                    self.state.failure_context = FailureContext(
+                        task_id=task.task_id,
+                        failure_type="policy_block" if commit_outcome.result.get("blocked") else "commit_creation_failure",
+                        details=details,
+                        diff_summary=self.toolset.diff(),
+                        validator_deltas=[],
+                        recommended_recovery_scope="standby_or_rebid",
+                        strategy_family=bid.strategy_family if bid else None,
+                        attempted_file_scope=changed,
+                        rollout_evidence=[value for value in [bid.search_summary if bid else None, report.notes[0] if report.notes else None] if value],
+                        civic_action_history=[commit_outcome.audit.audit_id],
+                    )
+                    self.state.latest_diff_summary = self.state.failure_context.diff_summary
+                    self._save_failure(self.state.failure_context)
+                    self.emit("checkpoint.failed", "Validated changes could not be committed under Civic governance.", task_id=task.task_id, details=details, refresh_view=True)
+                    self.trace("checkpoint.accepted", "Checkpoint commit failed", f"Validated changes could not be committed for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="danger", details=details, refresh_view=True)
+                    return {"status": ActivePhase.RECOVER.value}
+                commit_sha = str(commit_outcome.result.get("commit_sha") or "")
                 checkpoint = AcceptedCheckpoint(
                     checkpoint_id=f"{self.spec.mission_id}-{task.task_id}-{uuid4().hex[:6]}",
                     label=task.task_id,
@@ -1894,11 +2535,13 @@ class MissionRuntime:
                 self._save_checkpoint(checkpoint)
                 self.emit("checkpoint.accepted", "Accepted checkpoint committed.", task_id=task.task_id, commit_sha=commit_sha)
                 self._refresh_worktree_state("Changes were committed to the Helix-managed branch; the worktree is now clean.")
-                self.trace("checkpoint.accepted", "Checkpoint accepted", f"Accepted checkpoint committed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", commit_sha=commit_sha, checkpoint_id=checkpoint.checkpoint_id)
+                self.trace("checkpoint.accepted", "Checkpoint accepted", f"Accepted checkpoint committed for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="success", commit_sha=commit_sha, checkpoint_id=checkpoint.checkpoint_id)
+            task.status = TaskStatus.COMPLETED
+            self._save_task(task)
             self.state.decision_history.append(f"{task.task_id}: completed")
             self.emit("task.completed", f"Strategy move {task.task_id} completed.", task_id=task.task_id)
             self.emit("validation.passed", "Validation passed. Strategy market will reopen.", task_id=task.task_id, refresh_view=True)
-            self.trace("validation.completed", "Validation passed", f"Validation passed for {task.task_id}. Returning to strategy market.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", notes=report.notes, changed_files=report.changed_files, refresh_view=True)
+            self.trace("validation.completed", "Validation passed", f"Validation passed for {task.task_id}. Returning to strategy market.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="success", notes=report.notes, changed_files=report.changed_files, refresh_view=True)
             return {"status": ActivePhase.STRATEGIZE.value}
         self.state.failure_context = FailureContext(
             task_id=task.task_id,
@@ -1907,16 +2550,16 @@ class MissionRuntime:
             diff_summary=self.toolset.diff(),
             validator_deltas=report.validator_deltas,
             recommended_recovery_scope="standby_or_rebid",
-            strategy_family=self.state.current_bid.strategy_family if self.state.current_bid else None,
-            attempted_file_scope=self.state.current_bid.touched_files if self.state.current_bid else [],
-            rollout_evidence=[value for value in [self.state.current_bid.search_summary if self.state.current_bid else None, self.state.current_bid.selection_reason if self.state.current_bid else None] if value],
+            strategy_family=bid.strategy_family if bid else None,
+            attempted_file_scope=bid.touched_files if bid else [],
+            rollout_evidence=[value for value in [bid.search_summary if bid else None, bid.selection_reason if bid else None] if value],
             civic_action_history=self.state.summary.civic_audit_ids[-3:],
         )
         self.state.latest_diff_summary = self.state.failure_context.diff_summary
         self._save_failure(self.state.failure_context)
         self.emit("task.failed", "Task failed validation.", task_id=task.task_id)
         self.emit("validation.failed", "Validation failed.", task_id=task.task_id, details=self.state.failure_context.details, refresh_view=True)
-        self.trace("validation.completed", "Validation failed", f"Validation failed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="danger", details=self.state.failure_context.details, validator_deltas=report.validator_deltas, refresh_view=True)
+        self.trace("validation.completed", "Validation failed", f"Validation failed for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="danger", details=self.state.failure_context.details, validator_deltas=report.validator_deltas, refresh_view=True)
         return {"status": ActivePhase.RECOVER.value}
 
     def node_recover(self) -> dict:
@@ -1934,7 +2577,13 @@ class MissionRuntime:
                 payload=intent.model_dump(mode="json"),
                 executor=lambda: {"checkpoint": self.state.accepted_checkpoint.commit_sha, "reverted": self._revert()},
             )
-            self._record_audit(outcome.audit)
+            self._register_local_governed_action(
+                outcome,
+                action_type=intent.action_type,
+                task_id=task.task_id,
+                bid_id=self.state.current_bid.bid_id if self.state.current_bid else None,
+                refresh_view=True,
+            )
             reverted = bool(outcome.result.get("reverted"))
             self.state.failure_context.rollback_result = "rollback_succeeded" if reverted else "rollback_failed"
             self.state.failure_context.created_at = utc_now()
@@ -2007,6 +2656,18 @@ class MissionRuntime:
                 self.state.outcome = MissionOutcome.FAILED_EXECUTION
             else:
                 self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
+        if self.state.outcome in {MissionOutcome.SUCCESS, MissionOutcome.PARTIAL_SUCCESS}:
+            github_publish = self._publish_github_pull_request(refresh_view=True)
+            if github_publish is not None:
+                self.state.skill_outputs["github_publish"] = github_publish
+                self.trace(
+                    "civic.skill.github_publish",
+                    "GitHub publication processed",
+                    str(github_publish.get("summary") or "GitHub publication finished."),
+                    status="success" if github_publish.get("published") else "warning",
+                    refresh_view=True,
+                    skill_output=github_publish,
+                )
         self.state.control = MissionControlState(run_state=RunState.FINALIZED, reason=self.state.governance.stop_reason)
         self._sync_state("finalized")
         self.emit("mission.finalized", "Mission finalized.", outcome=self.state.outcome.value, stop_reason=self.state.governance.stop_reason, refresh_view=True)
@@ -2055,6 +2716,7 @@ class MissionRuntime:
 def build_mission_spec(repo: str, objective: str, constraints: list[str] | None = None, preferences: list[str] | None = None, requested_skills: list[str] | None = None, max_runtime: int | None = None, benchmark_requirement: str | None = None, protected_paths: list[str] | None = None, public_api_surface: list[str] | None = None, mission_id: str | None = None) -> MissionSpec:
     config = load_runtime_config()
     resolved_repo = resolve_repo_path(repo)
+    resolved_max_runtime = max_runtime if max_runtime is not None and max_runtime > 0 else None
     return MissionSpec(
         mission_id=mission_id or generate_mission_id(),
         repo_path=str(resolved_repo),
@@ -2062,9 +2724,9 @@ def build_mission_spec(repo: str, objective: str, constraints: list[str] | None 
         constraints=constraints or [],
         preferences=preferences or [],
         requested_skills=requested_skills or [],
-        max_runtime_minutes=max_runtime or config.max_runtime_minutes,
+        max_runtime_minutes=resolved_max_runtime,
         stop_policy={
-            "max_runtime_minutes": max_runtime or config.max_runtime_minutes,
+            "max_runtime_minutes": resolved_max_runtime,
             "max_recovery_rounds": config.max_recovery_rounds,
             "max_file_churn": config.max_file_churn,
         },
@@ -2119,6 +2781,8 @@ def resume_mission(mission_id: str, repo: str, strategy_backend=None) -> Arbiter
     store.close()
     runtime = MissionRuntime(spec, paths, strategy_backend=strategy_backend)
     runtime.state = state
+    if state.summary.branch_name:
+        runtime._set_branch_name(state.summary.branch_name)
     runtime._load_failed_families()
     runtime._restore_runtime_context()
     runtime._refresh_worktree_state("Mission resumed in the isolated worktree.")

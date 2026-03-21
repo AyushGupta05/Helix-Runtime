@@ -47,7 +47,20 @@ function validationPassed(report) {
   return Boolean(report?.passed);
 }
 
-function reliabilityNotes(mission, bid, fileCount, passed) {
+function researchContextSummary(mission) {
+  const knowledge = mission?.skill_outputs?.knowledge_context;
+  if (!knowledge || typeof knowledge !== "object") {
+    return null;
+  }
+  return {
+    summary: String(knowledge.summary ?? "").trim(),
+    queries: Array.isArray(knowledge.queries) ? knowledge.queries.filter(Boolean) : [],
+    sourceUrls: Array.isArray(knowledge.source_urls) ? knowledge.source_urls.filter(Boolean) : [],
+    trusted: Boolean(knowledge?.provenance?.trusted)
+  };
+}
+
+function reliabilityNotes(mission, bid, fileCount, passed, research) {
   const notes = [
     "Winner selected after simulation and validation",
     bid?.provider ? `${bid.provider} context influenced fix` : "Provider context captured in mission trace",
@@ -56,6 +69,13 @@ function reliabilityNotes(mission, bid, fileCount, passed) {
       : "No widened file surface detected",
     passed ? "No policy violations in execution" : "Validation requires follow-up review"
   ];
+  if (research?.summary) {
+    notes.push(
+      `${research.trusted ? "Trusted" : "Governed"} research fed the winner prompts from ${research.sourceUrls.length} source${
+        research.sourceUrls.length === 1 ? "" : "s"
+      }.`
+    );
+  }
   return notes;
 }
 
@@ -74,7 +94,15 @@ function trustRows(mission, passed) {
   ];
 }
 
-function governanceRows(mission) {
+function governanceRows(mission, research) {
+  const winnerEnvelope =
+    (mission?.governed_bid_envelopes ?? []).find(
+      (envelope) => envelope.bid_id === mission?.winner_bid_id
+    ) ?? null;
+  const reviewedBidCount = Math.min(
+    3,
+    new Set((mission?.governed_bid_envelopes ?? []).map((envelope) => envelope.bid_id)).size
+  );
   return [
     {
       label: "Civic",
@@ -89,11 +117,25 @@ function governanceRows(mission) {
       value: formatInteger((mission?.recent_civic_actions ?? []).length)
     },
     {
-      label: "Envelope",
+      label: "Top Bids Reviewed",
+      value: formatInteger(reviewedBidCount)
+    },
+    {
+      label: "Winner Envelope",
+      value: winnerEnvelope?.status ?? "Approved"
+    },
+    {
+      label: "Constraints",
       value:
-        (mission?.governed_bid_envelopes ?? []).find(
-          (envelope) => envelope.bid_id === mission?.winner_bid_id
-        )?.status ?? "Approved"
+        Array.isArray(winnerEnvelope?.constraints) && winnerEnvelope.constraints.length
+          ? winnerEnvelope.constraints.join(", ")
+          : "No extra constraints"
+    },
+    {
+      label: "Research",
+      value: research
+        ? `${formatInteger(research.sourceUrls.length)} sources / ${formatInteger(research.queries.length)} queries`
+        : "Not used"
     }
   ];
 }
@@ -107,9 +149,10 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
   const missionTotals = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
   const spendDetail = usageCostStatusDetail(missionTotals);
   const branchLabel = String(mission?.branch_name ?? "branch").split("/").pop();
+  const research = researchContextSummary(mission);
   const trust = trustRows(mission, passed);
-  const governance = governanceRows(mission);
-  const notes = reliabilityNotes(mission, selectedBid, files.length, passed);
+  const governance = governanceRows(mission, research);
+  const notes = reliabilityNotes(mission, selectedBid, files.length, passed, research);
   const summaryBullets = [
     selectedBid
       ? `${selectedBid.role ?? selectedBid.strategy_family} selected`
@@ -117,7 +160,8 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
     selectedBid?.mission_rationale ??
       selectedBid?.search_summary ??
       "Execution rationale captured in mission trace.",
-    mission?.latest_diff_summary || "No diff summary available yet."
+    mission?.latest_diff_summary || "No diff summary available yet.",
+    research?.summary ? `Governed research: ${research.summary}` : "No governed research was required for this result."
   ];
 
   return (

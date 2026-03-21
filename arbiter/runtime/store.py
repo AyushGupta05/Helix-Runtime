@@ -916,6 +916,8 @@ class MissionStore:
         checkpoints: list[dict[str, Any]],
     ) -> dict[str, Any]:
         latest = checkpoints[-1] if checkpoints else None
+        skill_outputs = json.loads(runtime["skill_outputs_json"]) if runtime and runtime["skill_outputs_json"] else {}
+        github_publish = skill_outputs.get("github_publish") if isinstance(skill_outputs, dict) else None
         return {
             "branch_name": mission["branch_name"],
             "worktree_path": json.loads(runtime["worktree_state_json"]).get("worktree_path") if runtime and runtime["worktree_state_json"] else None,
@@ -926,6 +928,8 @@ class MissionStore:
             "accepted_diff_patch": latest.get("diff_patch") if latest else None,
             "affected_files": latest.get("affected_files", []) if latest else [],
             "validator_results": latest.get("validator_results", []) if latest else [],
+            "pull_request": github_publish.get("pull_request") if isinstance(github_publish, dict) else None,
+            "pull_request_summary": github_publish.get("summary") if isinstance(github_publish, dict) else None,
         }
 
     def _runtime_seconds(
@@ -1483,6 +1487,10 @@ class MissionStore:
         }
 
     def refresh_mission_view(self, mission_id: str) -> dict[str, Any]:
+        with self._lock:
+            return self._refresh_mission_view_locked(mission_id)
+
+    def _refresh_mission_view_locked(self, mission_id: str) -> dict[str, Any]:
         mission = self.fetch_mission(mission_id)
         runtime = self.fetch_runtime(mission_id)
         if mission is None:
@@ -1658,6 +1666,19 @@ class MissionStore:
             "execution_steps": self._execution_steps_for_view(mission_id),
             "recent_trace": recent_trace,
         }
+        if not self.read_only:
+            now = utc_now().isoformat()
+            self.connection.execute(
+                """
+                INSERT INTO mission_view_cache (mission_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(mission_id) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (mission_id, json.dumps(payload), now),
+            )
+            self.connection.commit()
         return payload
 
     def get_mission_view(self, mission_id: str) -> dict[str, Any]:

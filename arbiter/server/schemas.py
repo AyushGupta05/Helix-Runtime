@@ -12,7 +12,7 @@ class MissionCreateRequest(BaseModel):
     constraints: list[str] = Field(default_factory=list)
     preferences: list[str] = Field(default_factory=list)
     requested_skills: list[str] = Field(default_factory=list)
-    max_runtime: int = 10
+    max_runtime: int | None = None
     benchmark_requirement: str | None = None
     protected_paths: list[str] = Field(default_factory=list)
     public_api_surface: list[str] = Field(default_factory=list)

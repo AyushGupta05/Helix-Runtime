@@ -76,6 +76,11 @@ class GovernanceEngine:
 
     def evaluate_bid(self, task: TaskNode, bid: Bid, spec: MissionSpec, failed_families: set[str]) -> PolicyDecision:
         reasons: list[str] = []
+        runtime_cap_seconds = (
+            spec.stop_policy.max_runtime_minutes * 60
+            if spec.stop_policy.max_runtime_minutes is not None
+            else None
+        )
         if bid.strategy_family in failed_families:
             reasons.append("failed_family_banned")
         if len(bid.touched_files) > spec.stop_policy.max_file_scope:
@@ -84,7 +89,7 @@ class GovernanceEngine:
             reasons.append("touches_protected_path")
         if task.validator_requirements and not set(task.validator_requirements).issubset(set(bid.validator_plan)):
             reasons.append("missing_required_validator")
-        if bid.estimated_runtime_seconds > spec.stop_policy.max_runtime_minutes * 60:
+        if runtime_cap_seconds is not None and bid.estimated_runtime_seconds > runtime_cap_seconds:
             reasons.append("runtime_budget_exceeded")
         if not set(task.allowed_tools).issubset(set(spec.allowed_tool_classes)):
             reasons.append("requires_disallowed_tool")
@@ -126,13 +131,22 @@ class GovernanceEngine:
         completed = [t for t in state.tasks if t.status == TaskStatus.COMPLETED]
         failed = [t for t in state.tasks if t.status == TaskStatus.FAILED]
         total_rounds = state.strategy_round
+        runtime_cap_seconds = (
+            state.mission.max_runtime_minutes * 60
+            if state.mission.max_runtime_minutes is not None
+            else None
+        )
         return {
             "completed_count": len(completed),
             "failed_count": len(failed),
             "total_rounds": total_rounds,
             "risk_score": state.governance.current_risk_score,
             "runtime_seconds": state.runtime_seconds,
-            "budget_remaining_pct": max(0, 1.0 - state.runtime_seconds / max(1, state.mission.max_runtime_minutes * 60)),
+            "budget_remaining_pct": (
+                max(0, 1.0 - state.runtime_seconds / max(1, runtime_cap_seconds))
+                if runtime_cap_seconds is not None
+                else None
+            ),
             "recovery_rounds_used": state.recovery_round,
             "policy_collisions": state.policy_collisions,
         }
@@ -150,7 +164,10 @@ class GovernanceEngine:
                 return StopDecision(True, "mission_objective_met", MissionOutcome.SUCCESS)
         if state.governance.current_risk_score > state.mission.risk_policy.max_risk_score:
             return StopDecision(True, "risk_threshold_exceeded", MissionOutcome.FAILED_SAFE_STOP)
-        if state.runtime_seconds >= state.mission.max_runtime_minutes * 60:
+        if (
+            state.mission.max_runtime_minutes is not None
+            and state.runtime_seconds >= state.mission.max_runtime_minutes * 60
+        ):
             return StopDecision(True, "runtime_budget_exceeded", MissionOutcome.FAILED_SAFE_STOP)
         if state.no_valid_contenders:
             return StopDecision(True, "no_valid_strategies", MissionOutcome.FAILED_EXECUTION)

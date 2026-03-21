@@ -401,3 +401,87 @@ test("shows cost unavailable when provider usage has tokens but missing billing 
   await expect(page.getByText("Spend: Cost unavailable")).toBeVisible();
   await expect(page.getByText(/2 provider calls missing cost metadata/i).first()).toBeVisible();
 });
+
+test("surfaces top-three Civic review and governed research without a fake budget cap", async ({ page }) => {
+  missionPayload = buildMissionPayload({
+    winner_bid_id: "bid-1",
+    standby_bid_id: "bid-2",
+    available_skills: ["github_context", "knowledge_context", "trusted_external_context"],
+    skill_outputs: {
+      knowledge_context: {
+        summary: "Civic research summarized the latest LangGraph checkpoint guidance for the winner.",
+        queries: ["langgraph checkpoint saver guidance"],
+        source_urls: ["https://docs.langchain.com/langgraph"],
+        provenance: { trusted: true }
+      }
+    },
+    bids: [
+      {
+        bid_id: "bid-1",
+        task_id: "T2_bugfix",
+        role: "Safe",
+        provider: "openai",
+        model_id: "gpt-5-mini",
+        score: 0.92,
+        confidence: 0.84,
+        risk: 0.18,
+        token_usage: { total_tokens: 321 },
+        mission_rationale: "Choose the narrowest safe fix with governed context.",
+        status: "competing"
+      },
+      {
+        bid_id: "bid-2",
+        task_id: "T2_bugfix",
+        role: "Quality",
+        provider: "anthropic",
+        model_id: "claude-sonnet-4",
+        score: 0.87,
+        confidence: 0.79,
+        risk: 0.24,
+        token_usage: { total_tokens: 288 },
+        mission_rationale: "Broader validation posture with extra safeguards.",
+        status: "competing"
+      },
+      {
+        bid_id: "bid-3",
+        task_id: "T2_bugfix",
+        role: "Test",
+        provider: "openai",
+        model_id: "gpt-5-mini",
+        score: 0.81,
+        confidence: 0.76,
+        risk: 0.27,
+        token_usage: { total_tokens: 244 },
+        mission_rationale: "Lean into regression coverage first.",
+        status: "competing"
+      }
+    ],
+    governed_bid_envelopes: [
+      {
+        bid_id: "bid-1",
+        status: "approved",
+        constraints: ["read_write_scope:read_only", "civic_connection:connected"]
+      },
+      {
+        bid_id: "bid-2",
+        status: "approved",
+        constraints: ["read_write_scope:read_only", "civic_connection:connected"]
+      },
+      {
+        bid_id: "bid-3",
+        status: "approved",
+        constraints: ["read_write_scope:read_only", "civic_connection:connected"]
+      }
+    ]
+  });
+
+  await page.goto("/missions/mission-1?repo=C%3A%5Crepo");
+
+  await expect(page.getByRole("heading", { name: /Strategy Bidding Board/i })).toBeVisible();
+  await expect(page.getByText(/Top 3 Civic Review: 3/i)).toBeVisible();
+  await expect(page.getByText(/3 of 3 bids screened by Civic/i)).toBeVisible();
+  await expect(page.getByText(/Winner Constraints/i)).toBeVisible();
+  await expect(page.getByText(/read_write_scope:read_only, civic_connection:connected/i).first()).toBeVisible();
+  await expect(page.getByText(/Governed research shaped the prompts/i)).toBeVisible();
+  await expect(page.getByText(/Budget:/i)).toHaveCount(0);
+});
