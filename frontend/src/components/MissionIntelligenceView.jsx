@@ -4,6 +4,7 @@ import StatusBadge from "./StatusBadge";
 import {
   formatCurrency,
   formatInteger,
+  formatNumber,
   humanizeEventType,
   relativeTime,
   shortCommit,
@@ -11,11 +12,9 @@ import {
 } from "../lib/format";
 
 const SECTIONS = [
-  { id: "overview", label: "Repo Insights" },
-  { id: "checkpoints", label: "Checkpoints" },
+  { id: "simulation", label: "Monte Carlo" },
   { id: "validation", label: "Validation" },
   { id: "diff", label: "Diff Explorer" },
-  { id: "usage", label: "Model Usage" },
   { id: "civic", label: "Civic Activity" },
   { id: "history", label: "Mission History" }
 ];
@@ -75,133 +74,6 @@ function validatorRows(report, historyMetrics, runState) {
   ];
 }
 
-function auditRows(mission, trace) {
-  const ledgerRows = (mission.civic_activity?.ledger ?? []).map((entry) => ({
-    id: `ledger-${entry.audit_id ?? entry.created_at ?? entry.action_type ?? "civic"}`,
-    time: entry.created_at,
-    action: humanizeEventType(entry.action_type ?? "civic activity"),
-    result: entry.status ?? entry.policy_state ?? "captured",
-    reason:
-      entry.reasons?.join(" ") ||
-      entry.target ||
-      "Governance evidence captured in the Civic ledger."
-  }));
-  const traceRows = governedActionRows(mission, trace);
-  const summaryRows = Object.entries(mission.civic_audit_summary ?? {}).map(([key, value]) => ({
-    id: `summary-${key}`,
-    time: null,
-    action: humanizeEventType(key),
-    result: typeof value === "number" ? `${value} records` : "captured",
-    reason: "Aggregated from mission audit summary."
-  }));
-  return [...ledgerRows, ...traceRows, ...summaryRows];
-}
-
-function usageRows(usageSummary) {
-  return Object.values(usageSummary?.by_provider ?? {}).sort(
-    (left, right) => Number(right.total_tokens ?? 0) - Number(left.total_tokens ?? 0)
-  );
-}
-
-function civicConnectionSummary(mission) {
-  const connection = mission.civic_connection ?? {};
-  const status = String(connection.status ?? connection.state ?? "idle").replace(/[_-]/g, " ");
-  const toolkit = connection.toolkit_id ?? connection.toolkit ?? "default toolkit";
-  return {
-    status,
-    toolkit,
-    detail: connection.checked_at ? `${toolkit} | ${relativeTime(connection.checked_at)}` : toolkit
-  };
-}
-
-function civicCapabilityCards(mission) {
-  const connection = civicConnectionSummary(mission);
-  const capabilities = mission.civic_capabilities ?? {};
-  const availableSkills = mission.available_skills ?? [];
-  const health = mission.skill_health ?? {};
-  const skillOutputs = mission.skill_outputs ?? {};
-  const envelopes = mission.governed_bid_envelopes ?? [];
-  return [
-    {
-      label: "Connection",
-      value: connection.status,
-      detail: connection.detail
-    },
-    {
-      label: "Toolkit",
-      value: connection.toolkit,
-      detail: capabilities.provider ?? capabilities.source ?? "Civic capability plane"
-    },
-    {
-      label: "Active skills",
-      value: String(availableSkills.length),
-      detail: availableSkills.length ? availableSkills.slice(0, 3).join(" | ") : "No active skills surfaced yet"
-    },
-    {
-      label: "Health",
-      value: Object.keys(health).length ? `${Object.keys(health).length} signals` : "Pending",
-      detail: health.blocked ? "One or more capabilities are blocked" : "No degraded capability reported"
-    },
-    {
-      label: "Skill outputs",
-      value: Object.keys(skillOutputs).length ? `${Object.keys(skillOutputs).length} packets` : "None",
-      detail: Object.keys(skillOutputs).length ? "Read-only evidence packets recorded" : "Skill evidence has not been surfaced yet"
-    },
-    {
-      label: "Envelopes",
-      value: `${envelopes.length}`,
-      detail: envelopes.length ? "Civic-issued bid contracts are present" : "No governed envelopes recorded yet"
-    }
-  ];
-}
-
-function skillOutputEntries(mission) {
-  const outputs = mission.skill_outputs ?? {};
-  return Object.entries(outputs).map(([skill, value]) => ({
-    id: skill,
-    skill,
-    summary:
-      typeof value === "string"
-        ? value
-        : value?.summary ??
-          value?.CI_summary ??
-          value?.ci_summary ??
-          value?.detail ??
-          "No summary captured",
-    provenance: typeof value === "object" && value !== null ? value?.provenance ?? value?.source ?? "Civic" : "Civic",
-    freshness: typeof value === "object" && value !== null ? value?.freshness ?? value?.last_checked ?? value?.updated_at ?? null : null,
-    confidence: typeof value === "object" && value !== null ? value?.confidence ?? value?.score ?? null : null
-  }));
-}
-
-function governedActionRows(mission, trace) {
-  const actions = mission.recent_civic_actions ?? [];
-  if (actions.length) {
-    return actions.map((entry, index) => ({
-      id: entry.audit_id ?? `${entry.event_type ?? "civic"}-${index}`,
-      time: entry.created_at,
-      action: humanizeEventType(entry.event_type ?? entry.action_type ?? "civic action"),
-      result: entry.status ?? entry.policy_state ?? "captured",
-      reason: entry.reason ?? entry.message ?? entry.details ?? "Governed Civic action"
-    }));
-  }
-
-  return (trace ?? [])
-    .filter(
-      (entry) =>
-        String(entry.trace_type ?? "").toLowerCase().includes("civic") ||
-        String(entry.title ?? "").toLowerCase().includes("skill") ||
-        String(entry.title ?? "").toLowerCase().includes("envelope")
-    )
-    .map((entry) => ({
-      id: `trace-${entry.id}`,
-      time: entry.created_at,
-      action: entry.title ?? humanizeEventType(entry.trace_type),
-      result: entry.status ?? "captured",
-      reason: entry.message ?? "Governed Civic state captured in mission trace."
-    }));
-}
-
 function changedFilesFor(mission, diffState) {
   const worktree = diffState?.worktree_state ?? mission.worktree_state ?? {};
   return worktree.changed_files?.length
@@ -215,70 +87,82 @@ function publicApiSurfaceFor(mission) {
   return mission.repo_insights?.public_api_surface ?? [];
 }
 
-function repoInsightCards(mission, diffState, usageSummary, trace) {
-  const repoInsights = mission.repo_insights ?? {};
-  const worktree = diffState?.worktree_state ?? mission.worktree_state ?? {};
-  const validators = validatorRows(mission.validation_report, mission.history_metrics, mission.run_state);
-  const providerCount = Object.keys(usageSummary?.by_provider ?? {}).length;
-  const latestTrace = [...(trace ?? [])].reverse()[0];
-  const toolchain = repoInsights.toolchain ?? {};
-  const toolCommands = [...(toolchain.tests ?? []), ...(toolchain.lint ?? []), ...(toolchain.static ?? [])];
-  const riskSurface = [...(repoInsights.risky_paths ?? []), ...(repoInsights.protected_interfaces ?? [])];
-  const dependencyFiles = repoInsights.dependency_files ?? [];
-  const hotspots = repoInsights.complexity_hotspots ?? [];
-
-  return [
-    {
-      label: "Repository",
-      value: repoLabel(mission.repo_path),
-      detail: `${mission.branch_name ?? "Managed branch pending"} | ${repoInsights.runtime ?? "runtime pending"}`
-    },
-    {
-      label: "Toolchain",
-      value: toolCommands.length ? `${toolCommands.length} commands mapped` : "Pending",
-      detail: toolCommands.length ? toolCommands.slice(0, 2).join(" | ") : "No baseline commands detected yet"
-    },
-    {
-      label: "Risk surface",
-      value: riskSurface.length ? `${riskSurface.length} sensitive paths` : "Low surface area",
-      detail: riskSurface.length ? riskSurface.slice(0, 2).join(" | ") : "No risky or protected paths detected yet"
-    },
-    {
-      label: "Baseline evidence",
-      value: repoInsights.latest_validation?.status ?? (validators.length ? `${validators.length} checks` : "Pending"),
-      detail:
-        dependencyFiles[0] ??
-        hotspots[0] ??
-        worktree.reason ??
-        mission.latest_diff_summary ??
-        "Waiting for a material patch."
-    },
-    {
-      label: "Model surface",
-      value: providerCount ? `${providerCount} providers active` : "No provider usage yet",
-      detail: latestTrace?.message ?? "Activity will appear after bidding and execution begin."
-    }
-  ];
+function simulationEntries(mission, trace) {
+  if (mission.simulation_activity?.length) {
+    return mission.simulation_activity;
+  }
+  return [...(mission.events ?? []), ...(trace ?? [])]
+    .filter((entry) => String(entry.event_type ?? entry.trace_type ?? "").startsWith("simulation."))
+    .sort((left, right) => new Date(left.created_at ?? 0).getTime() - new Date(right.created_at ?? 0).getTime())
+    .slice(-20);
 }
 
-function OverviewSection({ mission, diffState, usageSummary, trace }) {
-  const insights = repoInsightCards(mission, diffState, usageSummary, trace);
-  const validators = validatorRows(mission.validation_report, mission.history_metrics, mission.run_state);
-  const changedFiles = changedFilesFor(mission, diffState);
-  const repoInsights = mission.repo_insights ?? {};
-  const dependencyFiles = repoInsights.dependency_files ?? [];
-  const hotspots = repoInsights.complexity_hotspots ?? [];
-  const riskSurface = [...(repoInsights.risky_paths ?? []), ...(repoInsights.protected_interfaces ?? [])];
+function simulationBidRows(mission) {
+  return (mission.bids ?? [])
+    .filter((bid) => bid.task_id === mission.active_task_id)
+    .sort((left, right) => Number(right.score ?? -1) - Number(left.score ?? -1));
+}
+
+function githubAuthUrl(mission) {
+  const actions = [...(mission.recent_civic_actions ?? [])].reverse();
+  const challenge =
+    actions.find((entry) => entry?.output_payload?.authorization_url) ??
+    actions.find((entry) => entry?.payload?.output_payload?.authorization_url) ??
+    null;
+  return (
+    challenge?.output_payload?.authorization_url ??
+    challenge?.payload?.output_payload?.authorization_url ??
+    null
+  );
+}
+
+function SimulationSection({ mission, trace }) {
+  const summary = mission.simulation_summary ?? {};
+  const entries = simulationEntries(mission, trace).reverse();
+  const bids = simulationBidRows(mission);
+
+  const cards = [
+    {
+      label: "Search mode",
+      value: summary.search_mode ?? "bounded_monte_carlo",
+      detail: `${formatInteger(summary.total_bids ?? bids.length)} contenders`
+    },
+    {
+      label: "Samples per bid",
+      value: formatInteger(summary.monte_carlo_samples ?? 0),
+      detail: `${formatInteger(summary.paper_rollouts ?? 0)} paper | ${formatInteger(summary.partial_rollouts ?? 0)} partial | ${formatInteger(summary.sandbox_rollouts ?? 0)} sandbox`
+    },
+    {
+      label: "Frontier gap",
+      value: formatNumber(summary.frontier_gap ?? 0, 3),
+      detail: `Budget ${formatInteger(summary.budget_used ?? 0)}`
+    },
+    {
+      label: "Rollback safety",
+      value: formatNumber(summary.rollback_safety ?? 0, 2),
+      detail: `Validator stability ${formatNumber(summary.validator_stability ?? 0, 2)}`
+    },
+    {
+      label: "Capability availability",
+      value: formatNumber(summary.capability_availability ?? 1, 2),
+      detail: `Policy friction ${formatNumber(summary.policy_friction ?? 0, 2)}`
+    },
+    {
+      label: "Evidence quality",
+      value: formatNumber(summary.evidence_quality ?? 0, 2),
+      detail: `Freshness ${formatNumber(summary.freshness_score ?? 1, 2)}`
+    }
+  ];
 
   return (
     <div className="intelligence-section-grid">
       <section className="panel intelligence-panel">
         <div className="section-title">
-          <h2>Repo understanding</h2>
-          <p>Helix keeps the operational understanding of the repo visible without forcing the operator into logs first.</p>
+          <h2>Monte Carlo state</h2>
+          <p>The simulation engine is shown as a live decision system instead of a post-hoc score dump.</p>
         </div>
         <div className="intelligence-card-grid">
-          {insights.map((card) => (
+          {cards.map((card) => (
             <article key={card.label} className="insight-card">
               <span>{card.label}</span>
               <strong>{card.value}</strong>
@@ -286,147 +170,73 @@ function OverviewSection({ mission, diffState, usageSummary, trace }) {
             </article>
           ))}
         </div>
+        {summary.summary ? <p className="mission-intelligence-summary">{summary.summary}</p> : null}
       </section>
 
       <section className="panel intelligence-panel">
         <div className="section-title">
-          <h2>Baseline evidence</h2>
-          <p>Current validation and changed files are grouped here so repo sensitivity is easy to judge quickly.</p>
+          <h2>Live simulation tape</h2>
+          <p>Rollouts, scoring passes, and search updates stream here as the market is evaluated.</p>
         </div>
-        <div className="evidence-stack">
-          <div className="intel-callout-grid">
-            <article className="intel-callout">
-              <span>Active task</span>
-              <strong>{mission.active_task?.task_id ?? mission.active_task_id ?? "Awaiting task selection"}</strong>
-            </article>
-            <article className="intel-callout">
-              <span>Failure signal</span>
-              <strong>{mission.failure_context?.failure_type ?? "No active failure"}</strong>
-            </article>
-            <article className="intel-callout">
-              <span>Dependencies</span>
-              <strong>{dependencyFiles.length ? dependencyFiles.length : "No manifest"}</strong>
-            </article>
-            <article className="intel-callout">
-              <span>Hotspots</span>
-              <strong>{hotspots[0] ?? "No hotspot captured yet"}</strong>
-            </article>
-          </div>
-
-          <div className="validation-pill-row">
-            {validators.length ? (
-              validators.map((row) => (
-                <span
-                  key={row.id}
-                  className={`validation-item ${row.status === "passed" ? "is-pass" : row.status === "failed" ? "is-fail" : ""}`}
-                >
-                  {row.label}: {row.status === "passed" ? "PASS" : row.status === "failed" ? "FAIL" : "PENDING"}
-                </span>
-              ))
-            ) : (
-              <span className="validation-item">Validation pending</span>
-            )}
-          </div>
-
-          <div className="file-token-list">
-            {riskSurface.length ? (
-              riskSurface.slice(0, 6).map((path) => (
-                <span key={path} className="muted-chip">
-                  {path}
-                </span>
-              ))
-            ) : (
-              <p className="muted-copy">No risky or protected paths have been flagged yet.</p>
-            )}
-          </div>
-
-          <div className="file-token-list">
-            {changedFiles.length ? (
-              changedFiles.map((file) => (
-                <span key={file} className="file-chip">
-                  {file}
-                </span>
-              ))
-            ) : (
-              <p className="muted-copy">No changed files recorded yet.</p>
-            )}
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function CheckpointSection({ mission, diffState }) {
-  const checkpoints = [...(mission.accepted_checkpoints ?? [])].reverse();
-  const worktree = diffState?.worktree_state ?? mission.worktree_state ?? {};
-
-  return (
-    <div className="intelligence-section-grid">
-      <section className="panel intelligence-panel">
-        <div className="section-title">
-          <h2>Checkpoint trail</h2>
-          <p>Accepted checkpoints stay readable as a progression instead of a raw event list.</p>
-        </div>
-        <div className="checkpoint-list">
-          {checkpoints.length ? (
-            checkpoints.map((checkpoint) => (
-              <article key={checkpoint.checkpoint_id} className="checkpoint-card">
-                <div className="checkpoint-head">
-                  <strong>{checkpoint.label ?? "Accepted checkpoint"}</strong>
-                  <StatusBadge value="complete" quiet />
-                </div>
-                <div className="checkpoint-meta">
-                  <span>{relativeTime(checkpoint.created_at)}</span>
-                  <span>{shortCommit(checkpoint.commit_sha)}</span>
-                  <span>{checkpoint.strategy_family ?? "strategy not attached"}</span>
-                </div>
-                <p>{checkpoint.summary ?? checkpoint.diff_summary ?? "No checkpoint summary captured."}</p>
-                <div className="file-token-list">
-                  {(checkpoint.affected_files ?? []).length ? (
-                    checkpoint.affected_files.map((file) => (
-                      <span key={file} className="file-chip">
-                        {file}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="muted-chip">Rollback available from latest accepted anchor</span>
-                  )}
-                </div>
-              </article>
-            ))
+        <div className="ledger-list">
+          {entries.length ? (
+            entries.map((entry) => {
+              const payload = entry.payload ?? entry;
+              return (
+                <article key={entry.id ?? `${entry.event_type}-${entry.created_at}`} className="ledger-row">
+                  <div>
+                    <strong>{humanizeEventType(entry.event_type ?? entry.trace_type ?? "simulation")}</strong>
+                    <p>{entry.message ?? payload.search_summary ?? "Monte Carlo update recorded."}</p>
+                  </div>
+                  <div className="ledger-meta">
+                    {payload.rollout ? <span>{payload.rollout}</span> : null}
+                    {payload.bid_id ? <span>{String(payload.bid_id).slice(0, 8)}</span> : null}
+                    <span>{entry.created_at ? relativeTime(entry.created_at) : "now"}</span>
+                  </div>
+                </article>
+              );
+            })
           ) : (
-            <div className="section-empty">No accepted checkpoints yet.</div>
+            <div className="section-empty">Monte Carlo activity will appear here once simulation starts.</div>
           )}
         </div>
       </section>
 
-      <section className="panel intelligence-panel">
+      <section className="panel intelligence-panel intelligence-panel-full">
         <div className="section-title">
-          <h2>Current branch state</h2>
-          <p>Branch and rollback readiness sit next to the checkpoint ledger so trust stays grounded in repo state.</p>
+          <h2>Candidate score frontier</h2>
+          <p>Each contender keeps its policy, runtime, and simulation profile in one place.</p>
         </div>
-        <div className="intelligence-card-grid">
-          <article className="insight-card">
-            <span>Branch</span>
-            <strong>{mission.branch_name ?? "branch pending"}</strong>
-            <p>Managed branch created for this mission.</p>
-          </article>
-          <article className="insight-card">
-            <span>Head commit</span>
-            <strong>{shortCommit(mission.head_commit)}</strong>
-            <p>{worktree.accepted_commit ? `Anchored at ${shortCommit(worktree.accepted_commit)}.` : "Commit anchor appears after first acceptance."}</p>
-          </article>
-          <article className="insight-card">
-            <span>Rollback pointer</span>
-            <strong>{shortCommit(checkpoints[0]?.rollback_pointer)}</strong>
-            <p>{checkpoints[0]?.rollback_pointer ? "Rollback target recorded." : "Latest checkpoint becomes rollback anchor."}</p>
-          </article>
-          <article className="insight-card">
-            <span>Diff summary</span>
-            <strong>{(checkpoints[0]?.diff_summary ?? mission.latest_diff_summary ?? "Waiting").slice(0, 48)}</strong>
-            <p>Short summary of the most recent accepted or active change.</p>
-          </article>
+        <div className="simulation-bid-grid">
+          {bids.length ? (
+            bids.map((bid) => {
+              const diagnostics = bid.search_diagnostics ?? {};
+              return (
+                <article key={bid.bid_id} className="simulation-bid-card">
+                  <div className="simulation-bid-head">
+                    <div>
+                      <strong>{bid.role ?? bid.strategy_family}</strong>
+                      <p>{summarizeProvider(bid.provider ?? "system")}</p>
+                    </div>
+                    <StatusBadge value={bid.bid_id === mission.winner_bid_id ? "winner" : bid.status ?? "generated"} quiet />
+                  </div>
+                  <div className="simulation-bid-stats">
+                    <span>Score {formatNumber(bid.score)}</span>
+                    <span>Search {formatNumber(bid.search_score)}</span>
+                    <span>Runtime {formatNumber(bid.estimated_runtime_seconds ?? 0, 0)}s</span>
+                    <span>Samples {formatInteger(diagnostics.sample_count ?? 0)}</span>
+                    <span>Success {formatNumber(diagnostics.success_rate ?? 0, 2)}</span>
+                    <span>Rollback {formatNumber(diagnostics.rollback_rate ?? 0, 2)}</span>
+                    <span>Capability {formatNumber(diagnostics.capability_availability_probability ?? 1, 2)}</span>
+                    <span>Policy {formatNumber(diagnostics.policy_friction_cost ?? 0, 2)}</span>
+                  </div>
+                  <p>{bid.search_summary ?? bid.mission_rationale ?? bid.strategy_summary}</p>
+                </article>
+              );
+            })
+          ) : (
+            <div className="section-empty">Candidate diagnostics will appear here once bidding begins.</div>
+          )}
         </div>
       </section>
     </div>
@@ -499,98 +309,69 @@ function DiffSection({ mission, diffState }) {
   );
 }
 
-function UsageSection({ usageSummary, trace }) {
-  const rows = usageRows(usageSummary);
-  const invocations = (usageSummary?.invocations ?? []).length
-    ? usageSummary.invocations
-    : (trace ?? []).filter((entry) => String(entry.trace_type ?? "").startsWith("model.invocation"));
-
-  return (
-    <div className="intelligence-section-grid">
-      <section className="panel intelligence-panel">
-        <div className="section-title">
-          <h2>Provider usage</h2>
-          <p>Spend is split by provider so cost, token use, and provider mix can be understood quickly.</p>
-        </div>
-        <div className="usage-provider-list">
-          {rows.length ? (
-            rows.map((row) => (
-              <article key={row.provider} className="usage-provider-card">
-                <strong>{summarizeProvider(row.provider)}</strong>
-                <span>{formatInteger(row.total_tokens ?? 0)} tok</span>
-                <p>{formatCurrency(row.total_cost ?? 0)}</p>
-              </article>
-            ))
-          ) : (
-            <div className="section-empty">Usage totals will appear once provider calls complete.</div>
-          )}
-        </div>
-      </section>
-
-      <section className="panel intelligence-panel">
-        <div className="section-title">
-          <h2>Recent model activity</h2>
-          <p>Invocation evidence is available here without taking over the live market view.</p>
-        </div>
-        <div className="ledger-list">
-          {invocations.length ? (
-            invocations.slice(-8).reverse().map((entry) => (
-              <article
-                key={entry.id ?? entry.invocation_id ?? `${entry.provider}-${entry.started_at}`}
-                className="ledger-row"
-              >
-                <div>
-                  <strong>{humanizeEventType(entry.trace_type ?? entry.invocation_kind ?? "model invocation")}</strong>
-                  <p>{entry.message ?? entry.model_id ?? "No invocation message attached."}</p>
-                </div>
-                <span>{entry.provider ? summarizeProvider(entry.provider) : "Unknown"}</span>
-              </article>
-            ))
-          ) : (
-            <div className="section-empty">No invocation trace records yet.</div>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function CivicSection({ mission, trace }) {
-  const rows = auditRows(mission, trace);
-  const capabilityCards = civicCapabilityCards(mission);
-  const skillOutputs = skillOutputEntries(mission);
-  const envelopes = mission.governed_bid_envelopes ?? [];
+  const authUrl = githubAuthUrl(mission);
+  const connection = mission.civic_connection ?? {};
+  const rows = mission.recent_civic_actions?.length
+    ? mission.recent_civic_actions
+    : (trace ?? []).filter((entry) => String(entry.trace_type ?? "").includes("civic"));
+  const skillOutputs = Object.entries(mission.skill_outputs ?? {});
 
   return (
     <section className="panel intelligence-panel">
       <div className="section-title">
-        <h2>Civic evidence</h2>
-        <p>Governance stays inspectable as a ledger rather than being mixed into every other panel.</p>
+        <h2>Civic capability plane</h2>
+        <p>Governed external context, envelopes, and auth state stay together instead of bleeding into every screen.</p>
       </div>
+
       <div className="intelligence-card-grid">
-        {capabilityCards.map((card) => (
-          <article key={card.label} className="insight-card">
-            <span>{card.label}</span>
-            <strong>{card.value}</strong>
-            <p>{card.detail}</p>
-          </article>
-        ))}
+        <article className="insight-card">
+          <span>Connection</span>
+          <strong>{String(connection.status ?? "idle").replace(/[_-]/g, " ")}</strong>
+          <p>{connection.message ?? "Connection health will appear here after the next Civic check."}</p>
+        </article>
+        <article className="insight-card">
+          <span>Toolkit</span>
+          <strong>{connection.toolkit_id ?? "default toolkit"}</strong>
+          <p>{connection.last_checked_at ? relativeTime(connection.last_checked_at) : "not checked yet"}</p>
+        </article>
+        <article className="insight-card">
+          <span>Active skills</span>
+          <strong>{formatInteger((mission.available_skills ?? []).length)}</strong>
+          <p>{(mission.available_skills ?? []).join(" | ") || "No active skills yet"}</p>
+        </article>
+        <article className="insight-card">
+          <span>Governed actions</span>
+          <strong>{formatInteger((mission.recent_civic_actions ?? []).length)}</strong>
+          <p>{authUrl ? "GitHub auth is waiting on user approval." : "Recent Civic actions are captured below."}</p>
+        </article>
       </div>
+
+      {authUrl ? (
+        <div className="civic-auth-banner">
+          <div>
+            <strong>GitHub access needs Civic authorization</strong>
+            <p>Approve the GitHub read connection so Arbiter can use governed GitHub context during the mission.</p>
+          </div>
+          <a className="primary-button" href={authUrl} target="_blank" rel="noreferrer">
+            Connect GitHub
+          </a>
+        </div>
+      ) : null}
 
       <div className="section-title" style={{ marginTop: "1rem" }}>
         <h2>Skill outputs</h2>
-        <p>Read-only evidence packets stay grouped by skill so operators can see what shaped the market.</p>
+        <p>Read-only evidence packets stay grouped by skill so you can see exactly what influenced the market.</p>
       </div>
       <div className="intelligence-card-grid">
         {skillOutputs.length ? (
-          skillOutputs.map((item) => (
-            <article key={item.id} className="insight-card">
-              <span>{item.skill}</span>
-              <strong>{item.summary}</strong>
+          skillOutputs.map(([skill, value]) => (
+            <article key={skill} className="insight-card">
+              <span>{skill}</span>
+              <strong>{value?.ci_summary ?? value?.summary ?? value?.detail ?? "Evidence packet captured"}</strong>
               <p>
-                {item.provenance}
-                {item.freshness ? ` | ${relativeTime(item.freshness)}` : ""}
-                {item.confidence !== null && item.confidence !== undefined ? ` | confidence ${Math.round(Number(item.confidence) * 100)}%` : ""}
+                {value?.freshness?.checked_at ? relativeTime(value.freshness.checked_at) : "freshness pending"}
+                {value?.confidence !== undefined ? ` | confidence ${Math.round(Number(value.confidence) * 100)}%` : ""}
               </p>
             </article>
           ))
@@ -600,51 +381,44 @@ function CivicSection({ mission, trace }) {
       </div>
 
       <div className="section-title" style={{ marginTop: "1rem" }}>
-        <h2>Governed envelopes</h2>
-        <p>Shortlisted strategies carry Civic-issued constraints that shape what they are allowed to do.</p>
+        <h2>Governed ledger</h2>
+        <p>Envelopes, actions, and policy decisions stay readable as a chronological ledger.</p>
       </div>
       <div className="ledger-list">
-        {envelopes.length ? (
-          envelopes.map((envelope, index) => (
-            <article key={envelope.envelope_id ?? envelope.bid_id ?? index} className="ledger-row">
+        {(mission.governed_bid_envelopes ?? []).map((envelope, index) => (
+          <article key={envelope.envelope_id ?? `${envelope.bid_id ?? "envelope"}-${index}`} className="ledger-row">
+            <div>
+              <strong>{envelope.bid_id ?? "Bid envelope"}</strong>
+              <p>{(envelope.reasoning ?? []).join(" ") || "Governed policy contract recorded."}</p>
+            </div>
+            <div className="ledger-meta">
+              <span>{String(envelope.status ?? envelope.policy_decision ?? "governed").replace(/[_-]/g, " ")}</span>
+              <span>{envelope.toolkit_id ?? "Civic"}</span>
+            </div>
+          </article>
+        ))}
+        {rows.length ? (
+          rows.map((row, index) => (
+            <article key={row.audit_id ?? row.id ?? index} className="ledger-row">
               <div>
-                <strong>{envelope.bid_id ?? envelope.task_id ?? "Bid envelope"}</strong>
+                <strong>{humanizeEventType(row.action_type ?? row.trace_type ?? row.event_type ?? "civic")}</strong>
                 <p>
-                  {envelope.allowed_skills?.length ? envelope.allowed_skills.join(" | ") : "No allowed skills surfaced"}
+                  {row.reason ??
+                    row.message ??
+                    row.output_payload?.error ??
+                    row.payload?.output_payload?.error ??
+                    "Governed Civic action"}
                 </p>
               </div>
               <div className="ledger-meta">
-                <span>{String(envelope.policy_decision ?? envelope.status ?? "governed").replace(/[_-]/g, " ")}</span>
-                <span>{envelope.runtime_limit_seconds ? `${envelope.runtime_limit_seconds}s` : envelope.toolkit_id ?? "Civic"}</span>
+                <span>{row.status ?? row.policy_state ?? "captured"}</span>
+                <span>{row.created_at ? relativeTime(row.created_at) : "summary"}</span>
               </div>
             </article>
           ))
-        ) : (
-          <div className="section-empty">No governed envelopes have been recorded yet.</div>
-        )}
-      </div>
-
-      <div className="section-title" style={{ marginTop: "1rem" }}>
-        <h2>Governed actions</h2>
-        <p>Audited Civic actions and revocations are retained here for operational review.</p>
-      </div>
-      <div className="ledger-list">
-        {rows.length ? (
-          rows.map((row) => (
-            <article key={row.id} className="ledger-row">
-              <div>
-                <strong>{row.action}</strong>
-                <p>{row.reason}</p>
-              </div>
-              <div className="ledger-meta">
-                <span>{row.result}</span>
-                <span>{row.time ? relativeTime(row.time) : "summary"}</span>
-              </div>
-            </article>
-          ))
-        ) : (
+        ) : !(mission.governed_bid_envelopes ?? []).length ? (
           <div className="section-empty">No Civic-specific audit events have been recorded yet.</div>
-        )}
+        ) : null}
       </div>
     </section>
   );
@@ -660,7 +434,7 @@ function HistorySection({ history, onSelectMission }) {
       <div className="history-comparison-list">
         {history.length ? (
           history.map((item) => (
-            <button key={item.mission_id} className="history-compare-card" onClick={() => onSelectMission(item)}>
+            <button key={item.mission_id} className="history-compare-card" onClick={() => onSelectMission(item)} type="button">
               <div className="history-item-head">
                 <strong>{item.objective}</strong>
                 <StatusBadge value={item.outcome ?? item.run_state} quiet />
@@ -692,11 +466,10 @@ export default function MissionIntelligenceView({
   history,
   trace,
   diffState,
-  usageSummary,
   initialSection,
   onSelectMission
 }) {
-  const [activeSection, setActiveSection] = useState(initialSection || "overview");
+  const [activeSection, setActiveSection] = useState(initialSection || "simulation");
 
   useEffect(() => {
     if (initialSection) {
@@ -715,7 +488,7 @@ export default function MissionIntelligenceView({
         <aside className="panel intelligence-rail">
           <div className="section-title">
             <h2>Mission Intelligence</h2>
-            <p>Inspect the run in analytical mode without losing the calm of the mission workspace.</p>
+            <p>Simulation, governance, validation, and final review evidence stay separated so nothing repeats needlessly.</p>
           </div>
           <nav className="intelligence-nav" aria-label="Mission intelligence sections">
             {SECTIONS.map((section) => (
@@ -737,18 +510,14 @@ export default function MissionIntelligenceView({
               <p className="eyebrow">Evidence View</p>
               <h1>{currentSection.label}</h1>
               <p className="workspace-section-copy">
-                History, checkpoints, repo understanding, validation evidence, diff, usage, and governance are grouped here for deliberate review.
+                This view is reserved for deep inspection, not repeated summaries of the live workspace.
               </p>
             </div>
           </div>
 
-          {activeSection === "overview" ? (
-            <OverviewSection mission={mission} diffState={diffState} usageSummary={usageSummary} trace={trace} />
-          ) : null}
-          {activeSection === "checkpoints" ? <CheckpointSection mission={mission} diffState={diffState} /> : null}
+          {activeSection === "simulation" ? <SimulationSection mission={mission} trace={trace} /> : null}
           {activeSection === "validation" ? <ValidationSection mission={mission} /> : null}
           {activeSection === "diff" ? <DiffSection mission={mission} diffState={diffState} /> : null}
-          {activeSection === "usage" ? <UsageSection usageSummary={usageSummary} trace={trace} /> : null}
           {activeSection === "civic" ? <CivicSection mission={mission} trace={trace} /> : null}
           {activeSection === "history" ? (
             <HistorySection history={history} onSelectMission={onSelectMission} />

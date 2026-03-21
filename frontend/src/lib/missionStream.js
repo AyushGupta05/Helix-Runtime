@@ -19,7 +19,9 @@ const EVENT_PHASE_MAP = {
   "bid.rejected": "strategize",
   "bid.won": "select",
   "standby.selected": "select",
+  "simulation.started": "simulate",
   "simulation.rollout": "simulate",
+  "simulation.bid_scored": "simulate",
   "simulation.completed": "select",
   "proposal.selected": "execute",
   "task.running": "execute",
@@ -132,6 +134,23 @@ function updateBidCivicState(bids, payload = {}) {
   );
 }
 
+function updateBidSimulationState(bids, payload = {}) {
+  if (!payload.bid_id) {
+    return bids;
+  }
+  return bids.map((bid) =>
+    bid.bid_id === payload.bid_id
+      ? {
+          ...bid,
+          score: payload.score ?? bid.score ?? null,
+          search_summary: payload.search_summary ?? bid.search_summary ?? null,
+          search_diagnostics: payload.search_diagnostics ?? bid.search_diagnostics ?? {},
+          status: payload.status ?? "simulated"
+        }
+      : bid
+  );
+}
+
 function upsertTask(tasks, payload, nextStatus) {
   const taskId = payload.task_id;
   if (!taskId) {
@@ -159,6 +178,10 @@ export function normalizeIncomingBid(event) {
     generation_mode: payload.generation_mode ?? (payload.provider === "system" ? "deterministic_fallback" : null),
     strategy_family: payload.strategy_family ?? "pending",
     strategy_summary: payload.strategy_summary ?? "Live contender",
+    exact_action: payload.exact_action ?? null,
+    mission_rationale: payload.mission_rationale ?? null,
+    proposed_task_title: payload.proposed_task_title ?? null,
+    proposed_task_type: payload.proposed_task_type ?? null,
     score: payload.score ?? null,
     confidence: payload.confidence ?? null,
     risk: payload.risk ?? 0,
@@ -169,11 +192,12 @@ export function normalizeIncomingBid(event) {
     rollback_plan: payload.rollback_plan ?? null,
     rollout_level: payload.rollout_level ?? null,
     search_summary: payload.search_summary ?? null,
+    search_diagnostics: payload.search_diagnostics ?? {},
     policy_state: payload.policy_state ?? null,
     required_skills: payload.required_skills ?? [],
     optional_skills: payload.optional_skills ?? [],
-    governed_action_plan: payload.governed_action_plan ?? null,
-    external_evidence_plan: payload.external_evidence_plan ?? null,
+    governed_action_plan: payload.governed_action_plan ?? [],
+    external_evidence_plan: payload.external_evidence_plan ?? [],
     capability_reliance_score: payload.capability_reliance_score ?? null,
     policy_friction_score: payload.policy_friction_score ?? null,
     revocation_risk_score: payload.revocation_risk_score ?? null,
@@ -183,6 +207,7 @@ export function normalizeIncomingBid(event) {
     cost_usage: payload.cost_usage ?? null,
     usage_unavailable_reason: payload.usage_unavailable_reason ?? null,
     rejection_reason: payload.rejection_reason ?? payload.reason ?? null,
+    status: payload.status ?? "generated",
     selected: false,
     standby: false
   };
@@ -319,6 +344,24 @@ function updateRecentTrace(trace, event) {
   );
 }
 
+function simulationActivityEntry(event) {
+  const payload = event.payload ?? {};
+  return {
+    id: `${event.event_type}-${event.id ?? Date.now()}`,
+    event_type: event.event_type,
+    created_at: event.created_at,
+    task_id: payload.task_id ?? null,
+    bid_id: payload.bid_id ?? null,
+    provider: payload.provider ?? null,
+    lane: payload.lane ?? null,
+    rollout: payload.rollout ?? null,
+    message: event.message,
+    search_summary: payload.search_summary ?? null,
+    search_diagnostics: payload.search_diagnostics ?? null,
+    evidence: payload.evidence ?? payload.rollout_evidence ?? []
+  };
+}
+
 export function deriveMissionPhase(eventType, currentPhase) {
   return EVENT_PHASE_MAP[eventType] ?? currentPhase ?? "idle";
 }
@@ -411,6 +454,13 @@ export function mergeMissionEvent(snapshot, event) {
         ...next,
         active_phase: payload.phase ?? payload.next_phase ?? payload.stage ?? next.active_phase
       };
+    case "strategy.market_opened":
+    case "market.opened":
+      return {
+        ...next,
+        active_bid_round: payload.round ?? snapshot.active_bid_round ?? 0,
+        active_task_id: payload.task_id ?? snapshot.active_task_id ?? null
+      };
     case "task.created":
       return { ...next, tasks: upsertTask(snapshot.tasks ?? [], payload, payload.status ?? "pending") };
     case "task.ready":
@@ -426,12 +476,6 @@ export function mergeMissionEvent(snapshot, event) {
         ...next,
         active_task_id: payload.task_id ?? snapshot.active_task_id ?? null,
         tasks: replaceTaskStatus(snapshot.tasks ?? [], payload.task_id ?? snapshot.active_task_id, "ready")
-      };
-    case "market.opened":
-      return {
-        ...next,
-        active_bid_round: payload.round ?? snapshot.active_bid_round ?? 0,
-        active_task_id: payload.task_id ?? snapshot.active_task_id ?? null
       };
     case "bid.generated":
     case "bid.submitted":
@@ -512,6 +556,23 @@ export function mergeMissionEvent(snapshot, event) {
           status: bid.bid_id === payload.bid_id ? "winner" : bid.status
         }))
       };
+    case "simulation.started":
+      return {
+        ...next,
+        simulation_summary: {
+          ...(snapshot.simulation_summary ?? {}),
+          task_id: payload.task_id ?? snapshot.simulation_summary?.task_id ?? snapshot.active_task_id ?? null,
+          summary: event.message,
+          total_bids: payload.total_bids ?? snapshot.simulation_summary?.total_bids ?? 0,
+          rollout_plan: payload.rollout_plan ?? snapshot.simulation_summary?.rollout_plan ?? null
+        },
+        simulation_activity: appendBounded(
+          snapshot.simulation_activity ?? [],
+          simulationActivityEntry(event),
+          STREAM_LIMIT,
+          "id"
+        )
+      };
     case "simulation.rollout":
       return {
         ...next,
@@ -520,7 +581,31 @@ export function mergeMissionEvent(snapshot, event) {
           task_id: payload.task_id ?? snapshot.simulation_summary?.task_id ?? snapshot.active_task_id ?? null,
           summary: payload.summary ?? snapshot.simulation_summary?.summary ?? "",
           budget_used: payload.budget_used ?? snapshot.simulation_summary?.budget_used ?? 0,
-          rollout_count: payload.rollout_count ?? snapshot.simulation_summary?.rollout_count ?? 0
+          rollout_count:
+            payload.rollout_count ??
+            (snapshot.simulation_summary?.rollout_count ?? 0) + 1
+        },
+        simulation_activity: appendBounded(
+          snapshot.simulation_activity ?? [],
+          simulationActivityEntry(event),
+          STREAM_LIMIT,
+          "id"
+        )
+      };
+    case "simulation.bid_scored":
+      return {
+        ...next,
+        bids: updateBidSimulationState(snapshot.bids ?? [], payload),
+        simulation_activity: appendBounded(
+          snapshot.simulation_activity ?? [],
+          simulationActivityEntry(event),
+          STREAM_LIMIT,
+          "id"
+        ),
+        simulation_summary: {
+          ...(snapshot.simulation_summary ?? {}),
+          task_id: payload.task_id ?? snapshot.simulation_summary?.task_id ?? snapshot.active_task_id ?? null,
+          summary: payload.search_summary ?? snapshot.simulation_summary?.summary ?? "",
         }
       };
     case "simulation.completed":
@@ -529,7 +614,9 @@ export function mergeMissionEvent(snapshot, event) {
         simulation_summary: {
           ...(snapshot.simulation_summary ?? {}),
           summary: payload.summary ?? snapshot.simulation_summary?.summary ?? "",
-          task_id: payload.task_id ?? snapshot.simulation_summary?.task_id ?? snapshot.active_task_id ?? null
+          task_id: payload.task_id ?? snapshot.simulation_summary?.task_id ?? snapshot.active_task_id ?? null,
+          monte_carlo_samples: payload.monte_carlo_samples ?? snapshot.simulation_summary?.monte_carlo_samples ?? 0,
+          frontier_gap: payload.frontier_gap ?? snapshot.simulation_summary?.frontier_gap ?? 0
         }
       };
     case "bidding.degraded_mode_entered":

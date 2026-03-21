@@ -2,10 +2,11 @@ import {
   formatCurrency,
   formatInteger,
   formatNumber,
+  formatRuntime,
+  humanizeEventType,
   humanizeGenerationMode,
   humanizeToken,
   isDeterministicFallbackBid,
-  summarizeBidOrigin,
   summarizeProvider
 } from "../lib/format";
 
@@ -105,67 +106,13 @@ function bidStatusFor(bid, winnerBidId, standbyBidId, activePhase) {
   if (bid.rejection_reason) {
     return { label: "REJECTED", tone: "rejected", rank: 0 };
   }
-  if (["strategize", "simulate", "select"].includes(activePhase)) {
+  if (bid.status === "simulated" || activePhase === "simulate") {
+    return { label: "SCORING", tone: "bidding", rank: 2 };
+  }
+  if (["strategize", "select"].includes(activePhase)) {
     return { label: "COMPETING", tone: "bidding", rank: 2 };
   }
   return { label: "CONTENDER", tone: "shortlisted", rank: 1 };
-}
-
-function StrategyCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
-  const status = bidStatusFor(bid, winnerBidId, standbyBidId, activePhase);
-  const totalTokens = metricTotal(bid.token_usage);
-  const totalCost = metricTotal(bid.cost_usage);
-  const modeTone = bidModeTone(bid.generation_mode);
-  const envelope = envelopeLabel(bid);
-
-  return (
-    <article
-      className={`leaderboard-card leaderboard-card-${status.tone} leaderboard-card-${modeTone}`}
-      style={{ animationDelay: `${Math.min(index * 45, 240)}ms` }}
-    >
-      <div className="leaderboard-card-head">
-        <div>
-          <strong>{bid.role || humanizeStrategy(bid.strategy_family)}</strong>
-          <p className="leaderboard-card-provider">{providerLabelForBid(bid)}</p>
-        </div>
-        <span className={`leaderboard-status leaderboard-status-${status.tone}`}>{status.label}</span>
-      </div>
-      {bid.mission_rationale ? (
-        <p className="leaderboard-card-rationale">{bid.mission_rationale}</p>
-      ) : null}
-      <p className="leaderboard-card-origin">{summarizeBidOrigin(bid)}</p>
-      <div className="leaderboard-line">
-        <span>Score {formatNumber(bid.score)}</span>
-        <span>Conf {formatNumber(bid.confidence)}</span>
-        <span>Risk {riskLabel(bid.risk)}</span>
-      </div>
-      <div className="leaderboard-line">
-        <span>Skill reliance {scoreLabel(bid.capability_reliance_score)}</span>
-        <span>Policy friction {scoreLabel(bid.policy_friction_score)}</span>
-        <span>Revocation {scoreLabel(bid.revocation_risk_score)}</span>
-      </div>
-      <div className="leaderboard-line">
-        <span>Model {bid.model_id || "n/a"}</span>
-        <span>Mode {humanizeGenerationMode(bid.generation_mode || "unknown")}</span>
-      </div>
-      <div className="file-token-list">
-        <span className="muted-chip">Required: {skillList(bid, "required_skills")}</span>
-        <span className="muted-chip">Optional: {skillList(bid, "optional_skills")}</span>
-        {envelope ? <span className="muted-chip">Envelope: {envelope}</span> : null}
-      </div>
-      <div className="leaderboard-line leaderboard-line-strong">
-        <span>{formatInteger(totalTokens)} tok</span>
-        <span>{formatCurrency(totalCost)}</span>
-      </div>
-      {bid.rejection_reason ? (
-        <p className="leaderboard-note">{bid.rejection_reason}</p>
-      ) : bid.usage_unavailable_reason ? (
-        <p className="leaderboard-note">{bid.usage_unavailable_reason}</p>
-      ) : bid.model_id ? (
-        <p className="leaderboard-note">{bid.model_id}</p>
-      ) : null}
-    </article>
-  );
 }
 
 function humanizePhase(phase) {
@@ -178,9 +125,105 @@ function humanizePhase(phase) {
     recover: "Recovering",
     collect: "Scanning",
     finalize: "Finalizing",
-    idle: "Idle",
+    idle: "Idle"
   };
   return labels[phase] || humanizeToken(phase || "idle");
+}
+
+function timeLabel(value) {
+  if (!value) {
+    return "--:--";
+  }
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+function bidTickerEntries(events, activeTaskId) {
+  return [...(events ?? [])]
+    .filter((event) => {
+      if (activeTaskId && event.payload?.task_id && event.payload.task_id !== activeTaskId) {
+        return false;
+      }
+      return ["bid.generated", "bid.submitted", "bid.rejected", "bid.won", "standby.selected", "simulation.bid_scored"].includes(event.event_type);
+    })
+    .slice(-10)
+    .reverse();
+}
+
+function StrategyCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
+  const status = bidStatusFor(bid, winnerBidId, standbyBidId, activePhase);
+  const totalTokens = metricTotal(bid.token_usage);
+  const totalCost = metricTotal(bid.cost_usage);
+  const modeTone = bidModeTone(bid.generation_mode);
+  const envelope = envelopeLabel(bid);
+  const diagnostics = bid.search_diagnostics ?? {};
+
+  return (
+    <article
+      className={`leaderboard-card leaderboard-card-${status.tone} leaderboard-card-${modeTone}`}
+      style={{ animationDelay: `${Math.min(index * 45, 240)}ms` }}
+    >
+      <div className="leaderboard-card-head">
+        <div>
+          <strong>{bid.role || humanizeStrategy(bid.strategy_family)}</strong>
+          <p className="leaderboard-card-provider">
+            {providerLabelForBid(bid)} | {humanizeGenerationMode(bid.generation_mode || "unknown")}
+          </p>
+        </div>
+        <span className={`leaderboard-status leaderboard-status-${status.tone}`}>{status.label}</span>
+      </div>
+
+      <p className="leaderboard-card-rationale">
+        {bid.mission_rationale || bid.strategy_summary || "Live contender awaiting fuller rationale."}
+      </p>
+
+      <div className="leaderboard-line">
+        <span>Score {formatNumber(bid.score)}</span>
+        <span>Conf {formatNumber(bid.confidence)}</span>
+        <span>Risk {riskLabel(bid.risk)}</span>
+      </div>
+
+      <div className="leaderboard-line">
+        <span>Runtime {formatRuntime(bid.estimated_runtime_seconds ?? 0)}</span>
+        <span>Friction {scoreLabel(bid.policy_friction_score)}</span>
+        <span>Reliance {scoreLabel(bid.capability_reliance_score)}</span>
+      </div>
+
+      {bid.search_summary ? (
+        <div className="leaderboard-sim">
+          <strong>Monte Carlo</strong>
+          <p>{bid.search_summary}</p>
+          <div className="leaderboard-line">
+            <span>Samples {formatInteger(diagnostics.sample_count ?? 0)}</span>
+            <span>Success {scoreLabel(diagnostics.success_rate)}</span>
+            <span>Rollback {scoreLabel(diagnostics.rollback_rate)}</span>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="file-token-list">
+        <span className="muted-chip">Required: {skillList(bid, "required_skills")}</span>
+        <span className="muted-chip">Optional: {skillList(bid, "optional_skills")}</span>
+        {envelope ? <span className="muted-chip">Envelope: {envelope}</span> : null}
+      </div>
+
+      <div className="leaderboard-line leaderboard-line-strong">
+        <span>{formatInteger(totalTokens)} tok</span>
+        <span>{formatCurrency(totalCost)}</span>
+      </div>
+
+      {bid.rejection_reason ? (
+        <p className="leaderboard-note">{bid.rejection_reason}</p>
+      ) : bid.usage_unavailable_reason ? (
+        <p className="leaderboard-note">{bid.usage_unavailable_reason}</p>
+      ) : bid.exact_action ? (
+        <p className="leaderboard-note">{bid.exact_action}</p>
+      ) : null}
+    </article>
+  );
 }
 
 export default function BidBoard({
@@ -190,29 +233,13 @@ export default function BidBoard({
   activeTaskId,
   activePhase,
   activeBidRound,
-  simulationRound,
   biddingState,
-  usageSummary
+  usageSummary,
+  events = []
 }) {
   const activeBids = bids.filter((bid) => bid.task_id === activeTaskId);
-  const winner =
-    bids.find((bid) => bid.bid_id === winnerBidId) ?? activeBids.find((bid) => bid.bid_id === winnerBidId) ?? null;
-  const standby =
-    bids.find((bid) => bid.bid_id === standbyBidId) ?? activeBids.find((bid) => bid.bid_id === standbyBidId) ?? null;
   const missionTotals = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
   const taskTotals = usageSummary?.active_task ?? { total_tokens: 0, total_cost: 0 };
-  const providerSpend = Object.values(
-    activeBids.reduce((accumulator, bid) => {
-      const provider = providerLabelForBid(bid);
-      const next = accumulator[provider] ?? { provider, tokens: 0, cost: 0 };
-      next.tokens += metricTotal(bid.token_usage);
-      next.cost += metricTotal(bid.cost_usage);
-      accumulator[provider] = next;
-      return accumulator;
-    }, {})
-  ).sort((left, right) => right.tokens - left.tokens);
-  const fallbackTokens = activeBids.reduce((total, bid) => total + metricTotal(bid.token_usage), 0);
-  const fallbackCost = activeBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0);
   const orderedBids = [...activeBids].sort((left, right) => {
     const leftStatus = bidStatusFor(left, winnerBidId, standbyBidId, activePhase);
     const rightStatus = bidStatusFor(right, winnerBidId, standbyBidId, activePhase);
@@ -222,53 +249,34 @@ export default function BidBoard({
     return Number(right.score ?? -1) - Number(left.score ?? -1);
   });
   const biddingMode = biddingState?.generation_mode ?? activeBids[0]?.generation_mode ?? null;
-  const biddingBanner =
-    biddingState?.architecture_violation ||
-    biddingState?.warning ||
-    biddingMode === "deterministic_fallback" ||
-    biddingState?.degraded
-      ? {
-          label:
-            biddingState?.architecture_violation
-              ? "Architecture violation"
-              : biddingMode === "deterministic_fallback" || biddingState?.degraded
-                ? "Degraded strategy mode"
-                : "Strategy notice",
-          message:
-            biddingState?.architecture_violation ??
-            biddingState?.warning ??
-            "This round is running without provider-backed strategy competition.",
-          tone:
-            biddingState?.architecture_violation
-              ? "rejected"
-              : biddingMode === "deterministic_fallback" || biddingState?.degraded
-                ? "standby"
-                : "shortlisted"
-        }
-    : null;
-  const roundTokens = taskTotals.total_tokens && taskTotals.total_tokens > 0 ? taskTotals.total_tokens : fallbackTokens;
-  const roundCost = taskTotals.total_cost && taskTotals.total_cost > 0 ? taskTotals.total_cost : fallbackCost;
+  const roundTokens = taskTotals.total_tokens && taskTotals.total_tokens > 0 ? taskTotals.total_tokens : activeBids.reduce((total, bid) => total + metricTotal(bid.token_usage), 0);
+  const roundCost = taskTotals.total_cost && taskTotals.total_cost > 0 ? taskTotals.total_cost : activeBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0);
+  const providerCount = new Set(activeBids.map((bid) => providerLabelForBid(bid))).size;
+  const liveEntries = bidTickerEntries(events, activeTaskId);
 
   return (
     <div className="arena-shell">
       <div className="arena-topline">
         <div>
-          <p className="eyebrow">Strategy Market</p>
-          <h2>Round {Math.max(activeBidRound || 0, 1)}</h2>
+          <p className="eyebrow">Live Market</p>
+          <h2>Competitive bidding, governed live</h2>
           <p className="arena-topline-copy">
-            Competing strategies propose the next best move for the mission. The market continuously governs how the objective progresses.
+            Strategies arrive, clear policy, and get rescored in real time as the round evolves.
           </p>
         </div>
         <span className="arena-phase">{humanizePhase(activePhase)}</span>
       </div>
+
       <div className="arena-quickstats">
         <div className="arena-stat">
-          <span>Market phase</span>
-          <strong>{humanizePhase(activePhase)}</strong>
+          <span>Round</span>
+          <strong>{Math.max(activeBidRound || 0, 1)}</strong>
+          <p>{activeTaskId || "awaiting task"}</p>
         </div>
         <div className="arena-stat">
-          <span>Simulation depth</span>
-          <strong>{simulationRound ?? 0}</strong>
+          <span>Contenders</span>
+          <strong>{activeBids.length}</strong>
+          <p>{providerCount} providers in the current market</p>
         </div>
         <div className="arena-stat arena-stat-spend">
           <span>Round spend</span>
@@ -281,31 +289,32 @@ export default function BidBoard({
           <p>{formatCurrency(missionTotals.total_cost ?? 0)}</p>
         </div>
       </div>
-      {biddingBanner ? (
-        <div className={`arena-bidding-banner arena-bidding-banner-${biddingBanner.tone}`}>
-          <strong>{biddingBanner.label}</strong>
-          <p>{biddingBanner.message}</p>
+
+      {biddingState?.warning || biddingState?.architecture_violation || biddingMode === "deterministic_fallback" ? (
+        <div className={`arena-bidding-banner arena-bidding-banner-${biddingState?.architecture_violation ? "rejected" : "standby"}`}>
+          <strong>{biddingState?.architecture_violation ? "Architecture violation" : "Strategy notice"}</strong>
+          <p>
+            {biddingState?.architecture_violation ??
+              biddingState?.warning ??
+              "This round is running with degraded bidding signals."}
+          </p>
         </div>
       ) : null}
-      <div className="arena-leadership">
-        <div className="arena-leadership-card arena-leadership-card-winner">
-          <span>Leading Strategy</span>
-          <strong>{winner ? humanizeStrategy(winner.strategy_family) : "Competing"}</strong>
-          <p>{winner ? (winner.mission_rationale || summarizeBidOrigin(winner)) : "Strategies are competing to propose the next move."}</p>
-        </div>
-        <div className="arena-leadership-card arena-leadership-card-standby">
-          <span>Standby Strategy</span>
-          <strong>{standby ? humanizeStrategy(standby.strategy_family) : "No standby"}</strong>
-          <p>{standby ? (standby.mission_rationale || summarizeBidOrigin(standby)) : "An alternate strategy will appear here once selected."}</p>
-        </div>
+
+      <div className="arena-bid-ticker">
+        {liveEntries.length ? (
+          liveEntries.map((entry) => (
+            <article key={`${entry.event_type}-${entry.id}`} className="arena-ticker-item">
+              <strong>{humanizeEventType(entry.event_type)}</strong>
+              <p>{entry.message}</p>
+              <span>{timeLabel(entry.created_at)}</span>
+            </article>
+          ))
+        ) : (
+          <div className="leaderboard-empty">The market ticker will populate as bids are generated.</div>
+        )}
       </div>
-      <div className="arena-provider-strip">
-        {providerSpend.map((entry) => (
-          <span key={entry.provider} className="provider-spend-chip">
-            {entry.provider}: {formatInteger(entry.tokens)} tok | {formatCurrency(entry.cost)}
-          </span>
-        ))}
-      </div>
+
       <div className="bid-leaderboard">
         {orderedBids.length ? (
           orderedBids.map((bid, index) => (
@@ -319,25 +328,8 @@ export default function BidBoard({
             />
           ))
         ) : (
-          <div className="leaderboard-empty">
-            Strategies are forming to compete for the next mission move.
-          </div>
+          <div className="leaderboard-empty">Strategies are forming for the next market move.</div>
         )}
-      </div>
-      <div className="arena-pinned">
-        <span className="arena-pinned-item">
-          Current move: {activeTaskId || "awaiting strategy market"}
-        </span>
-        {winner ? (
-          <span className="arena-pinned-item">
-            Leading: {summarizeBidOrigin(winner)}
-          </span>
-        ) : null}
-        {standby ? (
-          <span className="arena-pinned-item">
-            Standby: {summarizeBidOrigin(standby)}
-          </span>
-        ) : null}
       </div>
     </div>
   );

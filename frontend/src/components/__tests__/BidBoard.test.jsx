@@ -105,39 +105,48 @@ describe("BidBoard", () => {
           warning: "Provider lanes were unavailable."
         }}
         usageSummary={{
+          mission: {
+            total_tokens: 0,
+            total_cost: 0
+          },
           active_task: {
             total_tokens: 377,
             total_cost: 0.06
           }
         }}
+        events={[
+          {
+            id: 7,
+            event_type: "bid.generated",
+            created_at: "2026-03-20T10:00:00Z",
+            message: "Safe strategy generated.",
+            payload: { task_id: "T2" }
+          }
+        ]}
       />
     );
 
-    expect(screen.getByText(/Strategy Market/i)).toBeInTheDocument();
-    expect(screen.getByText(/Round 3/i)).toBeInTheDocument();
-    expect(screen.getByText(/Degraded strategy mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Competitive bidding, governed live/i)).toBeInTheDocument();
+    expect(screen.getAllByText("3").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Strategy notice/i)).toBeInTheDocument();
     expect(screen.getByText(/Provider lanes were unavailable/i)).toBeInTheDocument();
-    expect(screen.getAllByText("Openai").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Mock").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("System").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Safe \| Openai \| gpt-4\.1 \| Provider Model/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Fast \| System \| model unavailable \| Deterministic Fallback/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Required: github_context$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Safe strategy generated/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Openai/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Mock/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/System/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Required:/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Optional: knowledge_context/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Envelope: allowed/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Skill reliance 0\.73/i)).toBeInTheDocument();
-    expect(screen.getByText(/Policy friction 0\.14/i)).toBeInTheDocument();
+    expect(screen.getByText(/Reliance 0\.73/i)).toBeInTheDocument();
+    expect(screen.getByText(/Friction 0\.14/i)).toBeInTheDocument();
     expect(screen.getByText("LEADING")).toBeInTheDocument();
     expect(screen.getByText("STANDBY")).toBeInTheDocument();
     expect(screen.getByText("REJECTED")).toBeInTheDocument();
     expect(screen.getByText(/Round spend/i)).toBeInTheDocument();
     expect(screen.getByText(/Mission spend/i)).toBeInTheDocument();
-    expect(screen.getByText(/Leading: Safe \| Openai \| gpt-4\.1 \| Provider Model/i)).toBeInTheDocument();
-    expect(screen.getByText(/Standby: Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i)).toBeInTheDocument();
   });
 
-  it("keeps the winning pair visible when the active task changes", () => {
+  it("shows an empty-state market when the active task has not accumulated contenders yet", () => {
     render(
       <BidBoard
         bids={bids}
@@ -152,9 +161,8 @@ describe("BidBoard", () => {
       />
     );
 
-    expect(screen.getByText(/Current move: T3/i)).toBeInTheDocument();
-    expect(screen.getByText(/Leading: Safe \| Openai \| gpt-4\.1 \| Provider Model/i)).toBeInTheDocument();
-    expect(screen.getByText(/Standby: Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i)).toBeInTheDocument();
-    expect(screen.getByText(/Strategies are forming to compete for the next mission move/i)).toBeInTheDocument();
+    expect(screen.getByText(/Competitive bidding, governed live/i)).toBeInTheDocument();
+    expect(screen.getByText(/^T3$/)).toBeInTheDocument();
+    expect(screen.getByText(/Strategies are forming for the next market move/i)).toBeInTheDocument();
   });
 });

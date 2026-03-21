@@ -62,40 +62,41 @@ function HomePanel({
 
   return (
     <div className="home-stack">
-      <section className="panel hero-panel">
-        <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
-          <div>
-            <p className="eyebrow">Helix Runtime</p>
-            <h1>Autonomous coding missions, governed execution, and simulation-driven decisions.</h1>
-            <p className="hero-copy">
-              Launch a mission, watch the live market evolve, and hand the repo owner a result page
-              that feels calm, reviewable, and trustworthy.
-            </p>
-          </div>
-        </div>
-        <div className="hero-side">
-          <div className="hero-status-card">
-            <div className="hero-status-topline">
-              <span>Workspace status</span>
-              {activeMission ? <StatusBadge value={activeMission.outcome ?? activeMission.run_state} quiet /> : null}
+      <section className="panel home-intro-bar">
+        <div className="home-intro-copy">
+          <div className="brand-lockup brand-lockup-compact">
+            <div className="brand-mark brand-mark-small" aria-hidden="true">
+              <span />
+              <span />
+              <span />
             </div>
-            <strong>{activeMission ? "A mission is live" : "Ready to launch"}</strong>
+            <div>
+              <p className="eyebrow">Helix Runtime</p>
+              <h1>Launch a mission only when you type a prompt.</h1>
+            </div>
+          </div>
+          <p className="home-intro-note">
+            The launcher stays in control. Existing missions remain available, but nothing opens or starts from this screen unless you explicitly choose it.
+          </p>
+        </div>
+        <div className="home-intro-status">
+          <div className="home-intro-status-copy">
+            <span className="muted-chip">Workspace</span>
+            <strong>{activeMission ? "Existing mission detected" : "Idle and ready"}</strong>
             <p>
               {activeMission
-                ? "The active run stays visible, but Helix does not take over your screen unless you open it."
-                : "No mission is active. Configure the repo and objective when you are ready."}
+                ? "A live mission exists in this process, but it stays in the background until you open it."
+                : "No mission is running. Submit a prompt when you are ready to begin."}
             </p>
-            {activeMission ? (
-              <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
+          </div>
+          {activeMission ? (
+            <div className="home-intro-status-actions">
+              <StatusBadge value={activeMission.outcome ?? activeMission.run_state} quiet />
+              <button className="ghost-button" onClick={() => onOpenActiveMission(activeMission)}>
                 Open Live Workspace
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
       </section>
 
@@ -160,7 +161,7 @@ function MissionRoute() {
   const navigate = useNavigate();
   const missionQuery = useMissionStream(missionId, repo);
   const [activeTab, setActiveTab] = useState("live");
-  const [intelligenceSection, setIntelligenceSection] = useState("overview");
+  const [intelligenceSection, setIntelligenceSection] = useState("simulation");
 
   const controlMutation = useMutation({
     mutationFn: async (action) => {
@@ -246,11 +247,9 @@ function MissionRoute() {
     <div className="mission-room">
       <MissionHeader
         mission={mission}
-        usageSummary={usageSummary}
         busy={controlMutation.isPending}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        onPause={() => controlMutation.mutate("pause")}
         onResume={() => controlMutation.mutate("resume")}
         onCancel={() => controlMutation.mutate("cancel")}
       />
@@ -273,6 +272,7 @@ function MissionRoute() {
             simulationRound={mission.simulation_round}
             biddingState={mission.bidding_state}
             usageSummary={usageSummary}
+            events={mission.events}
           />
           <EventStrip mission={mission} events={mission.events} trace={trace} />
         </MissionLiveView>

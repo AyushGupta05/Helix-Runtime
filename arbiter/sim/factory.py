@@ -6,7 +6,7 @@ import logging
 import math
 import random
 import statistics
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -161,12 +161,14 @@ class SimulationFactory:
         bidder_models: list[str] | None = None,
         provider_pool: list[str] | None = None,
         on_invocation=None,
+        on_bid_generated=None,
     ) -> None:
         self.max_workers = max_workers
         self.backend = backend
         self.bidder_models = bidder_models or []
         self.provider_pool = provider_pool or []
         self.on_invocation = on_invocation
+        self.on_bid_generated = on_bid_generated
         self.market_token_usage: dict[str, int] = {}
         self.market_cost_usage: dict[str, float] = {}
         self._current_mission_context: dict | None = None
@@ -313,7 +315,8 @@ class SimulationFactory:
                 executor.submit(self._build_provider_bid, provider, archetype, variant, task, snapshot): (provider, archetype, variant)
                 for provider, archetype, variant in specs
             }
-            for future, spec in future_map.items():
+            for future in as_completed(future_map):
+                spec = future_map[future]
                 provider, archetype, variant = spec
                 try:
                     bid = future.result()
@@ -327,7 +330,36 @@ class SimulationFactory:
                     provider_invocation_ids.append(bid.invocation_id)
                 self._merge_market_usage(bid.token_usage, bid.cost_usage)
                 bids.append(bid)
+                if self.on_bid_generated:
+                    self.on_bid_generated(bid)
         return bids, provider_errors, failed_specs, provider_invocation_ids
+
+    def _runtime_ceiling_seconds(self, task: TaskNode) -> float:
+        runtime_budget = {
+            "small": 90.0,
+            "medium": 180.0,
+            "large": 300.0,
+        }[task.runtime_class]
+        ceiling = runtime_budget * 1.35
+        mission_context = self._current_mission_context or {}
+        max_runtime_seconds = mission_context.get("max_runtime_seconds")
+        if max_runtime_seconds:
+            ceiling = min(ceiling, max(45.0, float(max_runtime_seconds) * 0.7))
+        return max(30.0, ceiling)
+
+    def _normalize_estimated_runtime_seconds(
+        self,
+        task: TaskNode,
+        raw_runtime_seconds: object,
+        *,
+        variant_multiplier: float,
+    ) -> float:
+        try:
+            estimated = float(raw_runtime_seconds)
+        except (TypeError, ValueError):
+            estimated = 55.0
+        normalized = max(15.0, estimated * float(variant_multiplier))
+        return min(normalized, self._runtime_ceiling_seconds(task))
 
     def _build_provider_bid(
         self,
@@ -357,6 +389,7 @@ class SimulationFactory:
             completed = mc.get("completed_moves", [])
             failed = mc.get("failed_moves", [])
             landscape = mc.get("mission_landscape", [])
+            runtime_budget = int(self._runtime_ceiling_seconds(task))
             mission_section = (
                 f"Mission objective: {mc.get('objective', task.title)}\n"
                 f"Strategy round: {mc.get('strategy_round', 1)}\n"
@@ -364,6 +397,7 @@ class SimulationFactory:
                 f"Failed moves: {', '.join(failed) if failed else 'none'}\n"
                 f"Mission landscape: {'; '.join(landscape[:4]) if landscape else 'not yet mapped'}\n"
                 f"Constraints: {', '.join(mc.get('constraints', [])) or 'none'}\n"
+                f"Runtime budget target: keep estimated runtime at or below {runtime_budget} seconds.\n"
             )
         user_prompt = (
             f"{mission_section}"
@@ -459,9 +493,10 @@ class SimulationFactory:
             confidence=_clamp(float(payload.get("confidence", 0.55 + role.rollback_bias * 0.05)) + float(variant["confidence_delta"])),
             risk=_clamp(float(payload.get("risk", task.risk_level + 0.2 - role.risk_bias * 0.15)) + float(variant["risk_delta"])),
             cost=_clamp(0.22 + role.diff_bias * 0.2 + (0.08 if variant["name"] == "broad" else 0.0) + provider_cost_signal),
-            estimated_runtime_seconds=max(
-                15.0,
-                float(payload.get("estimated_runtime_seconds", 55)) * float(variant["runtime_multiplier"]),
+            estimated_runtime_seconds=self._normalize_estimated_runtime_seconds(
+                task,
+                payload.get("estimated_runtime_seconds", 55),
+                variant_multiplier=float(variant["runtime_multiplier"]),
             ),
             touched_files=scoped_files,
             validator_plan=required_validators,
@@ -569,7 +604,11 @@ class SimulationFactory:
                     confidence=_clamp(0.55 + role.rollback_bias * 0.05 + float(variant["confidence_delta"])),
                     risk=risk,
                     cost=_clamp(0.22 + role.diff_bias * 0.2 + (0.08 if variant["name"] == "broad" else 0.0)),
-                    estimated_runtime_seconds=55 * float(variant["runtime_multiplier"]),
+                    estimated_runtime_seconds=self._normalize_estimated_runtime_seconds(
+                        task,
+                        55.0,
+                        variant_multiplier=float(variant["runtime_multiplier"]),
+                    ),
                     touched_files=scoped_files,
                     validator_plan=list(dict.fromkeys(task.validator_requirements or ["tests"])),
                     rollback_plan="Revert to the latest accepted checkpoint, retain failure evidence, and reopen strategy market with tighter scope.",

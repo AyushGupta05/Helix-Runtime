@@ -126,6 +126,29 @@ function civicImpactSummary(mission) {
   };
 }
 
+function capabilityInfluenceRows(mission) {
+  const rows = Object.entries(mission.skill_outputs ?? {}).map(([skill, value]) => ({
+    id: `skill-${skill}`,
+    title: skill,
+    detail: value?.ci_summary ?? value?.summary ?? value?.detail ?? "Evidence packet captured.",
+    meta:
+      value?.confidence !== undefined
+        ? `confidence ${formatNumber(Number(value.confidence) * 100, 0)}%`
+        : "governed evidence"
+  }));
+  const actionRows = (mission.recent_civic_actions ?? []).slice(0, 3).map((action, index) => ({
+    id: action.audit_id ?? `action-${index}`,
+    title: humanizeEventType(action.event_type ?? action.action_type ?? "civic.action.executed"),
+    detail:
+      action.reason ??
+      action.output_payload?.error ??
+      action.output_payload?.message ??
+      "Governed Civic activity recorded.",
+    meta: action.status ?? "captured"
+  }));
+  return [...rows, ...actionRows].slice(0, 6);
+}
+
 export default function MissionOutcomeView({
   mission,
   trace,
@@ -155,7 +178,7 @@ export default function MissionOutcomeView({
     : confidenceSummary(selectedBid, mission);
   const civicImpact = civicImpactSummary(mission);
   const latestCheckpoint = mission.accepted_checkpoints?.at(-1) ?? null;
-  const activity = [...(trace ?? [])].reverse();
+  const capabilityRows = capabilityInfluenceRows(mission);
 
   return (
     <div className="workspace-view workspace-outcome">
@@ -202,8 +225,8 @@ export default function MissionOutcomeView({
             <button className="ghost-button" type="button" onClick={() => onOpenIntelligence("validation")}>
               View validation report
             </button>
-            <button className="ghost-button" type="button" onClick={() => onOpenIntelligence("checkpoints")}>
-              Open checkpoints
+            <button className="ghost-button" type="button" onClick={() => onOpenIntelligence("history")}>
+              Open mission history
             </button>
             <button className="ghost-button" type="button" onClick={onOpenLiveMarket}>
               Return to Live Market
@@ -331,22 +354,22 @@ export default function MissionOutcomeView({
 
           <section className="panel outcome-panel">
             <div className="section-title">
-              <h2>Latest mission evidence</h2>
-              <p>Recent trace items remain visible for confidence checks without dragging the full live stream into the delivery view.</p>
+              <h2>Governed capability influence</h2>
+              <p>Only the external evidence that shaped the mission stays here, so the outcome view does not repeat the live timeline.</p>
             </div>
             <div className="ledger-list">
-              {activity.length ? (
-                activity.slice(0, 6).map((entry) => (
-                  <article key={entry.id} className="ledger-row">
+              {capabilityRows.length ? (
+                capabilityRows.map((row) => (
+                  <article key={row.id} className="ledger-row">
                     <div>
-                      <strong>{entry.title ?? humanizeEventType(entry.trace_type)}</strong>
-                      <p>{entry.message ?? "No additional context captured."}</p>
+                      <strong>{row.title}</strong>
+                      <p>{row.detail}</p>
                     </div>
-                    <span>{entry.created_at ? new Date(entry.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "now"}</span>
+                    <span>{row.meta}</span>
                   </article>
                 ))
               ) : (
-                <div className="section-empty">No recent trace evidence available yet.</div>
+                <div className="section-empty">No governed capability influence has been recorded yet.</div>
               )}
             </div>
           </section>

@@ -22,6 +22,7 @@ export default function MissionComposer({
   const [publicApiSurface, setPublicApiSurface] = useState("");
   const [benchmarkRequirement, setBenchmarkRequirement] = useState("");
   const [maxRuntime, setMaxRuntime] = useState(10);
+  const [useGithubContext, setUseGithubContext] = useState(false);
 
   const recentRepos = useMemo(() => {
     try {
@@ -41,6 +42,7 @@ export default function MissionComposer({
         objective: objective.trim(),
         constraints: parseList(constraints),
         preferences: parseList(preferences),
+        requested_skills: useGithubContext ? ["github_context"] : [],
         protected_paths: parseList(protectedPaths),
         public_api_surface: parseList(publicApiSurface),
         benchmark_requirement: benchmarkRequirement.trim() || null,
@@ -80,6 +82,14 @@ export default function MissionComposer({
             value={objective}
             onChange={(event) => setObjective(event.target.value)}
           />
+        </label>
+        <label className="composer-inline-toggle">
+          <input
+            type="checkbox"
+            checked={useGithubContext}
+            onChange={(event) => setUseGithubContext(event.target.checked)}
+          />
+          <span>Allow GitHub read context through Civic when the mission needs it.</span>
         </label>
         <details className="advanced-drawer">
           <summary>Advanced mission settings</summary>

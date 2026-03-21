@@ -88,6 +88,7 @@ class MissionRuntime:
             bidder_models=self.config.bidder_models,
             provider_pool=self.config.enabled_providers if hasattr(self.strategy_backend, "router") else [],
             on_invocation=self._record_model_invocation,
+            on_bid_generated=self._emit_live_generated_bid,
         )
         self.recovery = RecoveryEngine()
         self.civic = CivicRuntime(self.config)
@@ -232,6 +233,8 @@ class MissionRuntime:
             policy_state=record.policy_state.value,
             reasoning=record.reasoning,
             audit_id=record.audit_id,
+            status=record.status,
+            output_payload=record.output_payload,
             refresh_view=refresh_view,
         )
         self.trace(
@@ -248,6 +251,75 @@ class MissionRuntime:
             policy_state=record.policy_state.value,
             reasoning=record.reasoning,
             audit_id=record.audit_id,
+            output_payload=record.output_payload,
+        )
+
+    def _bid_event_payload(self, bid: Bid) -> dict:
+        return {
+            "bid_id": bid.bid_id,
+            "task_id": bid.task_id,
+            "role": bid.role,
+            "score": bid.score,
+            "strategy_family": bid.strategy_family,
+            "strategy_summary": bid.strategy_summary,
+            "exact_action": bid.exact_action,
+            "mission_rationale": bid.mission_rationale,
+            "provider": bid.provider,
+            "lane": bid.lane,
+            "model_id": bid.model_id,
+            "invocation_id": bid.invocation_id,
+            "invocation_kind": bid.invocation_kind,
+            "generation_mode": bid.generation_mode.value,
+            "token_usage": bid.token_usage,
+            "cost_usage": bid.cost_usage,
+            "usage_unavailable_reason": bid.usage_unavailable_reason,
+            "estimated_runtime_seconds": bid.estimated_runtime_seconds,
+            "touched_files": bid.touched_files,
+            "validator_plan": bid.validator_plan,
+            "rollback_plan": bid.rollback_plan,
+            "risk": bid.risk,
+            "cost": bid.cost,
+            "confidence": bid.confidence,
+            "required_skills": bid.required_skills,
+            "optional_skills": bid.optional_skills,
+            "governed_action_plan": bid.governed_action_plan,
+            "external_evidence_plan": bid.external_evidence_plan,
+            "capability_reliance_score": bid.capability_reliance_score,
+            "policy_friction_score": bid.policy_friction_score,
+            "revocation_risk_score": bid.revocation_risk_score,
+            "envelope_id": bid.active_envelope_id,
+            "search_summary": bid.search_summary,
+            "search_diagnostics": bid.search_diagnostics,
+            "status": bid.status.value,
+        }
+
+    def _emit_live_generated_bid(self, bid: Bid) -> None:
+        if not self.state.active_bid_round:
+            return
+        self._save_bid(bid, self.state.active_bid_round)
+        payload = self._bid_event_payload(bid)
+        trace_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"task_id", "bid_id", "provider", "lane", "status"}
+        }
+        self.emit(
+            "bid.generated",
+            f"Strategy {bid.bid_id} generated.",
+            refresh_view=True,
+            **payload,
+        )
+        self.trace(
+            "bid.generated",
+            "Strategy generated",
+            f"{bid.bid_id} generated and waiting for policy screens.",
+            task_id=bid.task_id,
+            bid_id=bid.bid_id,
+            provider=bid.provider,
+            lane=bid.lane,
+            status="info",
+            refresh_view=True,
+            **trace_payload,
         )
 
     @staticmethod
@@ -1039,6 +1111,7 @@ class MissionRuntime:
             "objective": self.spec.objective,
             "constraints": self.spec.constraints,
             "preferences": self.spec.preferences,
+            "max_runtime_seconds": self.spec.stop_policy.max_runtime_minutes * 60,
             "completed_moves": [f"{t.task_id}: {t.title}" for t in completed],
             "failed_moves": [f"{t.task_id}: {t.title}" for t in failed],
             "strategy_round": self.state.strategy_round,
@@ -1305,62 +1378,25 @@ class MissionRuntime:
         for bid in self.state.active_bids:
             bid.score = score_bid(bid)
             self._save_bid(bid, self.state.active_bid_round)
+            payload = self._bid_event_payload(bid)
+            trace_payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"task_id", "bid_id", "provider", "lane", "status"}
+            }
             self.emit(
                 "bid.submitted",
                 f"Strategy {bid.bid_id} competing.",
-                bid_id=bid.bid_id,
-                task_id=task.task_id,
-                role=bid.role,
-                score=bid.score,
-                strategy_family=bid.strategy_family,
-                mission_rationale=bid.mission_rationale,
-                provider=bid.provider,
-                lane=bid.lane,
-                model_id=bid.model_id,
-                invocation_id=bid.invocation_id,
-                invocation_kind=bid.invocation_kind,
-                generation_mode=bid.generation_mode.value,
-                token_usage=bid.token_usage,
-                cost_usage=bid.cost_usage,
-                usage_unavailable_reason=bid.usage_unavailable_reason,
-                estimated_runtime_seconds=bid.estimated_runtime_seconds,
-                touched_files=bid.touched_files,
-                validator_plan=bid.validator_plan,
-                rollback_plan=bid.rollback_plan,
-                risk=bid.risk,
-                cost=bid.cost,
-                confidence=bid.confidence,
-                required_skills=bid.required_skills,
-                optional_skills=bid.optional_skills,
-                governed_action_plan=bid.governed_action_plan,
-                external_evidence_plan=bid.external_evidence_plan,
-                capability_reliance_score=bid.capability_reliance_score,
-                policy_friction_score=bid.policy_friction_score,
-                revocation_risk_score=bid.revocation_risk_score,
-                envelope_id=bid.active_envelope_id,
+                refresh_view=True,
+                **payload,
             )
             self.trace(
-                "bid.generated",
+                "bid.submitted",
                 "Strategy entered market",
                 f"{bid.bid_id} is competing for the next mission move.",
-                task_id=task.task_id,
-                bid_id=bid.bid_id,
-                provider=bid.provider,
-                lane=bid.lane,
                 status="success",
-                score=bid.score,
-                strategy_family=bid.strategy_family,
-                mission_rationale=bid.mission_rationale,
-                model_id=bid.model_id,
-                invocation_id=bid.invocation_id,
-                generation_mode=bid.generation_mode.value,
-                usage_unavailable_reason=bid.usage_unavailable_reason,
-                required_skills=bid.required_skills,
-                optional_skills=bid.optional_skills,
-                capability_reliance_score=bid.capability_reliance_score,
-                policy_friction_score=bid.policy_friction_score,
-                revocation_risk_score=bid.revocation_risk_score,
-                envelope_id=bid.active_envelope_id,
+                refresh_view=True,
+                **trace_payload,
             )
         if not self.state.active_bids:
             reason = batch.degraded_reason or "Strategy market produced no valid contenders."
@@ -1378,14 +1414,43 @@ class MissionRuntime:
         partial_ids = set(rollout_plan["partial"])
         sandbox_ids = set(rollout_plan["sandbox"])
         base_ref = self.state.accepted_checkpoint.commit_sha if self.state.accepted_checkpoint else "HEAD"
+        self.emit(
+            "simulation.started",
+            "Bounded Monte Carlo simulation started.",
+            task_id=task.task_id,
+            total_bids=len(self.state.active_bids),
+            rollout_plan=rollout_plan,
+            refresh_view=True,
+        )
         for bid in self.state.active_bids:
             evidence: list[str] = []
             if bid.bid_id in paper_ids:
                 evidence.append("paper")
+                self.emit(
+                    "simulation.rollout",
+                    f"Paper rollout completed for {bid.bid_id}.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider=bid.provider,
+                    lane=bid.lane,
+                    rollout="paper",
+                    evidence=list(evidence),
+                )
                 self.trace("simulation.rollout", "Paper rollout", f"Paper rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="paper")
             if bid.bid_id in partial_ids:
                 files = load_candidate_files(self.paths.worktree_dir, bid.touched_files or task.candidate_files)
                 evidence.append("partial")
+                self.emit(
+                    "simulation.rollout",
+                    f"Partial rollout completed for {bid.bid_id}.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider=bid.provider,
+                    lane=bid.lane,
+                    rollout="partial",
+                    files=list(files),
+                    evidence=list(evidence),
+                )
                 self.trace("simulation.rollout", "Partial rollout", f"Partial rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="partial", files=list(files))
             if bid.bid_id in sandbox_ids:
                 scratch = Path(self.paths.scratch_worktrees_dir) / bid.bid_id
@@ -1426,6 +1491,16 @@ class MissionRuntime:
                             evidence.append("sandbox:no_patch")
                 finally:
                     self.worktree.remove_path(str(scratch))
+                self.emit(
+                    "simulation.rollout",
+                    f"Sandbox rollout completed for {bid.bid_id}.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider=bid.provider,
+                    lane=bid.lane,
+                    rollout="sandbox",
+                    evidence=list(evidence),
+                )
                 self.trace("simulation.rollout", "Sandbox rollout", f"Sandbox rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="sandbox")
             diagnostics = self.simulation.evaluate_search(
                 task,
@@ -1446,6 +1521,32 @@ class MissionRuntime:
             bid.status = BidStatus.SIMULATED
             bid.score = score_bid(bid)
             self._save_bid(bid, self.state.active_bid_round)
+            self.emit(
+                "simulation.bid_scored",
+                f"Monte Carlo scored {bid.bid_id}.",
+                task_id=task.task_id,
+                bid_id=bid.bid_id,
+                provider=bid.provider,
+                lane=bid.lane,
+                rollout_evidence=evidence,
+                search_diagnostics=diagnostics,
+                search_summary=bid.search_summary,
+                score=bid.score,
+                refresh_view=True,
+            )
+            self.trace(
+                "simulation.bid_scored",
+                "Monte Carlo bid scored",
+                f"{bid.bid_id} scored {bid.score:.3f} after bounded Monte Carlo search.",
+                task_id=task.task_id,
+                bid_id=bid.bid_id,
+                provider=bid.provider,
+                lane=bid.lane,
+                status="info",
+                search_diagnostics=diagnostics,
+                search_summary=bid.search_summary,
+                refresh_view=True,
+            )
         self.state.simulation_summary = self.simulation.summarize(task, self.state.active_bids, rollout_plan)
         self.emit(
             "simulation.completed",
@@ -1895,6 +1996,11 @@ def build_mission_spec(repo: str, objective: str, constraints: list[str] | None 
         preferences=preferences or [],
         requested_skills=requested_skills or [],
         max_runtime_minutes=max_runtime or config.max_runtime_minutes,
+        stop_policy={
+            "max_runtime_minutes": max_runtime or config.max_runtime_minutes,
+            "max_recovery_rounds": config.max_recovery_rounds,
+            "max_file_churn": config.max_file_churn,
+        },
         benchmark_requirement=benchmark_requirement,
         protected_paths=protected_paths or [],
         public_api_surface=public_api_surface or [],

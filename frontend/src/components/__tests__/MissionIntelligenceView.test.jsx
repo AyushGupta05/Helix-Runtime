@@ -16,29 +16,24 @@ describe("MissionIntelligenceView", () => {
             toolkit_id: "toolkit-7",
             checked_at: "2026-03-20T10:00:00Z"
           },
-          civic_capabilities: {
-            provider: "Civic",
-            source: "MCP"
-          },
+          civic_capabilities: [{ capability_id: "github_read", display_name: "GitHub Read Context" }],
           available_skills: ["github_context", "knowledge_context"],
-          skill_health: {
-            github_context: "healthy",
-            knowledge_context: "pending"
-          },
+          skill_health: {},
           skill_outputs: {
             github_context: {
               summary: "CI status is green.",
               provenance: "Civic",
               confidence: 0.91,
-              freshness: "2026-03-20T10:00:00Z"
+              freshness: { checked_at: "2026-03-20T10:00:00Z" }
             }
           },
           governed_bid_envelopes: [
             {
+              envelope_id: "env-1",
               bid_id: "bid-1",
               allowed_skills: ["github_context"],
+              status: "approved",
               policy_decision: "allowed",
-              runtime_limit_seconds: 120,
               toolkit_id: "toolkit-7"
             }
           ],
@@ -70,12 +65,14 @@ describe("MissionIntelligenceView", () => {
       />
     );
 
-    expect(screen.getByText(/Civic evidence/i)).toBeInTheDocument();
+    expect(screen.getByText(/Civic capability plane/i)).toBeInTheDocument();
     expect(screen.getByText(/healthy/i)).toBeInTheDocument();
     expect(screen.getAllByText(/toolkit-7/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Active skills/i)).toBeInTheDocument();
     expect(screen.getAllByText(/github_context/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/CI status is green/i)).toBeInTheDocument();
+    expect(screen.getByText(/Skill outputs/i)).toBeInTheDocument();
+    expect(screen.getByText(/Governed ledger/i)).toBeInTheDocument();
     expect(screen.getByText(/bid-1/i)).toBeInTheDocument();
     expect(screen.getByText(/Fetched CI status/i)).toBeInTheDocument();
   });

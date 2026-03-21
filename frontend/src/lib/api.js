@@ -5,6 +5,9 @@ const EVENT_TYPES = [
   "mission.cancelled",
   "mission.finalized",
   "repo.scan.completed",
+  "strategy.landscape_generated",
+  "strategy.market_opened",
+  "strategy.objective_met",
   "task.created",
   "task.ready",
   "task.running",
@@ -20,7 +23,9 @@ const EVENT_TYPES = [
   "bid.won",
   "standby.selected",
   "standby.promoted",
+  "simulation.started",
   "simulation.rollout",
+  "simulation.bid_scored",
   "simulation.completed",
   "model.invocation.started",
   "model.invocation.completed",
@@ -43,10 +48,17 @@ const EVENT_TYPES = [
   "civic.capabilities.refreshed",
   "civic.skills.derived",
   "civic.bid.preflighted",
+  "civic.bid.preflight_allowed",
+  "civic.bid.preflight_blocked",
+  "civic.action.preflight_allowed",
+  "civic.action.preflight_blocked",
   "civic.action.executed",
   "civic.action.blocked",
+  "civic.action.failed",
   "civic.action.revoked",
-  "civic.skill.executed"
+  "civic.envelope.revoked",
+  "civic.skill.executed",
+  "civic.skill.github_context"
 ];
 
 async function apiRequest(path, options = {}) {

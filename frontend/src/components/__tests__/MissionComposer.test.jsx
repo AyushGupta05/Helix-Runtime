@@ -28,6 +28,7 @@ describe("MissionComposer", () => {
       objective: "Fix tests",
       constraints: ["no api breaks", "keep churn low"],
       preferences: ["prefer tests"],
+      requested_skills: [],
       protected_paths: ["src/api.py"],
       public_api_surface: ["src/sdk.py"],
       benchmark_requirement: "pytest tests/perf",
