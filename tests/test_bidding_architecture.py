@@ -604,6 +604,33 @@ class TestProviderMissionPlanning:
         assert any(task.search_depth >= 3 for task in tasks)
         assert any(task.monte_carlo_samples >= 32 for task in tasks)
 
+    def test_provider_planner_prefers_the_default_provider_before_falling_back(self):
+        decomposer = GoalDecomposer()
+        invoked: list[str] = []
+
+        backend = make_provider_backend(providers=("openai", "anthropic"))
+        original_invoke = backend.router.invoke
+
+        def recording_invoke(
+            lane: str,
+            prompt: dict[str, str],
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            invoked.append(lane)
+            return original_invoke(lane, prompt, request_timeout_seconds=request_timeout_seconds)
+
+        backend.router.invoke = recording_invoke
+
+        tasks = decomposer.decompose(
+            "Fix failing tests and improve reliability",
+            _make_snapshot(),
+            strategy_backend=backend,
+        )
+
+        assert tasks
+        assert invoked == ["triage.openai"]
+
     def test_provider_planner_normalizes_common_task_aliases(self):
         decomposer = GoalDecomposer()
         tasks, summary = decomposer._parse_provider_plan(

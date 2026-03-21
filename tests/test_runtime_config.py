@@ -14,10 +14,13 @@ def test_bedrock_model_provider_is_rejected(monkeypatch) -> None:
         RuntimeConfig()
 
 
-def test_anthropic_defaults_use_supported_sonnet_models() -> None:
-    assert RuntimeConfig.model_fields["anthropic_model_triage"].default == "claude-sonnet-4-20250514"
-    assert RuntimeConfig.model_fields["anthropic_model_bid_fast"].default == "claude-sonnet-4-20250514"
+def test_anthropic_defaults_limit_sonnet_4_to_deep_strategy_lane() -> None:
+    assert RuntimeConfig.model_fields["anthropic_model_triage"].default == "claude-3-5-haiku-20241022"
+    assert RuntimeConfig.model_fields["anthropic_model_bid_fast"].default == "claude-3-5-haiku-20241022"
     assert RuntimeConfig.model_fields["anthropic_model_bid_deep"].default == "claude-sonnet-4-20250514"
+    assert RuntimeConfig.model_fields["anthropic_model_proposal_gen"].default == "claude-3-5-haiku-20241022"
+    assert RuntimeConfig.model_fields["anthropic_model_test_gen"].default == "claude-3-5-haiku-20241022"
+    assert RuntimeConfig.model_fields["anthropic_model_perf_reason"].default == "claude-3-5-haiku-20241022"
 
 
 def test_provider_timeout_has_a_default_guardrail() -> None:

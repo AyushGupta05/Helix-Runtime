@@ -68,7 +68,15 @@ class CivicRuntime:
         )
         if not decision.allowed:
             return ActionOutcome(success=False, result={"blocked": True, "reasons": decision.reasons}, audit=audit)
-        result = executor()
+        try:
+            result = executor()
+        except Exception as exc:
+            audit.reasons.append(f"execution_failed: {exc}")
+            return ActionOutcome(
+                success=False,
+                result={"blocked": False, "error": str(exc)},
+                audit=audit,
+            )
         audit.status = ActionStatus.EXECUTED
         if self.available():
             try:

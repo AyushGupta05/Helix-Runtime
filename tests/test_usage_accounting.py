@@ -99,6 +99,51 @@ def test_estimates_anthropic_cost_from_usage_metadata_when_billing_metadata_is_m
     assert cost_usage == pytest.approx({"usd": 0.006954})
 
 
+def test_estimates_anthropic_haiku_cost_from_usage_metadata_when_billing_metadata_is_missing() -> None:
+    raw_usage = {
+        "usage_metadata": {
+            "input_tokens": 500,
+            "output_tokens": 250,
+            "total_tokens": 750,
+            "input_token_details": {
+                "cache_read": 0,
+                "cache_creation": 0,
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 0,
+            },
+        },
+        "response_metadata": {
+            "model_provider": "anthropic",
+            "model_name": "claude-3-5-haiku-20241022",
+            "usage": {
+                "cache_creation": {
+                    "ephemeral_1h_input_tokens": 0,
+                    "ephemeral_5m_input_tokens": 0,
+                },
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 500,
+                "output_tokens": 250,
+            },
+        },
+    }
+
+    token_usage = _normalize_usage_metadata(raw_usage)
+    cost_usage = _estimate_cost_usage(
+        raw_usage=raw_usage,
+        token_usage=token_usage,
+        provider="anthropic",
+        model_id="claude-3-5-haiku-20241022",
+    )
+
+    assert token_usage == {
+        "input_tokens": 500,
+        "output_tokens": 250,
+        "total_tokens": 750,
+    }
+    assert cost_usage == pytest.approx({"usd": 0.0014})
+
+
 def test_usage_summary_prefers_total_tokens_and_usd_without_double_counting(tmp_path: Path) -> None:
     mission_id = "usage-mission"
     repo_path = tmp_path / "repo"

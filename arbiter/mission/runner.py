@@ -272,16 +272,10 @@ class MissionRuntime:
 
     @staticmethod
     def _apply_proposal(toolset, proposal) -> list[str]:
-        touched: list[str] = []
-        if proposal.files:
-            touched.extend(toolset.apply_file_updates({item.path: item.content for item in proposal.files}))
-        if proposal.operations:
-            touched.extend(toolset.apply_edit_operations([item.model_dump(mode="json") for item in proposal.operations]))
-        unique: list[str] = []
-        for path in touched:
-            if path not in unique:
-                unique.append(path)
-        return unique
+        return toolset.apply_structured_edits(
+            {item.path: item.content for item in proposal.files},
+            [item.model_dump(mode="json") for item in proposal.operations],
+        )
 
     def _generate_execution_candidates(self, task, bid, candidate_files: dict[str, str]):
         failure_context = self.state.failure_context.details if self.state.failure_context else None
@@ -1156,10 +1150,39 @@ class MissionRuntime:
         self.state.last_civic_audit = outcome.audit
         self.state.summary.audit_summary[outcome.audit.audit_id] = outcome.audit.model_dump(mode="json")
         if not outcome.success:
-            self.state.policy_collisions += 1
-            self.state.governance.policy_state = PolicyState.BLOCKED
-            self.state.governance.stop_reason = "; ".join(decision.reasons)
-            self.state.failure_context = FailureContext(task_id=task.task_id, failure_type="policy_block", details="; ".join(decision.reasons), diff_summary=self.toolset.diff(), validator_deltas=[], recommended_recovery_scope="rebid", strategy_family=bid.strategy_family, attempted_file_scope=intent.file_scope, rollout_evidence=[value for value in [bid.search_summary, selected_candidate.proposal.summary] if value], civic_action_history=[outcome.audit.audit_id])
+            if outcome.result.get("blocked"):
+                self.state.policy_collisions += 1
+                self.state.governance.policy_state = PolicyState.BLOCKED
+                self.state.governance.stop_reason = "; ".join(decision.reasons)
+                self.state.failure_context = FailureContext(task_id=task.task_id, failure_type="policy_block", details="; ".join(decision.reasons), diff_summary=self.toolset.diff(), validator_deltas=[], recommended_recovery_scope="rebid", strategy_family=bid.strategy_family, attempted_file_scope=intent.file_scope, rollout_evidence=[value for value in [bid.search_summary, selected_candidate.proposal.summary] if value], civic_action_history=[outcome.audit.audit_id])
+            else:
+                details = str(outcome.result.get("error") or "Execution failed.")
+                self._refresh_worktree_state("Execution proposal failed before the worktree was updated.")
+                self.state.failure_context = FailureContext(
+                    task_id=task.task_id,
+                    failure_type="execution_failure",
+                    details=details,
+                    diff_summary=self.toolset.diff(),
+                    validator_deltas=[],
+                    recommended_recovery_scope="standby_or_rebid",
+                    strategy_family=bid.strategy_family,
+                    attempted_file_scope=intent.file_scope,
+                    rollout_evidence=[value for value in [bid.search_summary, selected_candidate.proposal.summary] if value],
+                    civic_action_history=[outcome.audit.audit_id],
+                )
+                self.trace(
+                    "execution.failed",
+                    "Execution failed",
+                    f"Execution failed for {task.task_id}.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider=selected_candidate.provider,
+                    lane=selected_candidate.lane,
+                    status="danger",
+                    details=details,
+                    refresh_view=True,
+                )
+                self.emit("execution.failed", "Material edit failed before validation.", task_id=task.task_id, details=details, refresh_view=True)
             self._save_failure(self.state.failure_context)
             return {"status": ActivePhase.RECOVER.value}
         self._refresh_worktree_state("Material edit applied in the isolated worktree.")

@@ -38,7 +38,7 @@ class LocalToolset:
         return relative_path
 
     def apply_file_updates(self, updates: dict[str, str]) -> list[str]:
-        return [self.edit_file(relative_path, content) for relative_path, content in updates.items()]
+        return self.apply_structured_edits(updates, [])
 
     @staticmethod
     def _replace_nth(text: str, target: str, replacement: str, occurrence: int) -> str:
@@ -52,8 +52,50 @@ class LocalToolset:
             start = index + len(target)
         return text[:index] + replacement + text[index + len(target) :]
 
-    def apply_edit_operations(self, operations: list[dict[str, Any]]) -> list[str]:
+    def _apply_operation_to_text(
+        self,
+        *,
+        existing: str,
+        op_type: str,
+        content: str,
+        target: Any,
+        occurrence: int,
+    ) -> str:
+        if op_type == "create_file":
+            return content
+        if op_type == "replace":
+            if not isinstance(target, str) or not target:
+                raise ValueError("Replace operations require a non-empty target string.")
+            return self._replace_nth(existing, target, content, occurrence)
+        if op_type == "insert_after":
+            if not isinstance(target, str) or not target:
+                raise ValueError("insert_after operations require a non-empty target string.")
+            return self._replace_nth(existing, target, f"{target}{content}", occurrence)
+        if op_type == "insert_before":
+            if not isinstance(target, str) or not target:
+                raise ValueError("insert_before operations require a non-empty target string.")
+            return self._replace_nth(existing, target, f"{content}{target}", occurrence)
+        if op_type == "append":
+            return existing + content
+        if op_type == "prepend":
+            return content + existing
+        raise ValueError(f"Unsupported edit operation type: {op_type}")
+
+    def apply_structured_edits(
+        self,
+        file_updates: dict[str, str],
+        operations: list[dict[str, Any]],
+    ) -> list[str]:
+        staged: dict[str, str] = {}
         touched: list[str] = []
+
+        for relative_path, content in file_updates.items():
+            if not relative_path:
+                raise ValueError("File updates must include a path.")
+            staged[relative_path] = content
+            if relative_path not in touched:
+                touched.append(relative_path)
+
         for operation in operations:
             op_type = str(operation.get("type") or "").strip()
             relative_path = str(operation.get("path") or "").strip()
@@ -63,34 +105,28 @@ class LocalToolset:
             if not op_type or not relative_path:
                 raise ValueError("Edit operations must include type and path.")
             path = self.worktree / relative_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            existing = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
-
-            if op_type == "create_file":
-                updated = content
-            elif op_type == "replace":
-                if not isinstance(target, str) or not target:
-                    raise ValueError("Replace operations require a non-empty target string.")
-                updated = self._replace_nth(existing, target, content, occurrence)
-            elif op_type == "insert_after":
-                if not isinstance(target, str) or not target:
-                    raise ValueError("insert_after operations require a non-empty target string.")
-                updated = self._replace_nth(existing, target, f"{target}{content}", occurrence)
-            elif op_type == "insert_before":
-                if not isinstance(target, str) or not target:
-                    raise ValueError("insert_before operations require a non-empty target string.")
-                updated = self._replace_nth(existing, target, f"{content}{target}", occurrence)
-            elif op_type == "append":
-                updated = existing + content
-            elif op_type == "prepend":
-                updated = content + existing
-            else:
-                raise ValueError(f"Unsupported edit operation type: {op_type}")
-
-            path.write_text(updated, encoding="utf-8")
+            existing = staged.get(relative_path)
+            if existing is None:
+                existing = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+            updated = self._apply_operation_to_text(
+                existing=existing,
+                op_type=op_type,
+                content=content,
+                target=target,
+                occurrence=occurrence,
+            )
+            staged[relative_path] = updated
             if relative_path not in touched:
                 touched.append(relative_path)
+
+        for relative_path, content in staged.items():
+            path = self.worktree / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
         return touched
+
+    def apply_edit_operations(self, operations: list[dict[str, Any]]) -> list[str]:
+        return self.apply_structured_edits({}, operations)
 
     def _run_tool(self, command: list[str], timeout: int = 300) -> CommandResult:
         return _run(command, cwd=str(self.worktree), timeout=timeout)

@@ -113,6 +113,16 @@ _ANTHROPIC_PRICE_CARDS: tuple[tuple[str, ModelPriceCard], ...] = (
             cache_write_1h_per_mtok=6.0,
         ),
     ),
+    (
+        "claude-3-5-haiku",
+        ModelPriceCard(
+            input_per_mtok=0.8,
+            cached_input_per_mtok=0.08,
+            output_per_mtok=4.0,
+            cache_write_5m_per_mtok=1.0,
+            cache_write_1h_per_mtok=1.6,
+        ),
+    ),
 )
 
 
