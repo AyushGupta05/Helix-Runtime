@@ -771,11 +771,74 @@ export function reconcileMissionSnapshot(current, incoming) {
   };
 }
 
+const DIFF_REFRESH_EVENTS = new Set([
+  "proposal.selected",
+  "tool.executed",
+  "diff.updated",
+  "checkpoint.accepted",
+  "checkpoint.reverted",
+  "mission.finalized"
+]);
+
+const USAGE_REFRESH_EVENTS = new Set([
+  "model.invocation.completed",
+  "simulation.bid_scored",
+  "bid.won",
+  "standby.promoted",
+  "mission.finalized"
+]);
+
+const HISTORY_REFRESH_EVENTS = new Set([
+  "mission.paused",
+  "mission.resumed",
+  "mission.cancelled",
+  "mission.finalized",
+  "checkpoint.accepted"
+]);
+
+function traceEntryFromEvent(event) {
+  return {
+    id: event.id,
+    trace_type: event.event_type,
+    title: event.payload?.title ?? event.event_type,
+    message: event.message,
+    status: event.payload?.status ?? "info",
+    task_id: event.payload?.task_id ?? null,
+    bid_id: event.payload?.bid_id ?? null,
+    provider: event.payload?.provider ?? null,
+    lane: event.payload?.lane ?? null,
+    payload: event.payload ?? {},
+    created_at: event.created_at
+  };
+}
+
+function mergeTraceQuery(current, event) {
+  return appendBounded(current ?? [], traceEntryFromEvent(event), STREAM_LIMIT, "id");
+}
+
+function mergeDiffSnapshot(current, missionSnapshot) {
+  if (!current || !missionSnapshot) {
+    return current;
+  }
+  return {
+    ...current,
+    mission_id: missionSnapshot.mission_id,
+    repo_path: missionSnapshot.repo_path,
+    branch_name: missionSnapshot.branch_name,
+    head_commit: missionSnapshot.head_commit,
+    worktree_state: missionSnapshot.worktree_state ?? current.worktree_state ?? {},
+    accepted_checkpoint:
+      missionSnapshot.accepted_checkpoints?.at(-1) ?? current.accepted_checkpoint ?? null,
+    mission_output: missionSnapshot.mission_output ?? current.mission_output ?? {}
+  };
+}
+
 export function useMissionStream(missionId, repo) {
   const queryClient = useQueryClient();
+  const sourceRef = useRef(null);
   const reconnectRef = useRef(null);
   const lastSeenRef = useRef(0);
-  const invalidateRef = useRef(null);
+  const refreshTimersRef = useRef({});
 
   const missionQuery = useQuery({
     queryKey: ["mission", repo, missionId],
@@ -784,11 +847,7 @@ export function useMissionStream(missionId, repo) {
         queryClient.getQueryData(["mission", repo, missionId]),
         await getMission(missionId, repo)
       ),
-    enabled: Boolean(missionId && repo),
-    refetchInterval: (query) =>
-      ["running", "paused", "cancelling"].includes(query.state.data?.run_state)
-        ? 2500
-        : false
+    enabled: Boolean(missionId && repo)
   });
 
   useEffect(() => {
@@ -802,34 +861,68 @@ export function useMissionStream(missionId, repo) {
       return undefined;
     }
     let disposed = false;
-    let source = null;
 
-    const scheduleRefresh = () => {
-      if (invalidateRef.current) {
-        window.clearTimeout(invalidateRef.current);
+    const clearRefreshTimers = () => {
+      Object.values(refreshTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+      refreshTimersRef.current = {};
+    };
+
+    const scheduleInvalidation = (queryKey, delay = 900) => {
+      const timerKey = JSON.stringify(queryKey);
+      if (refreshTimersRef.current[timerKey]) {
+        window.clearTimeout(refreshTimersRef.current[timerKey]);
       }
-      invalidateRef.current = window.setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["mission", repo, missionId] });
-        queryClient.invalidateQueries({ queryKey: ["mission-trace", repo, missionId] });
-        queryClient.invalidateQueries({ queryKey: ["mission-diff", repo, missionId] });
-        queryClient.invalidateQueries({ queryKey: ["mission-usage", repo, missionId] });
-        queryClient.invalidateQueries({ queryKey: ["missions", repo] });
-      }, 250);
+      refreshTimersRef.current[timerKey] = window.setTimeout(() => {
+        delete refreshTimersRef.current[timerKey];
+        queryClient.invalidateQueries({ queryKey });
+      }, delay);
     };
 
     const connect = () => {
-      source = openMissionEvents(missionId, repo, lastSeenRef.current, {
+      if (disposed || sourceRef.current) {
+        return;
+      }
+      if (reconnectRef.current) {
+        window.clearTimeout(reconnectRef.current);
+        reconnectRef.current = null;
+      }
+
+      sourceRef.current = openMissionEvents(missionId, repo, lastSeenRef.current, {
         onEvent: (event) => {
           lastSeenRef.current = Math.max(lastSeenRef.current, event.id ?? 0);
+          let nextMissionSnapshot = null;
           queryClient.setQueryData(["mission", repo, missionId], (current) =>
-            mergeMissionEvent(current, event)
+            {
+              nextMissionSnapshot = mergeMissionEvent(current, event);
+              return nextMissionSnapshot;
+            }
           );
-          scheduleRefresh();
+          queryClient.setQueryData(["mission-trace", repo, missionId], (current) =>
+            mergeTraceQuery(current, event)
+          );
+          if (nextMissionSnapshot) {
+            queryClient.setQueryData(["mission-diff", repo, missionId], (current) =>
+              mergeDiffSnapshot(current, nextMissionSnapshot)
+            );
+          }
+          if (DIFF_REFRESH_EVENTS.has(event.event_type)) {
+            scheduleInvalidation(["mission-diff", repo, missionId], 700);
+          }
+          if (USAGE_REFRESH_EVENTS.has(event.event_type)) {
+            scheduleInvalidation(["mission-usage", repo, missionId], 1200);
+          }
+          if (HISTORY_REFRESH_EVENTS.has(event.event_type)) {
+            scheduleInvalidation(["missions", repo], 900);
+          }
         },
         onError: () => {
-          source?.close();
+          sourceRef.current?.close();
+          sourceRef.current = null;
           if (disposed) {
             return;
+          }
+          if (reconnectRef.current) {
+            window.clearTimeout(reconnectRef.current);
           }
           reconnectRef.current = window.setTimeout(() => {
             queryClient.invalidateQueries({ queryKey: ["mission", repo, missionId] });
@@ -845,13 +938,12 @@ export function useMissionStream(missionId, repo) {
     connect();
     return () => {
       disposed = true;
-      source?.close();
+      sourceRef.current?.close();
+      sourceRef.current = null;
       if (reconnectRef.current) {
         window.clearTimeout(reconnectRef.current);
       }
-      if (invalidateRef.current) {
-        window.clearTimeout(invalidateRef.current);
-      }
+      clearRefreshTimers();
     };
   }, [missionId, repo, missionQuery.isSuccess, queryClient]);
 

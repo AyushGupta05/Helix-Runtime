@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from arbiter.runtime.migrate import migrate_legacy_mission
-from arbiter.runtime.paths import build_mission_paths
+from pathlib import Path
+
+from arbiter.runtime.paths import resolve_repo_path
 from arbiter.runtime.store import MissionStore
 from arbiter.server.schemas import MissionView
 
 
 def materialize_mission_view(repo_path: str, mission_id: str) -> MissionView:
-    paths = build_mission_paths(repo_path, mission_id)
-    migrate_legacy_mission(paths, mission_id)
-    store = MissionStore(paths.db_path)
+    repo = resolve_repo_path(repo_path)
+    db_path = repo / ".arbiter" / "missions" / mission_id / "state.db"
+    if not db_path.exists():
+        raise ValueError(f"Mission {mission_id} not found.")
+    store = MissionStore(str(Path(db_path)), read_only=True)
     try:
         return MissionView.model_validate(store.get_mission_view(mission_id))
     finally:

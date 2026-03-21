@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import StatusBadge from "./StatusBadge";
 import {
@@ -98,9 +98,23 @@ function simulationEntries(mission, trace) {
 }
 
 function simulationBidRows(mission) {
+  const activeTaskId = mission.active_task_id;
   return (mission.bids ?? [])
-    .filter((bid) => bid.task_id === mission.active_task_id)
-    .sort((left, right) => Number(right.score ?? -1) - Number(left.score ?? -1));
+    .filter((bid) => {
+      if (!activeTaskId) {
+        return true;
+      }
+      return (
+        bid.task_id === activeTaskId ||
+        bid.bid_id === mission.winner_bid_id ||
+        bid.bid_id === mission.standby_bid_id
+      );
+    })
+    .sort(
+      (left, right) =>
+        Number(right.score ?? right.confidence ?? -1) -
+        Number(left.score ?? left.confidence ?? -1)
+    );
 }
 
 function githubAuthUrl(mission) {
@@ -466,63 +480,156 @@ export default function MissionIntelligenceView({
   history,
   trace,
   diffState,
+  selectedBid,
+  latestProposalTrace,
   initialSection,
   onSelectMission
 }) {
-  const [activeSection, setActiveSection] = useState(initialSection || "simulation");
+  const sectionRefs = useRef({});
 
   useEffect(() => {
-    if (initialSection) {
-      setActiveSection(initialSection);
+    if (!initialSection) {
+      return;
+    }
+    const nextSection = sectionRefs.current[initialSection];
+    if (nextSection) {
+      window.requestAnimationFrame(() => {
+        nextSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     }
   }, [initialSection]);
 
-  const currentSection = useMemo(
-    () => SECTIONS.find((section) => section.id === activeSection) ?? SECTIONS[0],
-    [activeSection]
+  const activeSection = useMemo(
+    () => SECTIONS.find((section) => section.id === initialSection) ?? SECTIONS[0],
+    [initialSection]
   );
+  const winnerExplanation =
+    latestProposalTrace?.payload?.summary ??
+    selectedBid?.search_summary ??
+    selectedBid?.mission_rationale ??
+    selectedBid?.strategy_summary ??
+    "The winning strategy explanation will land here once the market completes selection.";
+  const overviewCards = [
+    {
+      label: "Winning strategy",
+      value: selectedBid?.role ?? selectedBid?.strategy_family ?? "Pending",
+      detail: winnerExplanation
+    },
+    {
+      label: "Validation posture",
+      value: mission.validation_report?.passed ? "Validated" : "In flight",
+      detail:
+        mission.validation_report?.notes?.join(" ") ??
+        "Validation evidence remains visible below."
+    },
+    {
+      label: "Diff surface",
+      value: formatInteger(changedFilesFor(mission, diffState).length),
+      detail:
+        changedFilesFor(mission, diffState).slice(0, 3).join(", ") ||
+        "No changed files have been recorded yet."
+    },
+    {
+      label: "Civic evidence",
+      value: formatInteger((mission.recent_civic_actions ?? []).length),
+      detail:
+        (mission.available_skills ?? []).join(" | ") ||
+        "No Civic-derived evidence has been attached yet."
+    }
+  ];
+
+  const jumpToSection = (sectionId) => {
+    const target = sectionRefs.current[sectionId];
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const renderSection = (sectionId) => {
+    switch (sectionId) {
+      case "simulation":
+        return <SimulationSection mission={mission} trace={trace} />;
+      case "validation":
+        return <ValidationSection mission={mission} />;
+      case "diff":
+        return <DiffSection mission={mission} diffState={diffState} />;
+      case "civic":
+        return <CivicSection mission={mission} trace={trace} />;
+      case "history":
+        return <HistorySection history={history} onSelectMission={onSelectMission} />;
+      default:
+        return null;
+    }
+  };
 
   return (
     <div className="workspace-view workspace-intelligence">
-      <div className="intelligence-layout">
-        <aside className="panel intelligence-rail">
-          <div className="section-title">
-            <h2>Mission Intelligence</h2>
-            <p>Simulation, governance, validation, and final review evidence stay separated so nothing repeats needlessly.</p>
-          </div>
-          <nav className="intelligence-nav" aria-label="Mission intelligence sections">
-            {SECTIONS.map((section) => (
-              <button
-                key={section.id}
-                type="button"
-                className={`intelligence-nav-item ${activeSection === section.id ? "is-active" : ""}`}
-                onClick={() => setActiveSection(section.id)}
-              >
-                {section.label}
-              </button>
-            ))}
-          </nav>
-        </aside>
-
-        <div className="intelligence-main">
-          <div className="workspace-section-header">
-            <div>
-              <p className="eyebrow">Evidence View</p>
-              <h1>{currentSection.label}</h1>
-              <p className="workspace-section-copy">
-                This view is reserved for deep inspection, not repeated summaries of the live workspace.
-              </p>
-            </div>
-          </div>
-
-          {activeSection === "simulation" ? <SimulationSection mission={mission} trace={trace} /> : null}
-          {activeSection === "validation" ? <ValidationSection mission={mission} /> : null}
-          {activeSection === "diff" ? <DiffSection mission={mission} diffState={diffState} /> : null}
-          {activeSection === "civic" ? <CivicSection mission={mission} trace={trace} /> : null}
-          {activeSection === "history" ? (
-            <HistorySection history={history} onSelectMission={onSelectMission} />
-          ) : null}
+      <section className="panel intelligence-overview">
+        <div className="section-title">
+          <p className="eyebrow">Mission Intelligence</p>
+          <h1>Why this strategy won</h1>
+          <p className="workspace-section-copy">
+            Screen 2 keeps the winning explanation, validation, diffs, Civic evidence, and
+            mission history together so the decision is legible in under a minute.
+          </p>
         </div>
+
+        <div className="intelligence-card-grid">
+          {overviewCards.map((card) => (
+            <article key={card.label} className="insight-card">
+              <span>{card.label}</span>
+              <strong>{card.value}</strong>
+              <p>{card.detail}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="mission-intelligence-summary">
+          {winnerExplanation}
+        </div>
+      </section>
+
+      <div className="panel intelligence-jumpbar">
+        <div className="section-title">
+          <h2>Jump to evidence</h2>
+          <p>Each section keeps one job: decision logic, validation, code changes, governed context, or history.</p>
+        </div>
+        <nav className="intelligence-nav intelligence-nav-inline" aria-label="Mission intelligence sections">
+          {SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={`intelligence-nav-item ${activeSection.id === section.id ? "is-active" : ""}`}
+              onClick={() => jumpToSection(section.id)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      <div className="intelligence-main">
+        {SECTIONS.map((section) => (
+          <section
+            key={section.id}
+            ref={(node) => {
+              sectionRefs.current[section.id] = node;
+            }}
+            className={`intelligence-section-block ${activeSection.id === section.id ? "is-highlighted" : ""}`}
+          >
+            <div className="workspace-section-header">
+              <div>
+                <p className="eyebrow">Evidence View</p>
+                <h1>{section.label}</h1>
+                <p className="workspace-section-copy">
+                  This section is visible alongside the rest of the mission record so nothing critical
+                  gets hidden behind a mode switch.
+                </p>
+              </div>
+            </div>
+            {renderSection(section.id)}
+          </section>
+        ))}
       </div>
     </div>
   );

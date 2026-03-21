@@ -17,8 +17,6 @@ import { relativeTime } from "./lib/format";
 import MissionComposer from "./components/MissionComposer";
 import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";
-import BidBoard from "./components/BidBoard";
-import EventStrip from "./components/EventStrip";
 import MissionIntelligenceView from "./components/MissionIntelligenceView";
 import MissionOutcomeView from "./components/MissionOutcomeView";
 import MissionLiveView from "./components/MissionLiveView";
@@ -261,21 +259,7 @@ function MissionRoute() {
           usageSummary={usageSummary}
           selectedBid={selectedBid}
           latestProposalTrace={latestProposalTrace}
-        >
-          <BidBoard
-            bids={mission.bids}
-            winnerBidId={mission.winner_bid_id}
-            standbyBidId={mission.standby_bid_id}
-            activeTaskId={mission.active_task_id}
-            activePhase={mission.active_phase}
-            activeBidRound={mission.active_bid_round}
-            simulationRound={mission.simulation_round}
-            biddingState={mission.bidding_state}
-            usageSummary={usageSummary}
-            events={mission.events}
-          />
-          <EventStrip mission={mission} events={mission.events} trace={trace} />
-        </MissionLiveView>
+        />
       ) : null}
 
       {activeTab === "intelligence" ? (
@@ -285,6 +269,8 @@ function MissionRoute() {
           trace={trace}
           diffState={diffState}
           usageSummary={usageSummary}
+          selectedBid={selectedBid}
+          latestProposalTrace={latestProposalTrace}
           initialSection={intelligenceSection}
           onSelectMission={(nextMission) =>
             navigate(`/missions/${nextMission.mission_id}?repo=${encodeURIComponent(repo || nextMission.repo_path || "")}`)

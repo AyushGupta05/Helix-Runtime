@@ -31,6 +31,43 @@ export function formatRuntime(seconds) {
   return `${minutes}m ${remaining}s`;
 }
 
+function parseTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+export function getMissionElapsedSeconds(
+  mission,
+  { now = Date.now(), snapshotReceivedAt = Date.now() } = {}
+) {
+  if (!mission) {
+    return 0;
+  }
+  const baseRuntime = Number(mission.runtime_seconds ?? 0);
+  if (baseRuntime > 0) {
+    if (["running", "cancelling"].includes(mission.run_state)) {
+      const liveDelta = Math.max(0, (now - snapshotReceivedAt) / 1000);
+      return baseRuntime + liveDelta;
+    }
+    return baseRuntime;
+  }
+
+  const startedAt = parseTimestamp(
+    mission.created_at ?? mission.events?.[0]?.created_at ?? mission.updated_at
+  );
+  if (startedAt === null) {
+    return 0;
+  }
+  const endedAt =
+    mission.run_state === "finalized"
+      ? parseTimestamp(mission.updated_at ?? mission.events?.at(-1)?.created_at) ?? now
+      : now;
+  return Math.max(0, (endedAt - startedAt) / 1000);
+}
+
 export function relativeTime(isoString) {
   if (!isoString) {
     return "just now";

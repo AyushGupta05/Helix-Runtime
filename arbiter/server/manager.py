@@ -12,7 +12,6 @@ from arbiter.mission.runner import build_mission_spec, resume_mission, start_mis
 from arbiter.runtime.migrate import migrate_legacy_mission
 from arbiter.runtime.paths import build_mission_paths, resolve_repo_path
 from arbiter.runtime.store import MissionStore
-from arbiter.server.materializer import materialize_mission_view
 from arbiter.server.schemas import MissionControlResponse, MissionCreateRequest, MissionHistoryEntry
 
 
@@ -54,6 +53,13 @@ class MissionService:
         self._lock = threading.Lock()
         self._active: ActiveExecution | None = None
         self._known_repos: dict[str, str] = {}
+
+    def _readonly_mission_db_path(self, repo_path: str, mission_id: str) -> Path:
+        repo = resolve_repo_path(repo_path)
+        db_path = repo / ".arbiter" / "missions" / mission_id / "state.db"
+        if db_path.exists():
+            return db_path
+        raise MissionNotFoundError(mission_id)
 
     def close(self) -> None:
         with self._lock:
@@ -175,23 +181,70 @@ class MissionService:
             return []
         entries: list[MissionHistoryEntry] = []
         for mission_root in _mission_roots(repo_path):
-            mission_id = mission_root.name
             try:
-                self._normalize_mission_state(str(repo_path), mission_id)
-                paths = build_mission_paths(repo_path, mission_id)
-                migrate_legacy_mission(paths, mission_id)
-                store = MissionStore(paths.db_path)
-                try:
-                    view = materialize_mission_view(repo_path, mission_id)
-                    mission = store.fetch_mission(mission_id)
-                    runtime = store.fetch_runtime(mission_id)
-                    control = store.fetch_control_state(mission_id)
-                finally:
-                    store.close()
+                entry = self._history_entry_for_mission(str(repo_path), mission_root.name)
             except Exception:
                 continue
+            if entry is not None:
+                entries.append(entry)
+                self._known_repos[entry.mission_id] = entry.repo_path
+        return sorted(entries, key=lambda item: item.updated_at, reverse=True)
+
+    def snapshot(self, repo_path: str | None, mission_id: str):
+        resolved_repo = self.resolve_repo(mission_id, repo_path)
+        self._known_repos[mission_id] = resolved_repo
+        store = MissionStore(str(self._readonly_mission_db_path(resolved_repo, mission_id)), read_only=True)
+        try:
+            return store.get_mission_view(mission_id)
+        finally:
+            store.close()
+
+    def _history_entry_for_mission(self, repo_path: str, mission_id: str) -> MissionHistoryEntry | None:
+        store = MissionStore(str(self._readonly_mission_db_path(repo_path, mission_id)), read_only=True)
+        try:
+            mission = store.fetch_mission(mission_id)
             if mission is None:
-                continue
+                return None
+            runtime = store.fetch_runtime(mission_id)
+            control = store.fetch_control_state(mission_id)
+            validation = store.fetch_latest_validation(mission_id)
+            checkpoint = store.fetch_latest_checkpoint(mission_id)
+            invocation_rows = store.fetch_model_invocations(mission_id)
+            summary = json.loads(mission["summary_json"])
+            validation_payload = json.loads(validation["payload_json"]) if validation else None
+            checkpoint_payload = json.loads(checkpoint["payload_json"]) if checkpoint else {}
+            usage_totals = store._usage_totals(
+                mission_id,
+                runtime["active_task_id"] if runtime else None,
+                rows=invocation_rows,
+            )
+
+            control_run_state = control["run_state"] if control else RunState.IDLE.value
+            control_reason = control["reason"] if control else None
+            status = mission["status"] or (runtime["active_phase"] if runtime else control_run_state)
+            outcome = mission["outcome"]
+            has_inflight_model_work = any(
+                row["status"] == "started" and not row["completed_at"]
+                for row in invocation_rows
+            )
+            stale_session_finalize = (
+                control_run_state == RunState.FINALIZED.value
+                and control_reason in {"session_ended", "session_terminated"}
+                and outcome in {None, MissionOutcome.FAILED_SAFE_STOP.value}
+                and runtime is not None
+                and runtime["active_phase"] != "finalize"
+                and has_inflight_model_work
+            )
+            if stale_session_finalize:
+                control_run_state = RunState.RUNNING.value
+                status = runtime["active_phase"] or mission["status"]
+                outcome = None
+            elif control_run_state == RunState.FINALIZED.value:
+                status = RunState.FINALIZED.value
+                outcome = outcome or summary.get("outcome")
+                if outcome is None and control_reason in {"session_ended", "session_terminated"}:
+                    outcome = MissionOutcome.FAILED_SAFE_STOP.value
+
             updated_at = max(
                 (
                     timestamp
@@ -204,36 +257,33 @@ class MissionService:
                 ),
                 default=mission["created_at"],
             )
-            entries.append(
-                MissionHistoryEntry(
-                    mission_id=mission_id,
-                    repo_path=view.repo_path,
-                    objective=view.objective,
-                    created_at=mission["created_at"],
-                    updated_at=updated_at,
-                    runtime_seconds=view.runtime_seconds,
-                    run_state=view.run_state,
-                    status=view.status or view.active_phase,
-                    outcome=view.outcome,
-                    branch_name=view.branch_name,
-                    total_tokens=view.usage_summary.get("mission", {}).get("total_tokens", 0),
-                    total_cost=view.usage_summary.get("mission", {}).get("total_cost", 0.0),
-                    checkpoint_count=view.history_metrics.get("checkpoint_count", 0),
-                    failure_count=view.history_metrics.get("failure_count", 0),
-                    changed_file_count=view.history_metrics.get("changed_file_count", 0),
-                    recovery_count=view.history_metrics.get("recovery_count", 0),
-                    validator_status=view.history_metrics.get("validation", {}).get("status"),
-                )
+            return MissionHistoryEntry(
+                mission_id=mission_id,
+                repo_path=mission["repo_path"],
+                objective=mission["objective"],
+                created_at=mission["created_at"],
+                updated_at=updated_at,
+                runtime_seconds=store._runtime_seconds(mission, summary, control, runtime),
+                run_state=control_run_state,
+                status=status,
+                outcome=outcome,
+                branch_name=mission["branch_name"],
+                total_tokens=usage_totals["mission"]["total_tokens"],
+                total_cost=usage_totals["mission"]["total_cost"],
+                checkpoint_count=store.count_rows("accepted_checkpoints", mission_id),
+                failure_count=store.count_rows("failure_contexts", mission_id),
+                changed_file_count=len(checkpoint_payload.get("affected_files", []) or []),
+                recovery_count=runtime["recovery_round"] if runtime else 0,
+                validator_status=(
+                    "passed"
+                    if validation_payload is not None and validation_payload.get("passed")
+                    else "failed"
+                    if validation_payload is not None
+                    else "pending"
+                ),
             )
-            self._known_repos[mission_id] = view.repo_path
-        return sorted(entries, key=lambda item: item.updated_at, reverse=True)
-
-    def snapshot(self, repo_path: str | None, mission_id: str):
-        resolved_repo = self.resolve_repo(mission_id, repo_path)
-        self._ensure_mission_exists(resolved_repo, mission_id)
-        self._normalize_mission_state(resolved_repo, mission_id)
-        self._known_repos[mission_id] = resolved_repo
-        return materialize_mission_view(resolved_repo, mission_id)
+        finally:
+            store.close()
 
     def _update_control(self, repo_path: str, mission_id: str, run_state: str, requested_action: str | None, reason: str | None) -> None:
         paths = build_mission_paths(repo_path, mission_id)

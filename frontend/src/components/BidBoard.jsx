@@ -237,31 +237,52 @@ export default function BidBoard({
   usageSummary,
   events = []
 }) {
-  const activeBids = bids.filter((bid) => bid.task_id === activeTaskId);
+  const marketBids = bids.filter((bid) => {
+    if (!activeTaskId) {
+      return true;
+    }
+    return (
+      bid.task_id === activeTaskId ||
+      bid.bid_id === winnerBidId ||
+      bid.bid_id === standbyBidId ||
+      Boolean(bid.rejection_reason)
+    );
+  });
   const missionTotals = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
   const taskTotals = usageSummary?.active_task ?? { total_tokens: 0, total_cost: 0 };
-  const orderedBids = [...activeBids].sort((left, right) => {
+  const orderedBids = [...marketBids].sort((left, right) => {
     const leftStatus = bidStatusFor(left, winnerBidId, standbyBidId, activePhase);
     const rightStatus = bidStatusFor(right, winnerBidId, standbyBidId, activePhase);
     if (leftStatus.rank !== rightStatus.rank) {
       return rightStatus.rank - leftStatus.rank;
     }
-    return Number(right.score ?? -1) - Number(left.score ?? -1);
+    return (
+      Number(right.score ?? right.confidence ?? -1) - Number(left.score ?? left.confidence ?? -1)
+    );
   });
-  const biddingMode = biddingState?.generation_mode ?? activeBids[0]?.generation_mode ?? null;
-  const roundTokens = taskTotals.total_tokens && taskTotals.total_tokens > 0 ? taskTotals.total_tokens : activeBids.reduce((total, bid) => total + metricTotal(bid.token_usage), 0);
-  const roundCost = taskTotals.total_cost && taskTotals.total_cost > 0 ? taskTotals.total_cost : activeBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0);
-  const providerCount = new Set(activeBids.map((bid) => providerLabelForBid(bid))).size;
+  const biddingMode = biddingState?.generation_mode ?? marketBids[0]?.generation_mode ?? null;
+  const roundTokens =
+    taskTotals.total_tokens && taskTotals.total_tokens > 0
+      ? taskTotals.total_tokens
+      : marketBids.reduce((total, bid) => total + metricTotal(bid.token_usage), 0);
+  const roundCost =
+    taskTotals.total_cost && taskTotals.total_cost > 0
+      ? taskTotals.total_cost
+      : marketBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0);
+  const providerCount = new Set(marketBids.map((bid) => providerLabelForBid(bid))).size;
   const liveEntries = bidTickerEntries(events, activeTaskId);
+  const rejectedCount = marketBids.filter((bid) => Boolean(bid.rejection_reason)).length;
+  const leadingBid = orderedBids[0] ?? null;
 
   return (
-    <div className="arena-shell">
+    <section className="panel strategy-board">
       <div className="arena-topline">
         <div>
-          <p className="eyebrow">Live Market</p>
-          <h2>Competitive bidding, governed live</h2>
+          <p className="eyebrow">Strategy Market</p>
+          <h2>Competing plans stay visible</h2>
           <p className="arena-topline-copy">
-            Strategies arrive, clear policy, and get rescored in real time as the round evolves.
+            Winner, standby, and rejected contenders share one board so you can see what lost
+            and why.
           </p>
         </div>
         <span className="arena-phase">{humanizePhase(activePhase)}</span>
@@ -271,22 +292,22 @@ export default function BidBoard({
         <div className="arena-stat">
           <span>Round</span>
           <strong>{Math.max(activeBidRound || 0, 1)}</strong>
-          <p>{activeTaskId || "awaiting task"}</p>
+          <p>{activeTaskId || "market-wide bidding"}</p>
         </div>
         <div className="arena-stat">
           <span>Contenders</span>
-          <strong>{activeBids.length}</strong>
-          <p>{providerCount} providers in the current market</p>
+          <strong>{orderedBids.length}</strong>
+          <p>{providerCount} providers visible in the current market</p>
+        </div>
+        <div className="arena-stat">
+          <span>Blocked</span>
+          <strong>{formatInteger(rejectedCount)}</strong>
+          <p>{leadingBid ? `${leadingBid.role ?? "Top"} is currently ahead` : "Awaiting first leader"}</p>
         </div>
         <div className="arena-stat arena-stat-spend">
-          <span>Round spend</span>
-          <strong>{formatInteger(roundTokens)} tok</strong>
-          <p>{formatCurrency(roundCost)}</p>
-        </div>
-        <div className="arena-stat arena-stat-spend">
-          <span>Mission spend</span>
-          <strong>{formatInteger(missionTotals.total_tokens ?? 0)} tok</strong>
-          <p>{formatCurrency(missionTotals.total_cost ?? 0)}</p>
+          <span>Spend</span>
+          <strong>{formatInteger(roundTokens || missionTotals.total_tokens || 0)} tok</strong>
+          <p>{formatCurrency(roundCost || missionTotals.total_cost || 0)}</p>
         </div>
       </div>
 
@@ -311,7 +332,7 @@ export default function BidBoard({
             </article>
           ))
         ) : (
-          <div className="leaderboard-empty">The market ticker will populate as bids are generated.</div>
+          <div className="leaderboard-empty">The strategy tape will populate as bids are generated.</div>
         )}
       </div>
 
@@ -331,6 +352,6 @@ export default function BidBoard({
           <div className="leaderboard-empty">Strategies are forming for the next market move.</div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

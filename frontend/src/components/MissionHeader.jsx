@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-
 import StatusBadge from "./StatusBadge";
 import { formatRuntime, humanizeMissionStage } from "../lib/format";
+import { useMissionElapsedSeconds } from "../lib/useMissionElapsed";
 
 const TABS = [
   { id: "live", label: "Live Market" },
@@ -33,44 +32,18 @@ export default function MissionHeader({
   onResume,
   onCancel
 }) {
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
+  const elapsedSeconds = useMissionElapsedSeconds(mission);
   const controls =
     mission.run_state === "paused"
-        ? [
-            { label: "Resume", action: onResume, type: "primary" },
-            { label: "Cancel", action: onCancel, type: "danger" }
-          ]
-        : mission.run_state === "running"
-          ? [{ label: "Cancel", action: onCancel, type: "danger" }]
+      ? [
+          { label: "Resume", action: onResume, type: "primary" },
+          { label: "Cancel", action: onCancel, type: "danger" }
+        ]
+      : mission.run_state === "running"
+        ? [{ label: "Cancel", action: onCancel, type: "danger" }]
         : mission.run_state === "cancelling"
           ? [{ label: "Cancelling...", action: null, type: "ghost", disabled: true }]
           : [];
-  const fallbackStart = mission.created_at ?? mission.events?.[0]?.created_at ?? mission.updated_at ?? null;
-  const runtimeAnchor = mission.updated_at ?? mission.events?.at(-1)?.created_at ?? fallbackStart;
-  const elapsedSeconds = useMemo(() => {
-    const baseRuntime = Number(mission.runtime_seconds ?? 0);
-    if (mission.run_state === "running" && runtimeAnchor) {
-      const delta = Math.max(0, (now - new Date(runtimeAnchor).getTime()) / 1000);
-      return baseRuntime + delta;
-    }
-    if (baseRuntime > 0) {
-      return baseRuntime;
-    }
-    const fallbackEnd =
-      mission.run_state === "finalized"
-        ? runtimeAnchor ?? fallbackStart
-        : now;
-    if (!fallbackStart || !fallbackEnd) {
-      return 0;
-    }
-    return Math.max(0, (new Date(fallbackEnd).getTime() - new Date(fallbackStart).getTime()) / 1000);
-  }, [fallbackStart, mission.run_state, mission.runtime_seconds, now, runtimeAnchor]);
   const civicChallenge = findGithubAuthChallenge(mission);
   const civicAuthUrl =
     civicChallenge?.output_payload?.authorization_url ??

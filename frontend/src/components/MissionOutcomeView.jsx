@@ -8,6 +8,7 @@ import {
   shortCommit,
   summarizeBidOrigin
 } from "../lib/format";
+import { useMissionElapsedSeconds } from "../lib/useMissionElapsed";
 
 function repoLabel(repoPath) {
   const segments = String(repoPath || "")
@@ -159,6 +160,7 @@ export default function MissionOutcomeView({
   onOpenIntelligence,
   onOpenLiveMarket
 }) {
+  const elapsedSeconds = useMissionElapsedSeconds(mission);
   const outcomeSummary = mission.outcome_summary ?? {};
   const publicApiSurface = publicApiSurfaceFor(mission);
   const changedFiles = outcomeSummary.changed_files?.length
@@ -179,17 +181,39 @@ export default function MissionOutcomeView({
   const civicImpact = civicImpactSummary(mission);
   const latestCheckpoint = mission.accepted_checkpoints?.at(-1) ?? null;
   const capabilityRows = capabilityInfluenceRows(mission);
+  const trustIndicators = [
+    {
+      label: mission.validation_report?.passed ? "No regression" : "Validation pending",
+      state: mission.validation_report?.passed ? "verified" : "watch"
+    },
+    {
+      label: (mission.recent_civic_actions ?? []).length ? "Civic verified" : "Civic optional",
+      state: (mission.recent_civic_actions ?? []).length ? "verified" : "watch"
+    },
+    {
+      label: latestCheckpoint ? "Checkpoint preserved" : "Checkpoint pending",
+      state: latestCheckpoint ? "verified" : "watch"
+    }
+  ];
 
   return (
     <div className="workspace-view workspace-outcome">
       <div className="outcome-layout">
         <section className={`panel outcome-hero outcome-hero-${outcomeTone(mission)}`}>
           <div className="outcome-hero-copy">
-            <p className="eyebrow">Outcome</p>
+            <p className="eyebrow">Outcome View</p>
             <h1>{summary}</h1>
             <p className="workspace-section-copy">
-              Helix turns the mission into a review surface for the repo owner: what changed, how safe it looks, and what to do next.
+              Arbiter should leave this screen with a simple answer: what changed, what passed,
+              and how much trust the repo owner should place in the result.
             </p>
+          </div>
+          <div className="trust-strip">
+            {trustIndicators.map((indicator) => (
+              <span key={indicator.label} className={`trust-pill trust-pill-${indicator.state}`}>
+                {indicator.label}
+              </span>
+            ))}
           </div>
           <div className="outcome-hero-meta">
             <article className="outcome-stat-card">
@@ -292,7 +316,7 @@ export default function MissionOutcomeView({
               </article>
               <article className="insight-card">
                 <span>Elapsed time</span>
-                <strong>{formatRuntime(mission.runtime_seconds ?? 0)}</strong>
+                <strong>{formatRuntime(elapsedSeconds)}</strong>
                 <p>{mission.run_state === "finalized" ? "Mission finished." : "Mission still active."}</p>
               </article>
             </div>

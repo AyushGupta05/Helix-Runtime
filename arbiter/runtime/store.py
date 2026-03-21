@@ -81,25 +81,34 @@ def _command_results_summary(results: list[dict[str, Any]] | None) -> list[dict[
 
 
 class MissionStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, read_only: bool = False) -> None:
         self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
         self._lock = RLock()
-        self.connection = sqlite3.connect(db_path, check_same_thread=False)
+        if read_only:
+            uri_path = Path(db_path).resolve().as_posix()
+            self.connection = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, check_same_thread=False)
+        else:
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA busy_timeout = 5000")
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self._init_schema()
-        self._ensure_column("mission_runtime", "worktree_state_json", "TEXT")
-        self._ensure_column("mission_runtime", "bidding_state_json", "TEXT")
-        self._ensure_column("mission_runtime", "civic_connection_json", "TEXT")
-        self._ensure_column("mission_runtime", "civic_capabilities_json", "TEXT")
-        self._ensure_column("mission_runtime", "available_skills_json", "TEXT")
-        self._ensure_column("mission_runtime", "skill_health_json", "TEXT")
-        self._ensure_column("mission_runtime", "skill_outputs_json", "TEXT")
-        self._ensure_column("model_invocations", "generation_mode", "TEXT")
-        self._ensure_column("model_invocations", "usage_unavailable_reason", "TEXT")
+        if read_only:
+            self.connection.execute("PRAGMA busy_timeout = 5000")
+            self.connection.execute("PRAGMA foreign_keys = ON")
+        else:
+            self.connection.execute("PRAGMA journal_mode = WAL")
+            self.connection.execute("PRAGMA busy_timeout = 5000")
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self._init_schema()
+            self._ensure_column("mission_runtime", "worktree_state_json", "TEXT")
+            self._ensure_column("mission_runtime", "bidding_state_json", "TEXT")
+            self._ensure_column("mission_runtime", "civic_connection_json", "TEXT")
+            self._ensure_column("mission_runtime", "civic_capabilities_json", "TEXT")
+            self._ensure_column("mission_runtime", "available_skills_json", "TEXT")
+            self._ensure_column("mission_runtime", "skill_health_json", "TEXT")
+            self._ensure_column("mission_runtime", "skill_outputs_json", "TEXT")
+            self._ensure_column("model_invocations", "generation_mode", "TEXT")
+            self._ensure_column("model_invocations", "usage_unavailable_reason", "TEXT")
 
     def _execute(self, query: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -766,6 +775,14 @@ class MissionStore:
         key = "id" if table == "mission" else "mission_id"
         return self._fetchall(f"SELECT * FROM {table} WHERE {key} = ?", (mission_id,))
 
+    def count_rows(self, table: str, mission_id: str | None = None) -> int:
+        if mission_id is None:
+            row = self._fetchone(f"SELECT COUNT(*) AS count FROM {table}")
+            return int(row["count"]) if row is not None else 0
+        key = "id" if table == "mission" else "mission_id"
+        row = self._fetchone(f"SELECT COUNT(*) AS count FROM {table} WHERE {key} = ?", (mission_id,))
+        return int(row["count"]) if row is not None else 0
+
     def fetch_ordered(self, table: str, order_by: str, mission_id: str | None = None) -> list[sqlite3.Row]:
         if mission_id is None:
             return self._fetchall(f"SELECT * FROM {table} ORDER BY {order_by}")
@@ -1288,6 +1305,43 @@ class MissionStore:
             "invocations": invocations,
         }
 
+    def _usage_totals(
+        self,
+        mission_id: str,
+        active_task_id: str | None = None,
+        rows: list[sqlite3.Row] | None = None,
+    ) -> dict[str, Any]:
+        rows = rows if rows is not None else self.fetch_model_invocations(mission_id)
+        mission_tokens: dict[str, int] = {}
+        mission_costs: dict[str, float] = {}
+        active_tokens: dict[str, int] = {}
+        active_costs: dict[str, float] = {}
+        for row in rows:
+            token_usage = json.loads(row["token_usage_json"]) if row["token_usage_json"] else None
+            cost_usage = json.loads(row["cost_usage_json"]) if row["cost_usage_json"] else None
+            for key, value in (token_usage or {}).items():
+                mission_tokens[key] = mission_tokens.get(key, 0) + int(value)
+                if row["task_id"] and row["task_id"] == active_task_id:
+                    active_tokens[key] = active_tokens.get(key, 0) + int(value)
+            for key, value in (cost_usage or {}).items():
+                mission_costs[key] = mission_costs.get(key, 0.0) + float(value)
+                if row["task_id"] and row["task_id"] == active_task_id:
+                    active_costs[key] = active_costs.get(key, 0.0) + float(value)
+        return {
+            "mission": {
+                "token_usage": mission_tokens,
+                "cost_usage": mission_costs,
+                "total_tokens": int(_metric_total(mission_tokens, preferred_keys=("total_tokens",))),
+                "total_cost": _metric_total(mission_costs, preferred_keys=("usd", "total_cost")),
+            },
+            "active_task": {
+                "token_usage": active_tokens,
+                "cost_usage": active_costs,
+                "total_tokens": int(_metric_total(active_tokens, preferred_keys=("total_tokens",))),
+                "total_cost": _metric_total(active_costs, preferred_keys=("usd", "total_cost")),
+            },
+        }
+
     def _bidding_state_for_view(
         self,
         summary: dict[str, Any],
@@ -1499,10 +1553,6 @@ class MissionStore:
             "execution_steps": self._execution_steps_for_view(mission_id),
             "recent_trace": recent_trace,
         }
-        self._execute(
-            "INSERT INTO mission_view_cache (mission_id, payload_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(mission_id) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
-            (mission_id, _dump(payload), utc_now().isoformat()),
-        )
         return payload
 
     def get_mission_view(self, mission_id: str) -> dict[str, Any]:
