@@ -200,8 +200,12 @@ export default React.memo(function StrategyBiddingScreen({
 
       <div className="console-bidding-grid">
         <section className="console-panel-frame">
-          <div className="console-panel-header">
+          <div className="console-panel-header console-panel-header-with-tools">
             <h2>Strategy Bidding Board</h2>
+            <div className="console-header-tools" aria-hidden="true">
+              <span>III</span>
+              <span>II</span>
+            </div>
           </div>
           <div className="console-bid-list">
             {rankedBids.length ? (
@@ -216,9 +220,12 @@ export default React.memo(function StrategyBiddingScreen({
                         <strong>{planLabel(index, bid)}</strong>
                         <span className={`console-state-badge tone-${status.tone}`}>{status.label}</span>
                       </div>
-                      <span className="console-bid-meta">
-                        {bid.provider ?? "provider"} {bid.model_id ? `| ${bid.model_id}` : ""}
-                      </span>
+                      <div className="console-bid-head-right">
+                        <span className="console-bid-meta">
+                          {bid.provider ?? "provider"} {bid.model_id ? `| ${bid.model_id}` : ""}
+                        </span>
+                        <span className="console-bid-menu">...</span>
+                      </div>
                     </div>
                     <div className="console-bid-stats">
                       <span>
@@ -235,6 +242,11 @@ export default React.memo(function StrategyBiddingScreen({
                         {bid.search_summary ?? bid.mission_rationale ?? bid.strategy_summary ?? "Competing in current round."}
                       </p>
                     )}
+                    {status.tone === "blocked" ? (
+                      <button type="button" className="console-inline-detail" disabled>
+                        Details
+                      </button>
+                    ) : null}
                   </article>
                 );
               })
@@ -320,7 +332,9 @@ export default React.memo(function StrategyBiddingScreen({
       </div>
 
       <footer className="console-timeline-strip">
-        <h3>Live Event Timeline</h3>
+        <h3>
+          <span className="console-timeline-prefix">- -</span> Live Event Timeline
+        </h3>
         <div className="console-event-chip-row">
           {topEvents.length ? (
             topEvents.map((entry) => (

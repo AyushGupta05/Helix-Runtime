@@ -174,6 +174,15 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
   const totalSamples =
     Number(simulationSummary?.monte_carlo_samples ?? 0) ||
     rows.reduce((acc, row) => acc + row.diagnostics.sampleCount, 0);
+  const winnerX = winnerDiagnostics ? Math.round(winnerDiagnostics.success * VIEWBOX_WIDTH) : null;
+  const activeStep =
+    Math.max(
+      1,
+      Math.min(
+        10,
+        Number(mission?.simulation_round ?? 0) || ((Number(mission?.latest_event_id ?? 0) % 10) + 1)
+      )
+    );
 
   return (
     <section className="console-mc-panel">
@@ -241,7 +250,40 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
               </g>
             ))}
           </g>
+
+          {winnerX !== null ? (
+            <line
+              className="console-mc-crosshair"
+              x1={winnerX}
+              x2={winnerX}
+              y1="12"
+              y2={VIEWBOX_HEIGHT - 20}
+            />
+          ) : null}
         </svg>
+      </div>
+
+      <div className="console-mc-axis-labels" aria-hidden="true">
+        <span>20</span>
+        <span>40</span>
+        <span>60</span>
+        <span>76</span>
+        <span>90</span>
+        <span>110</span>
+        <span>120</span>
+      </div>
+
+      <div className="console-mc-replay">
+        <button type="button" className="console-mc-replay-button">
+          Replay Simulation
+        </button>
+        <div className="console-mc-stepper" aria-label="Simulation rounds">
+          {Array.from({ length: 10 }, (_, index) => index + 1).map((step) => (
+            <span key={step} className={step === activeStep ? "active" : ""}>
+              {step}
+            </span>
+          ))}
+        </div>
       </div>
 
       <div className="console-mc-metrics">

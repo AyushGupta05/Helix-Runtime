@@ -100,6 +100,7 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
   const elapsedSeconds = useMissionElapsedSeconds(mission);
   const confidence = confidencePercent(selectedBid, mission);
   const missionTotals = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
+  const branchLabel = String(mission?.branch_name ?? "branch").split("/").pop();
   const trust = trustRows(mission, passed);
   const governance = governanceRows(mission);
   const notes = reliabilityNotes(mission, selectedBid, files.length, passed);
@@ -121,6 +122,10 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
           <span>Objective: {mission?.objective ?? "Mission objective pending"}</span>
           <span>Status: {mission?.outcome ?? mission?.run_state ?? "pending"}</span>
         </div>
+        <div className="console-result-topicons" aria-hidden="true">
+          <span />
+          <span />
+        </div>
       </header>
 
       <div className="console-result-summarybar">
@@ -139,25 +144,42 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
         <span>
           Files: <strong>{passed ? "Passed" : "Needs review"}</strong>
         </span>
+        <span>
+          Branch: <strong>{branchLabel}</strong>
+        </span>
       </div>
 
       <div className="console-result-grid">
         <aside className="console-result-left panel-like">
           <div className="console-result-nav-section">
             <h3>Mission</h3>
-            <div className="console-nav-item active">Current Mission</div>
-            <div className="console-nav-item">Past Missions</div>
+            <div className="console-nav-item active">
+              <span className="console-nav-dot" /> Current Mission
+            </div>
+            <div className="console-nav-item">
+              <span className="console-nav-dot" /> Past Missions
+            </div>
           </div>
           <div className="console-result-nav-section">
             <h3>Structure</h3>
-            <div className="console-nav-item">Checkpoints</div>
-            <div className="console-nav-item">Changed Files</div>
-            <div className="console-nav-item active">Validation</div>
+            <div className="console-nav-item">
+              <span className="console-nav-dot" /> Checkpoints
+            </div>
+            <div className="console-nav-item">
+              <span className="console-nav-dot" /> Changed Files
+            </div>
+            <div className="console-nav-item active">
+              <span className="console-nav-dot" /> Validation
+            </div>
           </div>
           <div className="console-result-nav-section">
             <h3>Governance</h3>
-            <div className="console-nav-item">Civic Evidence</div>
-            <div className="console-nav-item">Recovery Log</div>
+            <div className="console-nav-item">
+              <span className="console-nav-dot" /> Civic Evidence
+            </div>
+            <div className="console-nav-item">
+              <span className="console-nav-dot" /> Recovery Log
+            </div>
           </div>
         </aside>
 
@@ -171,6 +193,13 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
             <button type="button">Governance</button>
             <button type="button">Recovery</button>
           </nav>
+
+          <div className="console-result-main-heading">
+            <h1>
+              {selectedBid?.role ?? selectedBid?.strategy_family ?? "Mission result"} selected
+            </h1>
+            <p>Result keeps the decision path, changed files, and trust evidence in one pane.</p>
+          </div>
 
           <section className="console-outcome-summary">
             <h2>Outcome Summary</h2>
@@ -218,6 +247,9 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
             <h3>Trust</h3>
             {trust.map((item) => (
               <div key={item.label} className={`console-status-row ${item.state}`}>
+                <span className={`console-status-symbol ${item.state}`}>
+                  {item.state === "ok" ? "OK" : "!"}
+                </span>
                 <span className="console-status-dot" />
                 <span>{item.label}</span>
                 <strong>{item.detail ?? (item.state === "ok" ? "OK" : "Watch")}</strong>
