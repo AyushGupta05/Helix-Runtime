@@ -60,7 +60,11 @@ def build_workflow(runtime, *, checkpointer=None):
         lambda state: state["status"],
         {"execute": "execute", "finalize": "finalize"},
     )
-    graph.add_edge("execute", "validate")
+    graph.add_conditional_edges(
+        "execute",
+        lambda state: state["status"],
+        {"validate": "validate", "recover": "recover", "finalize": "finalize"},
+    )
     graph.add_conditional_edges(
         "validate",
         lambda state: state["status"],

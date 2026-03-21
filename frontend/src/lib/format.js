@@ -57,9 +57,7 @@ export function humanizeToken(value) {
 
 export const MISSION_STAGE_ORDER = [
   "collect",
-  "decompose",
-  "select_task",
-  "market",
+  "strategize",
   "simulate",
   "select",
   "execute",

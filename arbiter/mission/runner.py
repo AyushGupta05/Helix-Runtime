@@ -881,7 +881,19 @@ class MissionRuntime:
                     else:
                         proposal, invocation = self.strategy_backend.generate_edit_proposal(task=task, bid=bid, mission_objective=self.spec.objective, candidate_files=files, failure_context=self.state.failure_context.details if self.state.failure_context else None, preview=True)
                         self._merge_usage(invocation.token_usage, invocation.cost_usage)
-                        if proposal.files:
+                        if invocation.error:
+                            evidence.append("sandbox:error")
+                            self.trace(
+                                "simulation.rollout",
+                                "Sandbox preview failed",
+                                invocation.error,
+                                task_id=task.task_id,
+                                bid_id=bid.bid_id,
+                                provider=invocation.provider or bid.provider,
+                                lane=invocation.lane or bid.lane,
+                                status="danger",
+                            )
+                        elif proposal.files:
                             scratch_tools.apply_file_updates({item.path: item.content for item in proposal.files})
                             report = ValidationEngine(scratch_tools, self.spec, self.state.repo_snapshot).validate(task)
                             evidence.append("sandbox:pass" if report.passed else "sandbox:fail")

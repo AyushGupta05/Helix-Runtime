@@ -580,6 +580,7 @@ class DefaultStrategyBackend:
         failure_context: str | None = None,
         preview: bool = False,
     ) -> tuple[EditProposal, ModelInvocationResult]:
+        provider_pool = [bid.provider] if bid.provider else [self.router.config.default_provider]
         candidates = self.generate_edit_proposals(
             task=task,
             bid=bid,
@@ -587,10 +588,30 @@ class DefaultStrategyBackend:
             candidate_files=candidate_files,
             failure_context=failure_context,
             preview=preview,
-            providers=[self.router.config.default_provider],
+            providers=provider_pool,
         )
-        candidate = candidates[0]
-        return candidate.proposal, candidate.invocation
+        if candidates:
+            candidate = candidates[0]
+            return candidate.proposal, candidate.invocation
+        fallback_provider = provider_pool[0] if provider_pool else "system"
+        fallback_invocation = ModelInvocationResult(
+            content="{}",
+            provider=fallback_provider,
+            model_id=bid.model_id,
+            lane=bid.lane or f"preview.{fallback_provider}",
+            generation_mode=self.market_generation_mode(),
+            token_usage=None,
+            cost_usage=None,
+            usage_unavailable_reason="No provider proposal was generated for this bid.",
+            prompt_preview="",
+            response_preview="",
+            status="failed",
+            error="Provider proposal generation produced no viable candidate.",
+        )
+        return (
+            EditProposal(summary="No provider proposal available.", files=[], notes=["provider_generation_failed"]),
+            fallback_invocation,
+        )
 
     @staticmethod
     def _parse_edit_proposal(text: str) -> EditProposal:
