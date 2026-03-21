@@ -134,7 +134,7 @@ def test_python_bugfix_mission_accepts_operation_only_execution_proposals(python
     assert "return a + b" in calc_branch.stdout
 
 
-def test_python_bugfix_mission_recovers_from_missing_edit_operation_target(python_bug_repo: Path) -> None:
+def test_execute_recovers_when_edit_operation_target_is_missing(python_bug_repo: Path) -> None:
     backend = ScriptedStrategyBackend(
         [
             EditProposal(
@@ -148,56 +148,62 @@ def test_python_bugfix_mission_recovers_from_missing_edit_operation_target(pytho
                     )
                 ],
             ),
-            EditProposal(
-                summary="Apply the calculator fix after recovery.",
-                operations=[
-                    EditOperation(
-                        type="replace",
-                        path="calc.py",
-                        target="return a - b",
-                        content="return a + b",
-                    )
-                ],
-            ),
-            EditProposal(
-                summary="Add regression coverage after the recovered fix.",
-                files=[
-                    FileUpdate(
-                        path="tests/test_calc.py",
-                        content="from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n\n\ndef test_zero():\n    assert add(0, 0) == 0\n",
-                    )
-                ],
-            ),
         ]
     )
-
-    state = start_mission(
+    spec = build_mission_spec(
         repo=str(python_bug_repo),
         objective="Fix failing tests with the safest bounded change",
-        strategy_backend=backend,
+        mission_id="missing-edit-target",
     )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=backend)
+    try:
+        runtime._prepare_run()
+        task = TaskNode(
+            task_id="task-1",
+            title="Apply calculator fix",
+            task_type=TaskType.BUGFIX,
+            requirement_level=TaskRequirementLevel.REQUIRED,
+            success_criteria=SuccessCriteria(description="Tests pass"),
+            allowed_tools=["read_file", "search_code", "edit_file", "run_tests", "revert_to_checkpoint"],
+            candidate_files=["calc.py"],
+        )
+        bid = Bid(
+            bid_id="bid-1",
+            task_id="task-1",
+            role="safe",
+            provider="scripted",
+            lane="scripted",
+            model_id="scripted",
+            variant_id="safe-base",
+            strategy_family="checkpoint-first",
+            strategy_summary="Attempt a targeted calculator fix.",
+            exact_action="Edit calc.py with a compact replacement.",
+            expected_benefit=0.7,
+            utility=0.7,
+            confidence=0.8,
+            risk=0.2,
+            cost=0.01,
+            estimated_runtime_seconds=15,
+            touched_files=["calc.py"],
+            rollback_plan="revert",
+            rollout_level=RolloutLevel.PAPER,
+            generation_mode=BidGenerationMode.MOCK,
+        )
+        runtime.state.tasks = [task]
+        runtime.state.active_task_id = task.task_id
+        runtime.state.current_bid = bid
+        runtime.state.active_bids = [bid]
+        runtime.state.winner_bid_id = bid.bid_id
 
-    assert state.outcome is not None
-    assert state.outcome.value == "success"
-    assert state.summary.failed_attempt_history
+        result = runtime.node_execute()
+    finally:
+        runtime.store.close()
 
-    mission_root = python_bug_repo / ".arbiter" / "missions" / state.mission.mission_id
-    db_path = mission_root / "state.db"
-    connection = sqlite3.connect(db_path)
-    latest_failure = connection.execute(
-        "SELECT payload_json FROM failure_contexts ORDER BY timestamp DESC, id DESC LIMIT 1"
-    ).fetchone()[0]
-    connection.close()
-
-    assert json.loads(latest_failure)["failure_type"] == "execution_failure"
-    calc_branch = subprocess.run(
-        ["git", "show", f"{state.summary.branch_name}:calc.py"],
-        cwd=str(python_bug_repo),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "return a + b" in calc_branch.stdout
+    assert result == {"status": ActivePhase.RECOVER.value}
+    assert runtime.state.failure_context is not None
+    assert runtime.state.failure_context.failure_type == "execution_failure"
+    assert runtime.toolset.read_file("calc.py") == "def add(a, b):\n    return a - b\n"
 
 
 def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:

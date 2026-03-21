@@ -39,10 +39,10 @@ def test_proposal_generation_tokens_default_is_tighter() -> None:
     assert RuntimeConfig.model_fields["proposal_generation_max_tokens"].default == 4096
 
 
-def test_anthropic_market_lanes_default_to_triage_and_deep_strategy_only() -> None:
+def test_anthropic_market_lanes_default_to_triage_and_fast_strategy_only() -> None:
     config = RuntimeConfig()
 
-    assert config.market_lanes_for("anthropic") == ["triage", "bid_deep"]
+    assert config.market_lanes_for("anthropic") == ["triage", "bid_fast"]
     assert config.market_lanes_for("openai") == ["triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"]
 
 
