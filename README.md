@@ -1,14 +1,16 @@
 # Arbiter Mission Control
 
-Arbiter is a local-first, resumable autonomous mission runner for Python repos and conventional single-package TS/JS repos. It breaks a coding objective into dependency-aware tasks, runs a competitive market of specialist contenders and simulated variants, executes the strongest path in an isolated worktree, validates every material result, and recovers through rollback, standby promotion, or rebidding until it lands a safe branch-ready change.
+Arbiter is a local-first, resumable autonomous mission runner for Python repos and conventional single-package TS/JS repos. Arbiter decides what should happen, LangGraph owns the workflow lifecycle, and Codex/Claude-class models execute bounded work units. The runtime breaks a coding objective into dependency-aware tasks, runs a provider-backed strategy market, simulates future execution paths with bounded Monte Carlo search, executes the strongest path in an isolated worktree, validates every material result, and recovers through rollback, standby promotion, or rebidding until it lands a safe branch-ready change.
 
 ## What is in this repo
 
-- autonomous mission engine with task decomposition, market rounds, validation, and recovery
+- LangGraph-managed mission runtime with persistent checkpoints and resumable phase execution
+- Arbiter mission planning that arbitrates between heuristic and provider-backed task graphs
+- autonomous mission engine with task decomposition, market rounds, bounded Monte Carlo search, validation, and recovery
 - local mission-control API with history, snapshot materialization, controls, and SSE streaming
 - React + Vite operator dashboard for live bidding, execution, validation, and recovery
-- SQLite mission state + JSONL event stream + separate repo checkpoints
-- explicit OpenAI + Anthropic model lanes with durable invocation provenance
+- SQLite mission state + LangGraph checkpoints + JSONL event stream + separate repo checkpoints
+- explicit OpenAI + Anthropic planning, bidding, and proposal lanes with durable invocation provenance
 - Civic integration path for privileged external tools
 
 ## Run the operator UI
@@ -53,9 +55,10 @@ Each mission creates a runtime folder under the target repo's `.arbiter/` direct
 - `state.db`
 - `events.jsonl`
 - `metadata.json`
+- LangGraph checkpoint state embedded in `state.db`
 - cached reports
 - replay payloads
 - mission-state checkpoints
 - repo-state checkpoints
 
-Successful missions create validated commits on Arbiter-managed `codex/` branches in isolated worktrees, with checkpointed diff evidence available through the API and operator UI.
+Successful missions create validated commits on Arbiter-managed `codex/` branches in isolated worktrees, with checkpointed diff evidence, search diagnostics, and provider provenance available through the API and operator UI.
