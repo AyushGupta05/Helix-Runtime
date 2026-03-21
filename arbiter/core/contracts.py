@@ -272,6 +272,8 @@ class TaskNode(BaseModel):
     validator_requirements: list[str] = Field(default_factory=list)
     risk_level: float = 0.3
     runtime_class: Literal["small", "medium", "large"] = "small"
+    search_depth: int = 2
+    monte_carlo_samples: int = 24
     expected_artifact: str | None = None
     candidate_files: list[str] = Field(default_factory=list)
     policy_constraints: list[str] = Field(default_factory=list)
@@ -316,6 +318,7 @@ class Bid(BaseModel):
     search_score: float | None = None
     search_reward: float | None = None
     search_summary: str | None = None
+    search_diagnostics: dict[str, Any] = Field(default_factory=dict)
     token_usage: dict[str, int] | None = None
     cost_usage: dict[str, float] | None = None
     usage_unavailable_reason: str | None = None
@@ -331,12 +334,16 @@ class Bid(BaseModel):
 
 class SimulationSummary(BaseModel):
     task_id: str
+    search_mode: str = "bounded_monte_carlo"
     total_bids: int = 0
     valid_bids: int = 0
     paper_rollouts: int = 0
     partial_rollouts: int = 0
     sandbox_rollouts: int = 0
     budget_used: int = 0
+    frontier_size: int = 0
+    monte_carlo_samples: int = 0
+    frontier_gap: float = 0.0
     risk_forecast: float = 0.0
     validator_stability: float = 0.0
     rollback_safety: float = 0.0
@@ -480,7 +487,7 @@ class ModelInvocation(BaseModel):
     provider: str
     lane: str
     model_id: str | None = None
-    invocation_kind: Literal["bid_generation", "proposal_generation", "simulation"]
+    invocation_kind: Literal["bid_generation", "proposal_generation", "simulation", "mission_planning"]
     status: Literal["started", "completed", "failed"]
     generation_mode: GenerationMode = GenerationMode.PROVIDER_MODEL
     started_at: datetime = Field(default_factory=utc_now)

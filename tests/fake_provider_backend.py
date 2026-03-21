@@ -60,7 +60,12 @@ class FakeProviderRouter:
     def invoke(self, lane: str, prompt: dict[str, str]) -> ModelInvocationResult:
         provider = lane.split(".", 1)[1] if "." in lane else self.config.default_provider
         base_lane = lane.split(".", 1)[0]
-        if "execution planner" in prompt["system"].lower():
+        system_prompt = prompt["system"].lower()
+        if "mission planner" in system_prompt:
+            if self.fail_bid_generation:
+                raise RuntimeError("mission planning unavailable")
+            content = self._planning_payload(prompt["user"])
+        elif "execution planner" in system_prompt:
             if self.fail_proposal_generation:
                 raise RuntimeError("proposal generation unavailable")
             content = self._proposal_payload(prompt["user"])
@@ -91,6 +96,62 @@ class FakeProviderRouter:
             response_preview=content[:1200],
             started_at=utc_now().isoformat(),
             completed_at=utc_now().isoformat(),
+        )
+
+    @staticmethod
+    def _planning_payload(user_prompt: str) -> str:
+        candidate_files = _candidate_paths(user_prompt) or ["calc.py", "tests/test_calc.py"]
+        return json.dumps(
+            {
+                "summary": "Provider-backed mission graph for the calculator defect.",
+                "tasks": [
+                    {
+                        "id": "localize",
+                        "title": "Localize the calculator fault",
+                        "task_type": "localize",
+                        "requirement_level": "required",
+                        "dependencies": [],
+                        "candidate_files": candidate_files,
+                        "validator_requirements": [],
+                        "strategy_families": ["Safe", "Test"],
+                        "acceptance_criteria": ["candidate files identified"],
+                        "risk_level": 0.2,
+                        "runtime_class": "small",
+                        "search_depth": 2,
+                        "monte_carlo_samples": 20,
+                    },
+                    {
+                        "id": "bugfix",
+                        "title": "Implement the provider-backed calculator fix",
+                        "task_type": "bugfix",
+                        "requirement_level": "required",
+                        "dependencies": ["localize"],
+                        "candidate_files": candidate_files,
+                        "validator_requirements": ["tests"],
+                        "strategy_families": ["Safe", "Quality", "Test"],
+                        "acceptance_criteria": ["tests pass"],
+                        "risk_level": 0.35,
+                        "runtime_class": "medium",
+                        "search_depth": 3,
+                        "monte_carlo_samples": 32,
+                    },
+                    {
+                        "id": "regression_tests",
+                        "title": "Strengthen regression coverage",
+                        "task_type": "test",
+                        "requirement_level": "required",
+                        "dependencies": ["bugfix"],
+                        "candidate_files": [path for path in candidate_files if "test" in path] or candidate_files,
+                        "validator_requirements": ["tests"],
+                        "strategy_families": ["Test", "Quality"],
+                        "acceptance_criteria": ["regression test present"],
+                        "risk_level": 0.24,
+                        "runtime_class": "small",
+                        "search_depth": 2,
+                        "monte_carlo_samples": 24,
+                    },
+                ],
+            }
         )
 
     @staticmethod

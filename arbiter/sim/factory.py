@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
+import random
+import statistics
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -95,6 +99,19 @@ _ARCHETYPE_SYSTEM_PROMPT = (
 
 def _clamp(value: float, minimum: float = 0.05, maximum: float = 0.95) -> float:
     return max(minimum, min(maximum, value))
+
+
+def _stable_seed(*parts: object) -> int:
+    digest = hashlib.sha256("::".join(str(part) for part in parts).encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
+def _quantile(values: list[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = max(0, min(len(ordered) - 1, round((len(ordered) - 1) * probability)))
+    return float(ordered[position])
 
 
 @dataclass
@@ -498,6 +515,168 @@ class SimulationFactory:
         for key, value in (cost_usage or {}).items():
             self.market_cost_usage[key] = self.market_cost_usage.get(key, 0.0) + float(value)
 
+    @staticmethod
+    def _runtime_pressure(task: TaskNode, bid: Bid) -> float:
+        runtime_budget = {
+            "small": 90.0,
+            "medium": 180.0,
+            "large": 300.0,
+        }[task.runtime_class]
+        return max(0.0, min(1.0, bid.estimated_runtime_seconds / runtime_budget))
+
+    def _search_priors(
+        self,
+        task: TaskNode,
+        bid: Bid,
+        rollout_evidence: list[str],
+        failure_count: int,
+    ) -> dict[str, float]:
+        evidence = set(rollout_evidence)
+        required_validators = set(task.validator_requirements or bid.validator_plan or ["tests"])
+        validator_alignment = len(required_validators & set(bid.validator_plan)) / max(1, len(required_validators))
+        scope_pressure = min(1.0, len(bid.touched_files or task.candidate_files) / max(1, task.search_depth * 2))
+        provider_reliability = {
+            BidGenerationMode.PROVIDER_MODEL: 0.88,
+            BidGenerationMode.REPLAY: 0.8,
+            BidGenerationMode.MOCK: 0.6,
+            BidGenerationMode.DETERMINISTIC_FALLBACK: 0.5,
+        }.get(bid.generation_mode, 0.55)
+        if "sandbox:pass" in evidence:
+            provider_reliability += 0.05
+        if "sandbox:fail" in evidence:
+            provider_reliability -= 0.08
+        provider_reliability = _clamp(provider_reliability, 0.2, 0.98)
+        runtime_pressure = self._runtime_pressure(task, bid)
+        success_alpha = (
+            1.5
+            + bid.confidence * 6.0
+            + validator_alignment * 3.0
+            + (1.6 if "sandbox:pass" in evidence else 0.0)
+            + (0.6 if "partial" in evidence else 0.0)
+        )
+        success_beta = (
+            1.2
+            + bid.risk * 5.0
+            + scope_pressure * 2.5
+            + failure_count * 0.6
+            + (1.8 if "sandbox:fail" in evidence else 0.0)
+        )
+        rollback_alpha = 1.0 + bid.risk * 4.5 + scope_pressure * 1.8 + failure_count * 0.5
+        rollback_beta = (
+            2.5
+            + bid.confidence * 3.0
+            + validator_alignment * 1.5
+            + (1.3 if "sandbox:pass" in evidence else 0.0)
+        )
+        drift_alpha = 1.0 + scope_pressure * 4.0 + (1.2 if bid.dependency_impact == "shared" else 0.2)
+        drift_beta = 2.3 + bid.confidence * 2.6 + (1.0 if len(bid.touched_files) <= 2 else 0.0)
+        base_reward = (
+            0.55 * bid.utility
+            + 0.22 * validator_alignment
+            + 0.1 * provider_reliability
+            - 0.18 * bid.cost
+            - 0.16 * runtime_pressure
+        )
+        return {
+            "validator_alignment": validator_alignment,
+            "scope_pressure": scope_pressure,
+            "provider_reliability": provider_reliability,
+            "runtime_pressure": runtime_pressure,
+            "success_alpha": success_alpha,
+            "success_beta": success_beta,
+            "rollback_alpha": rollback_alpha,
+            "rollback_beta": rollback_beta,
+            "drift_alpha": drift_alpha,
+            "drift_beta": drift_beta,
+            "base_reward": base_reward,
+        }
+
+    def evaluate_search(
+        self,
+        task: TaskNode,
+        bid: Bid,
+        *,
+        rollout_evidence: list[str],
+        failure_count: int = 0,
+    ) -> dict[str, float | int]:
+        priors = self._search_priors(task, bid, rollout_evidence, failure_count)
+        sample_count = max(task.monte_carlo_samples, 16 + task.search_depth * 8 + failure_count * 4)
+        rng = random.Random(
+            _stable_seed(
+                task.task_id,
+                bid.bid_id,
+                bid.invocation_id or bid.variant_id,
+                failure_count,
+                ",".join(sorted(rollout_evidence)),
+            )
+        )
+        outcomes: list[float] = []
+        successes = 0
+        rollbacks = 0
+        drifts = 0
+        evidence = set(rollout_evidence)
+        for _ in range(sample_count):
+            p_success = min(0.995, rng.betavariate(priors["success_alpha"], priors["success_beta"]) * priors["provider_reliability"])
+            p_rollback = min(0.995, rng.betavariate(priors["rollback_alpha"], priors["rollback_beta"]))
+            p_drift = min(0.995, rng.betavariate(priors["drift_alpha"], priors["drift_beta"]))
+            success = 1 if rng.random() < p_success else 0
+            rollback = 1 if rng.random() < p_rollback else 0
+            drift = 1 if rng.random() < p_drift else 0
+            score = (
+                priors["base_reward"]
+                + 0.82 * success
+                - 0.7 * rollback
+                - 0.42 * drift
+                - 0.35 * bid.risk * rollback
+                - 0.08 * priors["scope_pressure"] * drift
+            )
+            if success and not rollback:
+                score += 0.12
+            if "sandbox:pass" in evidence:
+                score += 0.05
+            if "sandbox:fail" in evidence:
+                score -= 0.08
+            outcomes.append(max(0.0, min(1.0, score)))
+            successes += success
+            rollbacks += rollback
+            drifts += drift
+        mean_score = float(statistics.fmean(outcomes)) if outcomes else 0.0
+        stddev = float(statistics.pstdev(outcomes)) if len(outcomes) > 1 else 0.0
+        p10 = _quantile(outcomes, 0.1)
+        p50 = _quantile(outcomes, 0.5)
+        p90 = _quantile(outcomes, 0.9)
+        success_rate = successes / sample_count if sample_count else 0.0
+        rollback_rate = rollbacks / sample_count if sample_count else 0.0
+        drift_rate = drifts / sample_count if sample_count else 0.0
+        search_score = max(
+            0.0,
+            min(
+                1.0,
+                mean_score
+                - 0.35 * stddev
+                + 0.1 * p10
+                + 0.05 * success_rate
+                - 0.05 * rollback_rate,
+            ),
+        )
+        search_reward = max(0.0, min(1.0, mean_score + 0.05 * (p90 - p10)))
+        return {
+            "sample_count": sample_count,
+            "mean_score": round(mean_score, 4),
+            "stddev": round(stddev, 4),
+            "p10": round(p10, 4),
+            "p50": round(p50, 4),
+            "p90": round(p90, 4),
+            "success_rate": round(success_rate, 4),
+            "rollback_rate": round(rollback_rate, 4),
+            "drift_rate": round(drift_rate, 4),
+            "validator_alignment": round(priors["validator_alignment"], 4),
+            "provider_reliability": round(priors["provider_reliability"], 4),
+            "runtime_pressure": round(priors["runtime_pressure"], 4),
+            "search_score": round(search_score, 4),
+            "search_reward": round(search_reward, 4),
+        }
+
     def rollout_plan(
         self,
         task: TaskNode,
@@ -505,18 +684,23 @@ class SimulationFactory:
         failure_count: int = 0,
     ) -> dict[str, list[str] | int]:
         ordered = sorted(bids, key=lambda item: (item.score or item.utility), reverse=True)
-        base_budget = 6
+        base_budget = max(6, task.search_depth * 3 + math.ceil(task.monte_carlo_samples / 8))
         if task.risk_level >= 0.6:
             base_budget += 4
         if failure_count:
             base_budget += min(6, failure_count * 2)
         if len({round(bid.confidence, 1) for bid in bids}) > 3:
             base_budget += 2
-        partial_count = min(len(ordered), 6 if task.risk_level >= 0.6 else 4)
+        partial_count = min(len(ordered), max(4, task.search_depth + 2))
         sandbox_count = (
             0
             if task.task_type.value in {"localize", "perf_diagnosis", "validate"}
-            else min(len(ordered), 2 if task.risk_level >= 0.5 or failure_count else 1)
+            else min(
+                len(ordered),
+                1
+                + (1 if task.risk_level >= 0.5 or failure_count else 0)
+                + (1 if task.search_depth >= 3 else 0),
+            )
         )
         return {
             "budget": base_budget,
@@ -528,17 +712,38 @@ class SimulationFactory:
     def summarize(self, task: TaskNode, bids: list[Bid], plan: dict[str, list[str] | int]) -> SimulationSummary:
         provider_backed = sum(1 for bid in bids if bid.generation_mode == BidGenerationMode.PROVIDER_MODEL)
         fallback = sum(1 for bid in bids if bid.generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK)
+        ordered = sorted(
+            (bid.search_score if bid.search_score is not None else bid.score or 0.0) for bid in bids
+        )
+        frontier_gap = (ordered[-1] - ordered[-2]) if len(ordered) > 1 else (ordered[-1] if ordered else 0.0)
+        monte_carlo_samples = max(
+            [int(bid.search_diagnostics.get("sample_count", 0)) for bid in bids if bid.search_diagnostics] or [0]
+        )
+        validator_stability = max(
+            [float(bid.search_diagnostics.get("success_rate", bid.confidence)) for bid in bids] or [0.0]
+        )
+        rollback_safety = max(
+            [1.0 - float(bid.search_diagnostics.get("rollback_rate", bid.risk)) for bid in bids] or [0.0]
+        )
         return SimulationSummary(
             task_id=task.task_id,
+            search_mode="bounded_monte_carlo",
             total_bids=len(bids),
             valid_bids=len([bid for bid in bids if bid.policy_feasibility.allowed and not bid.rejection_reason]),
             paper_rollouts=len(plan["paper"]),
             partial_rollouts=len(plan["partial"]),
             sandbox_rollouts=len(plan["sandbox"]),
             budget_used=int(plan["budget"]),
+            frontier_size=len(bids),
+            monte_carlo_samples=monte_carlo_samples,
+            frontier_gap=round(frontier_gap, 4),
             risk_forecast=max((bid.risk for bid in bids), default=0.0),
-            validator_stability=max((bid.confidence for bid in bids), default=0.0),
-            rollback_safety=max((1.0 - bid.risk for bid in bids), default=0.0),
+            validator_stability=round(validator_stability, 4),
+            rollback_safety=round(rollback_safety, 4),
             policy_confidence=max((1.0 - len(bid.policy_feasibility.reasons) * 0.2 for bid in bids), default=0.0),
-            summary=f"Evaluated {len(bids)} bids ({provider_backed} provider-backed, {fallback} fallback) with bounded rollout budget {int(plan['budget'])}.",
+            summary=(
+                f"Evaluated {len(bids)} bids ({provider_backed} provider-backed, {fallback} fallback) "
+                f"with bounded Monte Carlo search over {monte_carlo_samples or task.monte_carlo_samples} samples per bid "
+                f"and rollout budget {int(plan['budget'])}; frontier gap {frontier_gap:.3f}."
+            ),
         )
