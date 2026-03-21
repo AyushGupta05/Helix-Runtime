@@ -251,6 +251,54 @@ class MissionRuntime:
         score += min(0.25, len(candidate.invocation.token_usage or {}) * 0.02)
         return score
 
+    @staticmethod
+    def _has_usable_execution_candidate(candidates) -> bool:
+        return any(candidate.proposal.files for candidate in candidates)
+
+    def _generate_execution_candidates(self, task, bid, candidate_files: dict[str, str]):
+        failure_context = self.state.failure_context.details if self.state.failure_context else None
+        preferred_providers = [bid.provider] if bid.provider and bid.provider not in {"system", "scripted"} else None
+        candidates = self.strategy_backend.generate_edit_proposals(
+            task=task,
+            bid=bid,
+            mission_objective=self.spec.objective,
+            candidate_files=candidate_files,
+            failure_context=failure_context,
+            providers=preferred_providers,
+            on_invocation=self._record_model_invocation,
+        )
+        if self._has_usable_execution_candidate(candidates) or not preferred_providers:
+            return candidates
+        router = getattr(self.strategy_backend, "router", None)
+        config = getattr(router, "config", None)
+        enabled_providers = list(getattr(config, "enabled_providers", []) or [])
+        fallback_providers = [provider for provider in enabled_providers if provider != bid.provider]
+        if not fallback_providers:
+            return candidates
+        self.trace(
+            "proposal.widened",
+            "Execution widened beyond the winning provider",
+            f"The winning provider {bid.provider} did not return a usable execution proposal for {task.task_id}; widening to standby providers.",
+            task_id=task.task_id,
+            bid_id=bid.bid_id,
+            provider=bid.provider,
+            lane=bid.lane,
+            status="warning",
+            refresh_view=True,
+            preferred_provider=bid.provider,
+            fallback_providers=fallback_providers,
+        )
+        widened_candidates = self.strategy_backend.generate_edit_proposals(
+            task=task,
+            bid=bid,
+            mission_objective=self.spec.objective,
+            candidate_files=candidate_files,
+            failure_context=failure_context,
+            providers=fallback_providers,
+            on_invocation=self._record_model_invocation,
+        )
+        return [*candidates, *widened_candidates]
+
     def _sync_state(self, status: str) -> None:
         self._restore_runtime_context()
         self.state.summary.branch_name = self.branch_name
@@ -1029,14 +1077,7 @@ class MissionRuntime:
             self.trace("diff.updated", "Worktree refreshed", self.state.worktree_state["reason"], task_id=task.task_id, bid_id=bid.bid_id, status="info", worktree_state=self.state.worktree_state)
             return {"status": ActivePhase.VALIDATE.value}
         candidate_files = load_candidate_files(self.paths.worktree_dir, bid.touched_files or task.candidate_files)
-        candidates = self.strategy_backend.generate_edit_proposals(
-            task=task,
-            bid=bid,
-            mission_objective=self.spec.objective,
-            candidate_files=candidate_files,
-            failure_context=self.state.failure_context.details if self.state.failure_context else None,
-            on_invocation=self._record_model_invocation,
-        )
+        candidates = self._generate_execution_candidates(task, bid, candidate_files)
         for candidate in candidates:
             self._merge_usage(candidate.invocation.token_usage, candidate.invocation.cost_usage)
             candidate.score = self._proposal_score(candidate, bid, task)

@@ -130,6 +130,27 @@ def test_parse_edit_proposal_accepts_openai_response_items_payload() -> None:
     assert proposal.files[0].path == "calc.py"
 
 
+def test_parse_edit_proposal_accepts_fenced_json_with_string_notes() -> None:
+    payload = """```json
+{
+  "summary": "Fix a small config issue.",
+  "files": [
+    {
+      "path": "arbiter/settings.py",
+      "content": "from arbiter.runtime.config import RuntimeConfig\\n"
+    }
+  ],
+  "notes": "provider_generated"
+}
+```"""
+
+    proposal = DefaultStrategyBackend._parse_edit_proposal(payload)
+
+    assert proposal.summary == "Fix a small config issue."
+    assert proposal.files[0].path == "arbiter/settings.py"
+    assert proposal.notes == ["provider_generated"]
+
+
 def test_generate_edit_proposals_rejects_analysis_only_output_for_edit_tasks() -> None:
     lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
 

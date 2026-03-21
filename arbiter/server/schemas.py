@@ -77,6 +77,9 @@ class MissionView(BaseModel):
     mission_id: str
     repo_path: str
     objective: str
+    created_at: str
+    updated_at: str
+    runtime_seconds: float = 0.0
     status: str | None = None
     outcome: str | None = None
     run_state: str
@@ -105,6 +108,12 @@ class MissionView(BaseModel):
     stop_state: dict[str, Any] = Field(default_factory=dict)
     bidding_state: dict[str, Any] = Field(default_factory=dict)
     civic_audit_summary: dict[str, Any] = Field(default_factory=dict)
+    mission_meta: dict[str, Any] = Field(default_factory=dict)
+    history_metrics: dict[str, Any] = Field(default_factory=dict)
+    repo_insights: dict[str, Any] = Field(default_factory=dict)
+    outcome_summary: dict[str, Any] = Field(default_factory=dict)
+    civic_activity: dict[str, Any] = Field(default_factory=dict)
+    activity_summary: dict[str, Any] = Field(default_factory=dict)
     provider_market_summary: dict[str, Any] = Field(default_factory=dict)
     usage_summary: dict[str, Any] = Field(default_factory=dict)
     worktree_state: dict[str, Any] = Field(default_factory=dict)
@@ -122,7 +131,15 @@ class MissionHistoryEntry(BaseModel):
     objective: str
     created_at: str
     updated_at: str
+    runtime_seconds: float = 0.0
     run_state: str
     status: str
     outcome: str | None = None
     branch_name: str | None = None
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    checkpoint_count: int = 0
+    failure_count: int = 0
+    changed_file_count: int = 0
+    recovery_count: int = 0
+    validator_status: str | None = None

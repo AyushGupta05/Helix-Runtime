@@ -9,7 +9,7 @@ PayloadPredicate = Callable[[dict[str, Any]], bool]
 
 
 def extract_edit_payload(text: str) -> dict[str, Any]:
-    return _extract_payload_dict(text, _looks_like_edit_payload)
+    return _normalize_edit_payload(_extract_payload_dict(text, _looks_like_edit_payload))
 
 
 def extract_strategy_payload(text: str) -> dict[str, Any]:
@@ -23,9 +23,29 @@ def extract_plan_payload(text: str) -> dict[str, Any]:
 def _looks_like_edit_payload(value: dict[str, Any]) -> bool:
     return (
         isinstance(value.get("summary"), str)
-        and isinstance(value.get("files", []), list)
-        and isinstance(value.get("notes", []), list)
+        and isinstance(value.get("files", []), (list, dict))
+        and isinstance(value.get("notes", []), (list, str))
     )
+
+
+def _normalize_edit_payload(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+    files = normalized.get("files", [])
+    if isinstance(files, dict):
+        normalized["files"] = [files]
+    elif isinstance(files, list):
+        normalized["files"] = files
+    else:
+        normalized["files"] = []
+
+    notes = normalized.get("notes", [])
+    if isinstance(notes, str):
+        normalized["notes"] = [notes]
+    elif isinstance(notes, list):
+        normalized["notes"] = [note if isinstance(note, str) else json.dumps(note, sort_keys=True) for note in notes]
+    else:
+        normalized["notes"] = []
+    return normalized
 
 
 def _looks_like_strategy_payload(value: dict[str, Any]) -> bool:

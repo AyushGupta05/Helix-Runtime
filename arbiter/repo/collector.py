@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Iterable
 
@@ -193,7 +194,7 @@ class RepoStateCollector:
             test_commands.append([python, "-m", "pytest"])
         if (self.repo / "ruff.toml").exists() or (self.repo / "pyproject.toml").exists():
             lint_commands.append([python, "-m", "ruff", "check", "."])
-        if (self.repo / "mypy.ini").exists() or (self.repo / "pyproject.toml").exists():
+        if (self.repo / "mypy.ini").exists() or (self.repo / ".mypy.ini").exists() or self._pyproject_has_tool("mypy"):
             static_commands.append([python, "-m", "mypy", "."])
         if (self.repo / "benchmarks").exists():
             benchmark_commands.append([python, "-m", "pytest", "benchmarks"])
@@ -206,6 +207,17 @@ class RepoStateCollector:
             risky_paths=self._risky_paths(),
             protected_interfaces=self._protected_interfaces(),
         )
+
+    def _pyproject_has_tool(self, tool_name: str) -> bool:
+        path = self.repo / "pyproject.toml"
+        if not path.exists():
+            return False
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+        tool = data.get("tool")
+        return isinstance(tool, dict) and tool_name in tool
 
     def _detect_tsjs(self) -> CapabilitySet:
         package_path = self.repo / "package.json"

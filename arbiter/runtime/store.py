@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import sqlite3
 from pathlib import Path
@@ -36,6 +37,46 @@ def _metric_total(values: dict[str, Any] | None, *, preferred_keys: tuple[str, .
         if value is not None:
             return float(value)
     return sum(float(value) for value in values.values())
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _elapsed_seconds(start: str | None, end: str | None) -> float:
+    start_dt = _parse_timestamp(start)
+    end_dt = _parse_timestamp(end)
+    if start_dt is None or end_dt is None:
+        return 0.0
+    return max(0.0, (end_dt - start_dt).total_seconds())
+
+
+def _command_status(exit_code: int | None) -> str:
+    if exit_code is None:
+        return "pending"
+    return "passed" if int(exit_code) == 0 else "failed"
+
+
+def _command_results_summary(results: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for result in results or []:
+        command = result.get("command", [])
+        summarized.append(
+            {
+                "command": " ".join(command) if isinstance(command, list) else str(command),
+                "exit_code": result.get("exit_code"),
+                "status": _command_status(result.get("exit_code")),
+                "duration_seconds": float(result.get("duration_seconds", 0.0) or 0.0),
+                "stdout_excerpt": (result.get("stdout") or "")[:1200],
+                "stderr_excerpt": (result.get("stderr") or "")[:1200],
+            }
+        )
+    return summarized
 
 
 class MissionStore:
@@ -742,6 +783,317 @@ class MissionStore:
             "validator_results": latest.get("validator_results", []) if latest else [],
         }
 
+    def _runtime_seconds(
+        self,
+        mission: sqlite3.Row,
+        summary: dict[str, Any],
+        control: sqlite3.Row | None,
+        runtime: sqlite3.Row | None,
+    ) -> float:
+        recorded = float(summary.get("runtime_seconds") or 0.0)
+        if recorded > 0:
+            return recorded
+        end_time = None
+        if control and control["run_state"] == RunState.RUNNING.value:
+            end_time = utc_now().isoformat()
+        else:
+            end_time = max(
+                (
+                    timestamp
+                    for timestamp in (
+                        mission["updated_at"],
+                        runtime["updated_at"] if runtime else None,
+                        control["updated_at"] if control else None,
+                    )
+                    if timestamp
+                ),
+                default=mission["updated_at"],
+            )
+        return _elapsed_seconds(mission["created_at"], end_time)
+
+    def _history_metrics(
+        self,
+        runtime: sqlite3.Row | None,
+        validation_report: dict[str, Any] | None,
+        failure_count: int,
+        accepted_checkpoints: list[dict[str, Any]],
+        mission_state_checkpoints: list[dict[str, Any]],
+        repo_state_checkpoints: list[dict[str, Any]],
+        mission_output: dict[str, Any],
+    ) -> dict[str, Any]:
+        validation_commands = validation_report.get("command_results", []) if validation_report else []
+        baseline_commands = validation_report.get("baseline_command_results", []) if validation_report else []
+        validation_status = "pending"
+        if validation_report is not None:
+            validation_status = "passed" if validation_report.get("passed") else "failed"
+        return {
+            "checkpoint_count": len(accepted_checkpoints),
+            "mission_checkpoint_count": len(mission_state_checkpoints),
+            "repo_checkpoint_count": len(repo_state_checkpoints),
+            "failure_count": failure_count,
+            "recovery_count": runtime["recovery_round"] if runtime else 0,
+            "changed_file_count": len(mission_output.get("affected_files", [])),
+            "validation": {
+                "status": validation_status,
+                "passed": validation_report.get("passed") if validation_report is not None else None,
+                "validator_count": len(validation_commands),
+                "baseline_validator_count": len(baseline_commands),
+                "commands": _command_results_summary(validation_commands),
+                "baseline_commands": _command_results_summary(baseline_commands),
+                "notes": list(validation_report.get("notes", [])) if validation_report else [],
+            },
+        }
+
+    def _repo_insights(
+        self,
+        mission: sqlite3.Row,
+        summary: dict[str, Any],
+        latest_state_checkpoint: sqlite3.Row | None,
+        validation_report: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        spec = json.loads(mission["spec_json"])
+        checkpoint_payload = json.loads(latest_state_checkpoint["payload_json"]) if latest_state_checkpoint else {}
+        state = checkpoint_payload.get("state", {})
+        repo_snapshot = state.get("repo_snapshot") or {}
+        capabilities = repo_snapshot.get("capabilities") or {}
+        return {
+            "runtime": capabilities.get("runtime", "unknown"),
+            "branch": repo_snapshot.get("branch"),
+            "head_commit": repo_snapshot.get("head_commit") or summary.get("head_commit"),
+            "dirty": bool(repo_snapshot.get("dirty")),
+            "tree_summary": list(repo_snapshot.get("tree_summary", [])),
+            "dependency_files": list(repo_snapshot.get("dependency_files", [])),
+            "complexity_hotspots": list(repo_snapshot.get("complexity_hotspots", [])),
+            "failure_signals": list(repo_snapshot.get("failure_signals", [])),
+            "risky_paths": list(capabilities.get("risky_paths", [])),
+            "protected_interfaces": list(capabilities.get("protected_interfaces", [])),
+            "protected_paths": list(spec.get("protected_paths", [])),
+            "public_api_surface": list(spec.get("public_api_surface", [])),
+            "toolchain": {
+                "tests": [" ".join(command) for command in capabilities.get("test_commands", [])],
+                "lint": [" ".join(command) for command in capabilities.get("lint_commands", [])],
+                "static": [" ".join(command) for command in capabilities.get("static_commands", [])],
+                "benchmarks": [" ".join(command) for command in capabilities.get("benchmark_commands", [])],
+            },
+            "baseline": {
+                "tests": _command_results_summary(repo_snapshot.get("initial_test_results")),
+                "lint": _command_results_summary(repo_snapshot.get("initial_lint_results")),
+                "static": _command_results_summary(repo_snapshot.get("initial_static_results")),
+            },
+            "latest_validation": {
+                "status": "pending"
+                if validation_report is None
+                else "passed"
+                if validation_report.get("passed")
+                else "failed",
+                "notes": list(validation_report.get("notes", [])) if validation_report else [],
+            },
+        }
+
+    def _civic_activity(
+        self,
+        summary: dict[str, Any],
+        runtime: sqlite3.Row | None,
+        failure_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        records = []
+        for audit_id, payload in (summary.get("audit_summary") or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            record_payload = payload.get("payload") or {}
+            records.append(
+                {
+                    "audit_id": audit_id,
+                    "created_at": payload.get("created_at"),
+                    "task_id": payload.get("task_id"),
+                    "action_type": payload.get("action_type"),
+                    "status": payload.get("status"),
+                    "policy_state": payload.get("policy_state"),
+                    "reasons": list(payload.get("reasons", [])),
+                    "target": record_payload.get("file_scope") or record_payload.get("checkpoint"),
+                    "payload": record_payload,
+                }
+            )
+        records.sort(key=lambda item: item.get("created_at") or "")
+        blocked_count = sum(1 for record in records if record.get("status") not in {"approved", "executed", "success"})
+        return {
+            "status": runtime["policy_state"] if runtime else PolicyState.CLEAR.value,
+            "audit_count": len(records),
+            "blocked_count": blocked_count,
+            "latest_audit_id": records[-1]["audit_id"] if records else None,
+            "recent_failure_audits": list((failure_context or {}).get("civic_action_history", [])),
+            "ledger": records,
+        }
+
+    def _activity_summary(
+        self,
+        events: list[dict[str, Any]],
+        trace: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        stream: list[dict[str, Any]] = []
+        for event in events[-20:]:
+            payload = event.get("payload") or {}
+            stream.append(
+                {
+                    "kind": "event",
+                    "id": event.get("id"),
+                    "created_at": event.get("created_at"),
+                    "type": event.get("event_type"),
+                    "title": payload.get("title") or event.get("event_type"),
+                    "message": event.get("message"),
+                    "status": payload.get("status"),
+                    "task_id": payload.get("task_id"),
+                    "bid_id": payload.get("bid_id"),
+                    "provider": payload.get("provider"),
+                    "lane": payload.get("lane"),
+                }
+            )
+        for item in trace[-20:]:
+            stream.append(
+                {
+                    "kind": "trace",
+                    "id": item.get("id"),
+                    "created_at": item.get("created_at"),
+                    "type": item.get("trace_type"),
+                    "title": item.get("title"),
+                    "message": item.get("message"),
+                    "status": item.get("status"),
+                    "task_id": item.get("task_id"),
+                    "bid_id": item.get("bid_id"),
+                    "provider": item.get("provider"),
+                    "lane": item.get("lane"),
+                }
+            )
+        stream.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or 0))
+        stream = stream[-30:]
+        return {
+            "event_count": len(events),
+            "trace_count": len(trace),
+            "latest_type": stream[-1]["type"] if stream else None,
+            "stream": stream,
+        }
+
+    def _outcome_summary(
+        self,
+        *,
+        mission: sqlite3.Row,
+        runtime: sqlite3.Row | None,
+        outcome: str | None,
+        run_state: str,
+        winner_bid: dict[str, Any] | None,
+        validation_report: dict[str, Any] | None,
+        failure_context: dict[str, Any] | None,
+        mission_output: dict[str, Any],
+        history_metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        changed_files = mission_output.get("affected_files", [])
+        checkpoint_count = history_metrics.get("checkpoint_count", 0)
+        confidence = float((winner_bid or {}).get("confidence") or 0.55)
+        confidence_reasons: list[str] = []
+        if validation_report and validation_report.get("passed"):
+            confidence = min(0.99, confidence + 0.2)
+            confidence_reasons.append("Latest validator run passed.")
+        if checkpoint_count:
+            confidence = min(0.99, confidence + 0.05)
+            confidence_reasons.append("Mission produced an accepted checkpoint.")
+        if failure_context:
+            confidence = max(0.05, confidence - 0.2)
+            confidence_reasons.append("Recovery or validation failures occurred during the run.")
+        if runtime and runtime["policy_state"] == PolicyState.BLOCKED.value:
+            confidence = max(0.05, confidence - 0.25)
+            confidence_reasons.append("Civic blocked at least one attempted action.")
+        if not confidence_reasons:
+            confidence_reasons.append("Confidence is based on the winning bid score and current mission state.")
+        confidence_label = "high" if confidence >= 0.8 else "medium" if confidence >= 0.55 else "low"
+        plain_summary = (
+            f"Mission completed on {mission['branch_name']} with {len(changed_files)} changed files and {checkpoint_count} accepted checkpoints."
+            if outcome == MissionOutcome.SUCCESS.value
+            else f"Mission is {run_state} with {checkpoint_count} accepted checkpoints and {len(changed_files)} changed files ready for review."
+            if outcome is None
+            else f"Mission ended as {outcome.replace('_', ' ')} on {mission['branch_name']}."
+        )
+        risks: list[str] = []
+        if failure_context and failure_context.get("details"):
+            risks.append(str(failure_context["details"]))
+        if runtime and runtime["stop_reason"]:
+            risks.append(str(runtime["stop_reason"]))
+        protected_touches = [
+            path
+            for path in changed_files
+            if "api" in path.lower() or "public" in path.lower()
+        ]
+        if protected_touches:
+            risks.append(f"Review public or protected interfaces touched: {', '.join(protected_touches[:3])}.")
+        next_actions: list[str] = []
+        if changed_files:
+            next_actions.append(f"Review these files first: {', '.join(changed_files[:3])}.")
+        if validation_report and not validation_report.get("passed"):
+            next_actions.append("Inspect the latest validation report before promoting the branch.")
+        elif changed_files:
+            next_actions.append("Run any missing integration or staging checks before merging.")
+        if protected_touches:
+            next_actions.append("Confirm public API compatibility on the touched interface files.")
+        if run_state != RunState.FINALIZED.value:
+            next_actions.append("Keep monitoring the Live Market view until Arbiter finalizes the mission.")
+        return {
+            "status": outcome or run_state,
+            "plain_summary": plain_summary,
+            "branch_name": mission["branch_name"],
+            "accepted_checkpoint_id": mission_output.get("accepted_checkpoint_id"),
+            "changed_files": changed_files,
+            "files_changed": len(changed_files),
+            "checkpoint_count": checkpoint_count,
+            "validation_status": history_metrics.get("validation", {}).get("status"),
+            "confidence": round(confidence, 3),
+            "confidence_label": confidence_label,
+            "confidence_reasons": confidence_reasons,
+            "risks": risks,
+            "next_actions": next_actions,
+        }
+
+    def _mission_meta(
+        self,
+        *,
+        mission: sqlite3.Row,
+        runtime: sqlite3.Row | None,
+        control: sqlite3.Row | None,
+        active_task: dict[str, Any] | None,
+        usage_summary: dict[str, Any],
+        runtime_seconds: float,
+        history_metrics: dict[str, Any],
+        civic_activity: dict[str, Any],
+    ) -> dict[str, Any]:
+        run_state = control["run_state"] if control else RunState.IDLE.value
+        health = "healthy"
+        if civic_activity.get("status") == PolicyState.BLOCKED.value:
+            health = "blocked"
+        elif history_metrics.get("failure_count", 0) > 0 or history_metrics.get("recovery_count", 0) > 0:
+            health = "recovering"
+        elif history_metrics.get("validation", {}).get("status") == "failed":
+            health = "at_risk"
+        return {
+            "repo_name": Path(mission["repo_path"]).name,
+            "repo_path": mission["repo_path"],
+            "objective": mission["objective"],
+            "status": mission["status"],
+            "run_state": run_state,
+            "active_phase": runtime["active_phase"] if runtime else ActivePhase.IDLE.value,
+            "branch_name": mission["branch_name"],
+            "head_commit": None,
+            "runtime_seconds": runtime_seconds,
+            "elapsed_seconds": runtime_seconds,
+            "total_tokens": usage_summary.get("mission", {}).get("total_tokens", 0),
+            "total_cost": usage_summary.get("mission", {}).get("total_cost", 0.0),
+            "active_task_id": active_task.get("task_id") if active_task else None,
+            "active_task_title": active_task.get("title") if active_task else None,
+            "active_task_type": active_task.get("task_type") if active_task else None,
+            "checkpoint_count": history_metrics.get("checkpoint_count", 0),
+            "failure_count": history_metrics.get("failure_count", 0),
+            "validator_status": history_metrics.get("validation", {}).get("status"),
+            "civic_status": civic_activity.get("status"),
+            "mission_health": health,
+        }
+
     def _usage_summary(self, mission_id: str, active_task_id: str | None) -> dict[str, Any]:
         rows = self.fetch_model_invocations(mission_id)
         mission_tokens: dict[str, int] = {}
@@ -752,6 +1104,7 @@ class MissionStore:
         by_lane: dict[str, dict[str, Any]] = {}
         invocations: list[dict[str, Any]] = []
         for row in rows:
+            invocation_payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
             token_usage = json.loads(row["token_usage_json"]) if row["token_usage_json"] else None
             cost_usage = json.loads(row["cost_usage_json"]) if row["cost_usage_json"] else None
             for key, value in (token_usage or {}).items():
@@ -779,7 +1132,8 @@ class MissionStore:
                     bucket["cost_usage"][key] = bucket["cost_usage"].get(key, 0.0) + float(value)
             invocations.append(
                 {
-                    "invocation_id": row["id"],
+                    "invocation_id": invocation_payload.get("invocation_id", row["id"]),
+                    "record_id": row["id"],
                     "task_id": row["task_id"],
                     "bid_id": row["bid_id"],
                     "provider": row["provider"],
@@ -794,8 +1148,8 @@ class MissionStore:
                     "raw_usage": json.loads(row["raw_usage_json"]),
                     "token_usage": token_usage,
                     "cost_usage": cost_usage,
-                    "generation_mode": row["generation_mode"] or json.loads(row["payload_json"]).get("generation_mode"),
-                    "usage_unavailable_reason": row["usage_unavailable_reason"] or json.loads(row["payload_json"]).get("usage_unavailable_reason"),
+                    "generation_mode": row["generation_mode"] or invocation_payload.get("generation_mode"),
+                    "usage_unavailable_reason": row["usage_unavailable_reason"] or invocation_payload.get("usage_unavailable_reason"),
                     "error": row["error"],
                     "total_tokens": total_tokens,
                     "total_cost": total_cost,
@@ -868,9 +1222,13 @@ class MissionStore:
             status = RunState.FINALIZED.value
             outcome = outcome or summary.get("outcome") or MissionOutcome.FAILED_SAFE_STOP.value
         validation = self.fetch_latest_validation(mission_id)
+        validation_report = json.loads(validation["payload_json"]) if validation else None
         failure = self.fetch_latest_failure(mission_id)
+        failure_context = json.loads(failure["payload_json"]) if failure else None
+        latest_state_checkpoint = self.fetch_latest_mission_state_checkpoint(mission_id)
         checkpoint = self.fetch_latest_checkpoint(mission_id)
         events = self._events_for_view(mission_id)
+        recent_trace = self._trace_for_view(mission_id)
         tasks = [json.loads(row["payload_json"]) for row in self.fetch_ordered("tasks", "updated_at ASC", mission_id)]
         bids = [json.loads(row["payload_json"]) for row in self.fetch_ordered("bids", "updated_at ASC", mission_id)]
         active_task = next((task for task in tasks if task["task_id"] == (runtime["active_task_id"] if runtime else None)), None)
@@ -883,10 +1241,70 @@ class MissionStore:
             runtime["active_task_id"] if runtime else None,
         )
         accepted_checkpoints = self._checkpoints_for_view(mission_id)
+        mission_state_checkpoints = self._mission_state_checkpoints_for_view(mission_id)
+        repo_state_checkpoints = self._repo_state_checkpoints_for_view(mission_id)
+        mission_output = self._mission_output(mission, runtime, accepted_checkpoints)
+        failure_count = len(self.fetch_all("failure_contexts", mission_id))
+        runtime_seconds = self._runtime_seconds(mission, summary, control, runtime)
+        history_metrics = self._history_metrics(
+            runtime,
+            validation_report,
+            failure_count,
+            accepted_checkpoints,
+            mission_state_checkpoints,
+            repo_state_checkpoints,
+            mission_output,
+        )
+        civic_activity = self._civic_activity(summary, runtime, failure_context)
+        provider_market_summary = self._provider_market_summary(
+            bids,
+            runtime["active_task_id"] if runtime else None,
+            runtime["winner_bid_id"] if runtime else None,
+            runtime["standby_bid_id"] if runtime else None,
+        )
+        winner_bid = next((bid for bid in bids if bid.get("bid_id") == (runtime["winner_bid_id"] if runtime else None)), None)
+        outcome_summary = self._outcome_summary(
+            mission=mission,
+            runtime=runtime,
+            outcome=outcome,
+            run_state=control["run_state"] if control else RunState.IDLE.value,
+            winner_bid=winner_bid,
+            validation_report=validation_report,
+            failure_context=failure_context,
+            mission_output=mission_output,
+            history_metrics=history_metrics,
+        )
+        mission_meta = self._mission_meta(
+            mission=mission,
+            runtime=runtime,
+            control=control,
+            active_task=active_task,
+            usage_summary=usage_summary,
+            runtime_seconds=runtime_seconds,
+            history_metrics=history_metrics,
+            civic_activity=civic_activity,
+        )
+        mission_meta["status"] = status
+        mission_meta["outcome"] = outcome
+        mission_meta["head_commit"] = json.loads(checkpoint["payload_json"])["commit_sha"] if checkpoint else summary.get("head_commit")
         payload = {
             "mission_id": mission["id"],
             "repo_path": mission["repo_path"],
             "objective": mission["objective"],
+            "created_at": mission["created_at"],
+            "updated_at": max(
+                (
+                    timestamp
+                    for timestamp in (
+                        mission["updated_at"],
+                        runtime["updated_at"] if runtime else None,
+                        control["updated_at"] if control else None,
+                    )
+                    if timestamp
+                ),
+                default=mission["updated_at"],
+            ),
+            "runtime_seconds": runtime_seconds,
             "status": status,
             "outcome": outcome,
             "run_state": control["run_state"] if control else RunState.IDLE.value,
@@ -907,23 +1325,29 @@ class MissionStore:
             "active_task": active_task,
             "bids": bids,
             "events": events,
-            "validation_report": json.loads(validation["payload_json"]) if validation else None,
-            "failure_context": json.loads(failure["payload_json"]) if failure else None,
+            "validation_report": validation_report,
+            "failure_context": failure_context,
             "simulation_summary": json.loads(runtime["simulation_summary_json"]) if runtime and runtime["simulation_summary_json"] else None,
             "guardrail_state": {"policy_state": runtime["policy_state"] if runtime else PolicyState.CLEAR.value, "current_risk_score": runtime["current_risk_score"] if runtime else 0.0},
             "recovery_state": {"recovery_round": runtime["recovery_round"] if runtime else 0, "last_failure_task_id": runtime["latest_failure_task_id"] if runtime else None},
             "stop_state": {"stop_reason": runtime["stop_reason"] if runtime else None},
             "bidding_state": bidding_state,
             "civic_audit_summary": summary.get("audit_summary", {}),
-            "provider_market_summary": self._provider_market_summary(bids, runtime["active_task_id"] if runtime else None, runtime["winner_bid_id"] if runtime else None, runtime["standby_bid_id"] if runtime else None),
+            "mission_meta": mission_meta,
+            "history_metrics": history_metrics,
+            "repo_insights": self._repo_insights(mission, summary, latest_state_checkpoint, validation_report),
+            "outcome_summary": outcome_summary,
+            "civic_activity": civic_activity,
+            "activity_summary": self._activity_summary(events, recent_trace),
+            "provider_market_summary": provider_market_summary,
             "usage_summary": usage_summary,
             "worktree_state": json.loads(runtime["worktree_state_json"]) if runtime and runtime["worktree_state_json"] else {},
             "accepted_checkpoints": accepted_checkpoints,
-            "mission_state_checkpoints": self._mission_state_checkpoints_for_view(mission_id),
-            "repo_state_checkpoints": self._repo_state_checkpoints_for_view(mission_id),
-            "mission_output": self._mission_output(mission, runtime, accepted_checkpoints),
+            "mission_state_checkpoints": mission_state_checkpoints,
+            "repo_state_checkpoints": repo_state_checkpoints,
+            "mission_output": mission_output,
             "execution_steps": self._execution_steps_for_view(mission_id),
-            "recent_trace": self._trace_for_view(mission_id),
+            "recent_trace": recent_trace,
         }
         self.connection.execute(
             "INSERT INTO mission_view_cache (mission_id, payload_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(mission_id) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",

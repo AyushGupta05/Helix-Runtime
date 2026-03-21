@@ -201,10 +201,18 @@ class MissionService:
                     objective=view.objective,
                     created_at=mission["created_at"],
                     updated_at=updated_at,
+                    runtime_seconds=view.runtime_seconds,
                     run_state=view.run_state,
                     status=view.status or view.active_phase,
                     outcome=view.outcome,
                     branch_name=view.branch_name,
+                    total_tokens=view.usage_summary.get("mission", {}).get("total_tokens", 0),
+                    total_cost=view.usage_summary.get("mission", {}).get("total_cost", 0.0),
+                    checkpoint_count=view.history_metrics.get("checkpoint_count", 0),
+                    failure_count=view.history_metrics.get("failure_count", 0),
+                    changed_file_count=view.history_metrics.get("changed_file_count", 0),
+                    recovery_count=view.history_metrics.get("recovery_count", 0),
+                    validator_status=view.history_metrics.get("validation", {}).get("status"),
                 )
             )
             self._known_repos[mission_id] = view.repo_path
