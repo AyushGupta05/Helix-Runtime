@@ -593,6 +593,7 @@ class DefaultStrategyBackend:
         candidate_files: dict[str, str],
         failure_context: str | None = None,
         preview: bool = False,
+        on_invocation=None,
     ) -> tuple[EditProposal, ModelInvocationResult]:
         provider_pool = [bid.provider] if bid.provider else [self.router.config.default_provider]
         candidates = self.generate_edit_proposals(
@@ -603,6 +604,7 @@ class DefaultStrategyBackend:
             failure_context=failure_context,
             preview=preview,
             providers=provider_pool,
+            on_invocation=on_invocation,
         )
         if candidates:
             candidate = candidates[0]
@@ -652,6 +654,7 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
         candidate_files: dict[str, str],
         failure_context: str | None = None,
         preview: bool = False,
+        on_invocation=None,
     ) -> tuple[EditProposal, ModelInvocationResult]:
         proposal = self.scripted[self.index]
         if not preview:
