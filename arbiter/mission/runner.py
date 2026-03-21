@@ -30,6 +30,8 @@ from arbiter.core.contracts import (
     ValidationReport,
     utc_now,
 )
+from arbiter.graph.checkpointer import MissionSqliteCheckpointer
+from arbiter.graph.workflow import build_workflow
 from arbiter.market.clustering import cluster_and_select
 from arbiter.market.scoring import score_bid
 from arbiter.mission.decomposer import GoalDecomposer
@@ -88,6 +90,8 @@ class MissionRuntime:
         self.repo_checkpoints = RepoCheckpointManager(spec.mission_id, self.branch_name, self.store)
         self.worktree = WorktreeManager(spec.repo_path, paths.worktree_dir, self.branch_name)
         self.toolset = LocalToolset(paths.worktree_dir)
+        self.graph_checkpointer = MissionSqliteCheckpointer(paths.db_path)
+        self.workflow = build_workflow(self, checkpointer=self.graph_checkpointer)
         self.state = initialize_state(spec)
         self.state.summary.mission_id = spec.mission_id
         self.state.summary.repo_path = spec.repo_path
@@ -447,19 +451,77 @@ class MissionRuntime:
             self._sync_state("paused")
             raise MissionPaused(self.state.control.reason or "user_paused")
 
+    def _workflow_config(self) -> dict:
+        return {
+            "configurable": {
+                "thread_id": self.spec.mission_id,
+                "checkpoint_ns": "mission",
+            }
+        }
+
+    def _workflow_payload(self, status: str | None = None) -> dict:
+        return {
+            "status": status or self.state.active_phase.value,
+            "runtime_state": self.state.model_dump(mode="json"),
+        }
+
+    def _restore_from_workflow_state(self, workflow_state: dict | None) -> None:
+        if workflow_state and workflow_state.get("runtime_state"):
+            self.state = ArbiterState.model_validate(workflow_state["runtime_state"])
+        self._restore_runtime_context()
+
+    def workflow_bootstrap(self, workflow_state: dict) -> dict:
+        self._restore_from_workflow_state(workflow_state)
+        return self._workflow_payload(workflow_state.get("status", self.state.active_phase.value))
+
+    def _run_workflow_node(self, workflow_state: dict, phase: ActivePhase, handler_name: str) -> dict:
+        self._restore_from_workflow_state(workflow_state)
+        self._cooperate()
+        previous_phase = self.state.active_phase
+        self._emit_phase_change(previous_phase, phase)
+        self.state.active_phase = phase
+        self._sync_state("running")
+        next_status = getattr(self, handler_name)()["status"]
+        return self._workflow_payload(next_status)
+
+    def workflow_collect(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.COLLECT, "node_collect")
+
+    def workflow_decompose(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.DECOMPOSE, "node_decompose")
+
+    def workflow_select_task(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.SELECT_TASK, "node_select_task")
+
+    def workflow_market(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.MARKET, "node_market")
+
+    def workflow_simulate(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.SIMULATE, "node_simulate")
+
+    def workflow_select(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.SELECT, "node_select")
+
+    def workflow_execute(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.EXECUTE, "node_execute")
+
+    def workflow_validate(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.VALIDATE, "node_validate")
+
+    def workflow_recover(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.RECOVER, "node_recover")
+
+    def workflow_finalize(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.FINALIZE, "node_finalize")
+
     def run(self) -> ArbiterState:
         started = time.perf_counter()
         status = self._prepare_run()
-        previous_phase = self.state.active_phase
+        config = self._workflow_config()
         try:
-            while status != "done":
-                self._cooperate()
-                next_phase = ActivePhase(status)
-                self._emit_phase_change(previous_phase, next_phase)
-                self.state.active_phase = next_phase
-                self._sync_state("running")
-                status = getattr(self, f"node_{status}")()["status"]
-                previous_phase = self.state.active_phase
+            checkpoint = self.graph_checkpointer.get_tuple(config)
+            result = self.workflow.invoke(None if checkpoint else self._workflow_payload(status), config=config)
+            self._restore_from_workflow_state(result)
             return self.state
         except MissionPaused:
             return self.state
@@ -496,7 +558,48 @@ class MissionRuntime:
 
     def node_decompose(self) -> dict:
         assert self.state.repo_snapshot is not None
-        self.state.tasks = self.decomposer.decompose(self.spec.objective, self.state.repo_snapshot)
+        self.state.tasks = self.decomposer.decompose(
+            self.spec.objective,
+            self.state.repo_snapshot,
+            spec=self.spec,
+            strategy_backend=self.strategy_backend,
+            on_invocation=self._record_model_invocation,
+        )
+        source = self.decomposer.last_plan_source
+        candidate_scores = self.decomposer.last_candidate_scores
+        if source == "provider_plan":
+            winning_candidate = next(
+                (item for item in candidate_scores if item["source"] == source),
+                candidate_scores[0] if candidate_scores else None,
+            )
+            self.emit(
+                "mission.plan.selected",
+                "Provider-backed mission plan selected.",
+                source=source,
+                provider=winning_candidate["provider"] if winning_candidate else None,
+                lane=winning_candidate["lane"] if winning_candidate else None,
+                score=winning_candidate["score"] if winning_candidate else None,
+                candidate_scores=candidate_scores,
+                refresh_view=True,
+            )
+            self.trace(
+                "mission.plan.selected",
+                "Mission plan selected",
+                "Arbiter selected a provider-backed task graph.",
+                status="success",
+                provider=winning_candidate["provider"] if winning_candidate else None,
+                lane=winning_candidate["lane"] if winning_candidate else None,
+                candidate_scores=candidate_scores,
+                refresh_view=True,
+            )
+        else:
+            self.trace(
+                "mission.plan.selected",
+                "Mission plan selected",
+                "Arbiter retained the deterministic heuristic task graph.",
+                status="info",
+                candidate_scores=candidate_scores,
+            )
         for task in self.state.tasks:
             self._save_task(task)
             self.emit("task.created", f"Task {task.task_id} created.", task_id=task.task_id, task_type=task.task_type.value)
@@ -663,17 +766,12 @@ class MissionRuntime:
         sandbox_ids = set(rollout_plan["sandbox"])
         base_ref = self.state.accepted_checkpoint.commit_sha if self.state.accepted_checkpoint else "HEAD"
         for bid in self.state.active_bids:
-            reward = max(0.0, 0.45 + bid.confidence * 0.2 - bid.risk * 0.25 - bid.cost * 0.1)
             evidence: list[str] = []
             if bid.bid_id in paper_ids:
-                reward += 0.05
                 evidence.append("paper")
                 self.trace("simulation.rollout", "Paper rollout", f"Paper rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="paper")
             if bid.bid_id in partial_ids:
                 files = load_candidate_files(self.paths.worktree_dir, bid.touched_files or task.candidate_files)
-                reward += min(0.15, len(files) * 0.05)
-                if task.validator_requirements and set(task.validator_requirements).issubset(set(bid.validator_plan)):
-                    reward += 0.05
                 evidence.append("partial")
                 self.trace("simulation.rollout", "Partial rollout", f"Partial rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="partial", files=list(files))
             if bid.bid_id in sandbox_ids:
@@ -683,7 +781,6 @@ class MissionRuntime:
                     scratch_tools = LocalToolset(str(scratch))
                     files = load_candidate_files(str(scratch), bid.touched_files or task.candidate_files)
                     if hasattr(self.strategy_backend, "scripted"):
-                        reward += 0.12 if files else -0.05
                         evidence.append("sandbox:heuristic")
                     else:
                         proposal, invocation = self.strategy_backend.generate_edit_proposal(task=task, bid=bid, mission_objective=self.spec.objective, candidate_files=files, failure_context=self.state.failure_context.details if self.state.failure_context else None, preview=True)
@@ -691,22 +788,38 @@ class MissionRuntime:
                         if proposal.files:
                             scratch_tools.apply_file_updates({item.path: item.content for item in proposal.files})
                             report = ValidationEngine(scratch_tools, self.spec, self.state.repo_snapshot).validate(task)
-                            reward += 0.20 if report.passed else -0.12
                             evidence.append("sandbox:pass" if report.passed else "sandbox:fail")
                         else:
-                            reward -= 0.10
                             evidence.append("sandbox:no_patch")
                 finally:
                     self.worktree.remove_path(str(scratch))
                 self.trace("simulation.rollout", "Sandbox rollout", f"Sandbox rollout completed for {bid.bid_id}.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="info", rollout="sandbox")
-            bid.search_reward = round(max(0.0, min(1.0, reward)), 4)
-            bid.search_score = bid.search_reward
-            bid.search_summary = ", ".join(evidence) or "paper"
+            diagnostics = self.simulation.evaluate_search(
+                task,
+                bid,
+                rollout_evidence=evidence,
+                failure_count=len(self.failed_families.get(task.task_id, set())),
+            )
+            bid.search_diagnostics = diagnostics
+            bid.search_reward = float(diagnostics["search_reward"])
+            bid.search_score = float(diagnostics["search_score"])
+            bid.search_summary = (
+                f"{', '.join(evidence) or 'paper'} | "
+                f"mc={diagnostics['sample_count']} mean={diagnostics['mean_score']} "
+                f"success={diagnostics['success_rate']} rollback={diagnostics['rollback_rate']}"
+            )
             bid.status = BidStatus.SIMULATED
             bid.score = score_bid(bid)
             self._save_bid(bid, self.state.active_bid_round)
         self.state.simulation_summary = self.simulation.summarize(task, self.state.active_bids, rollout_plan)
-        self.emit("simulation.completed", "Bounded simulation completed.", task_id=task.task_id, summary=self.state.simulation_summary.summary)
+        self.emit(
+            "simulation.completed",
+            "Bounded simulation completed.",
+            task_id=task.task_id,
+            summary=self.state.simulation_summary.summary,
+            monte_carlo_samples=self.state.simulation_summary.monte_carlo_samples,
+            frontier_gap=self.state.simulation_summary.frontier_gap,
+        )
         return {"status": ActivePhase.SELECT.value}
 
     def node_select(self) -> dict:
@@ -723,7 +836,7 @@ class MissionRuntime:
         self.state.standby_bid = standby
         self.state.winner_bid_id = winner.bid_id
         self.state.standby_bid_id = standby.bid_id if standby else None
-        winner.selection_reason = "highest_scored_valid_contender_after_bounded_search"
+        winner.selection_reason = "highest_scored_valid_contender_after_bounded_monte_carlo_search"
         self._save_bid(winner, self.state.active_bid_round)
         self.emit(
             "bid.won",
