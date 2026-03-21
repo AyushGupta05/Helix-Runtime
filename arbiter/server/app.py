@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,6 +50,12 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
             return request.app.state.mission_service.start(payload)
         except MissionConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValidationError as exc:
+            detail = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors()
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
 
     @app.get("/api/missions")
     def list_missions(request: Request, repo: str | None = None):

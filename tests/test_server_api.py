@@ -207,6 +207,16 @@ def test_api_blocks_second_active_mission_and_allows_cancel(python_bug_repo: Pat
         assert snapshot["outcome"] == "failed_safe_stop"
 
 
+def test_api_returns_400_for_invalid_provider_config(python_bug_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ARBITER_CONTROL_ROOT", str(tmp_path / "control"))
+    monkeypatch.setenv("MODEL_PROVIDER", "bedrock")
+    with TestClient(create_app(strategy_backend_factory=scripted_factory())) as client:
+        response = client.post("/api/missions", json=payload(python_bug_repo))
+
+    assert response.status_code == 400
+    assert "MODEL_PROVIDER" in response.json()["detail"]
+
+
 def test_list_history_refreshes_stale_cached_run_state(python_bug_repo: Path) -> None:
     repo_path = str(python_bug_repo.resolve())
     mission_id = "stale-view-cache"
