@@ -8,6 +8,8 @@ def hard_filter_reason(bid: Bid, task: TaskNode, spec: MissionSpec, available_to
         return "touches_protected_path"
     if bid.strategy_family in failed_families:
         return "repeats_failed_family"
+    if bid.proposed_task_type and bid.proposed_task_type != task.task_type.value:
+        return "proposed_task_type_mismatch"
     if not set(task.allowed_tools).issubset(available_tools):
         return "requires_unavailable_tool"
     if task.validator_requirements and not set(task.validator_requirements).issubset(set(bid.validator_plan)):

@@ -21,6 +21,7 @@ from arbiter.core.contracts import (
     utc_now,
 )
 from arbiter.market.archetypes import ARCHETYPES, ArchetypeDefinition
+from arbiter.runtime.model_payloads import extract_strategy_payload
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ _ARCHETYPE_SYSTEM_PROMPT = (
     '  "estimated_runtime_seconds" (int),\n'
     '  "touched_files" (list of file paths to modify).\n\n'
     "Stay in character as the {role} archetype. "
+    "You must stay within the current move type chosen by Arbiter; do not switch to a different task type. "
     "Your risk tolerance is {risk_bias:.2f}, diff preference is {diff_bias:.2f}, "
     "validator emphasis is {validator_bias:.2f}."
 )
@@ -119,6 +121,18 @@ def _quantile(values: list[float], probability: float) -> float:
     ordered = sorted(values)
     position = max(0, min(len(ordered) - 1, round((len(ordered) - 1) * probability)))
     return float(ordered[position])
+
+
+def _text_value(value: object, fallback: str) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or fallback
+    if isinstance(value, list):
+        parts = [str(item).strip() for item in value if str(item).strip()]
+        return " ".join(parts) if parts else fallback
+    if value is None:
+        return fallback
+    return str(value)
 
 
 @dataclass
@@ -347,6 +361,7 @@ class SimulationFactory:
             f"Variant directive: {variant['directive']}\n"
             f"Candidate files: {', '.join(candidate_files) or 'none identified'}\n"
             f"Validators required: {', '.join(task.validator_requirements or ['tests'])}\n"
+            f"You must propose a {task.task_type.value} move and keep the work bounded to that task type.\n"
             f"Propose your next best move for this mission as the {role.role} archetype.\n"
             "Explain why this move is the right strategic choice now.\n"
             "Return JSON only."
@@ -403,6 +418,10 @@ class SimulationFactory:
             or payload.get("rationale")
             or f"As the {role.role} archetype, this move advances the mission by applying {family_summary.lower()}"
         )
+        default_exact_action = (
+            f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute the "
+            f"{variant['name']} {task.task_type.value.replace('_', ' ')} plan."
+        )
         bid = Bid(
             bid_id=uuid4().hex,
             task_id=task.task_id,
@@ -413,14 +432,14 @@ class SimulationFactory:
             invocation_id=invocation_id,
             variant_id=f"{role.role.lower()}-{variant['name']}-{provider}",
             strategy_family=family_name,
-            strategy_summary=str(payload.get("strategy_summary") or f"{family_summary} Variant: {variant['name']}."),
-            exact_action=str(
-                payload.get("exact_action")
-                or f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute the {variant['name']} {task.task_type.value.replace('_', ' ')} plan."
+            strategy_summary=_text_value(
+                payload.get("strategy_summary"),
+                f"{family_summary} Variant: {variant['name']}.",
             ),
+            exact_action=_text_value(payload.get("exact_action"), default_exact_action),
             mission_rationale=mission_rationale,
-            proposed_task_title=str(payload.get("proposed_task_title") or task.title),
-            proposed_task_type=str(payload.get("proposed_task_type") or task.task_type.value),
+            proposed_task_title=_text_value(payload.get("proposed_task_title"), task.title),
+            proposed_task_type=_text_value(payload.get("proposed_task_type"), task.task_type.value),
             expected_benefit=_clamp(float(payload.get("utility", 0.62 + role.validator_bias * 0.08)) + float(variant["utility_delta"])),
             utility=_clamp(float(payload.get("utility", 0.62 + role.validator_bias * 0.08)) + float(variant["utility_delta"])),
             confidence=_clamp(float(payload.get("confidence", 0.55 + role.rollback_bias * 0.05)) + float(variant["confidence_delta"])),
@@ -473,15 +492,9 @@ class SimulationFactory:
 
     @staticmethod
     def _parse_json_payload(content: str) -> dict[str, object]:
-        cleaned = content.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in cleaned:
-            chunks = cleaned.split("```")
-            cleaned = chunks[-2].replace("json", "", 1).strip() if len(chunks) >= 3 else cleaned
         try:
-            parsed = json.loads(cleaned)
-        except Exception:
+            parsed = extract_strategy_payload(content)
+        except ValueError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
 

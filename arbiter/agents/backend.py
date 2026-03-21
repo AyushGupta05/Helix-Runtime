@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from arbiter.core.contracts import Bid, BidGenerationMode, ReplayRecord, TaskNode, utc_now
 from arbiter.runtime.config import RuntimeConfig
+from arbiter.runtime.model_payloads import extract_edit_payload
 from arbiter.runtime.replay import ReplayManager
 
 
@@ -481,10 +482,14 @@ class DefaultStrategyBackend:
         user = (
             f"Objective: {mission_objective}\n"
             f"Task: {task.title}\n"
+            f"Task type: {task.task_type.value}\n"
             f"Strategy: {bid.strategy_summary}\n"
             f"Exact action: {bid.exact_action}\n"
             f"Failure context: {failure_context or 'none'}\n"
             f"Candidate files:\n{file_blob}\n"
+            "This is an executable bounded work unit chosen by Arbiter. "
+            "Do not change the task type or return analysis-only output. "
+            "For bugfix, test, refactor, and perf_optimize tasks, files must contain at least one file update. "
             "Return JSON only."
         )
         provider_pool = providers or self.router.config.enabled_providers
@@ -494,6 +499,7 @@ class DefaultStrategyBackend:
             lane_key = f"{lane}.{provider}"
             invocation_id = uuid4().hex
             lane_config = self.router.config.model_lanes.get(lane_key) or self.router.config.model_lanes[lane]
+            result: ModelInvocationResult | None = None
             if on_invocation:
                 on_invocation(
                     {
@@ -513,6 +519,8 @@ class DefaultStrategyBackend:
             try:
                 result = self.router.invoke(lane=lane_key, prompt={"system": system, "user": user})
                 proposal = self._parse_edit_proposal(result.content)
+                if task.task_type.value not in {"localize", "perf_diagnosis", "validate"} and not proposal.files:
+                    raise ValueError("Provider returned no file updates for an executable task.")
                 result.invocation_id = invocation_id
                 if on_invocation:
                     on_invocation(
@@ -548,20 +556,26 @@ class DefaultStrategyBackend:
                 )
             except Exception as exc:
                 if on_invocation:
+                    completed_at = utc_now().isoformat()
                     on_invocation(
                         {
                             "invocation_id": invocation_id,
-                            "provider": provider,
-                            "lane": lane_key,
-                            "model_id": lane_config.model_id,
+                            "provider": result.provider if result is not None else provider,
+                            "lane": result.lane if result is not None else lane_key,
+                            "model_id": result.model_id if result is not None else lane_config.model_id,
                             "invocation_kind": "proposal_generation",
-                            "generation_mode": self.market_generation_mode(),
+                            "generation_mode": result.generation_mode if result is not None else self.market_generation_mode(),
                             "status": "failed",
                             "task_id": task.task_id,
                             "bid_id": bid.bid_id,
-                            "started_at": started_at,
-                            "completed_at": utc_now().isoformat(),
-                            "prompt_preview": _preview_text(user),
+                            "started_at": result.started_at if result is not None else started_at,
+                            "completed_at": result.completed_at if result is not None else completed_at,
+                            "prompt_preview": result.prompt_preview if result is not None else _preview_text(user),
+                            "response_preview": result.response_preview if result is not None else None,
+                            "raw_usage": result.raw_usage if result is not None else {},
+                            "token_usage": result.token_usage if result is not None else None,
+                            "cost_usage": result.cost_usage if result is not None else None,
+                            "usage_unavailable_reason": result.usage_unavailable_reason if result is not None else None,
                             "error": str(exc),
                         }
                     )
@@ -615,10 +629,7 @@ class DefaultStrategyBackend:
 
     @staticmethod
     def _parse_edit_proposal(text: str) -> EditProposal:
-        cleaned = text.strip()
-        if "```" in cleaned:
-            cleaned = cleaned.split("```")[-2].replace("json", "").strip()
-        data = json.loads(cleaned)
+        data = extract_edit_payload(text)
         return EditProposal.model_validate(data)
 
 
