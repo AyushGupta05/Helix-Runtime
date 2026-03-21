@@ -7,8 +7,24 @@ from pathlib import Path
 
 import pytest
 
-from arbiter.agents.backend import EditProposal, FileUpdate, ScriptedStrategyBackend
-from arbiter.mission.runner import mission_status, start_mission
+from arbiter.agents.backend import EditOperation, EditProposal, FileUpdate, ModelInvocationResult, ProposalCandidate, ScriptedStrategyBackend
+from arbiter.core.contracts import (
+    ActivePhase,
+    Bid,
+    BidGenerationMode,
+    CapabilitySet,
+    MissionSummary,
+    RepoSnapshot,
+    RunState,
+    RolloutLevel,
+    SuccessCriteria,
+    TaskNode,
+    TaskRequirementLevel,
+    TaskType,
+    utc_now,
+)
+from arbiter.mission.runner import MissionRuntime, build_mission_spec, mission_status, start_mission
+from arbiter.runtime.paths import build_mission_paths
 from arbiter.repo.worktree import WorktreeSetupError
 
 
@@ -83,6 +99,41 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     assert json.loads(latest_failure)["rollback_result"] == "rollback_succeeded"
 
 
+def test_python_bugfix_mission_accepts_operation_only_execution_proposals(python_bug_repo: Path) -> None:
+    backend = ScriptedStrategyBackend(
+        [
+            EditProposal(
+                summary="Patch the calculator bug with a compact replacement.",
+                operations=[
+                    EditOperation(
+                        type="replace",
+                        path="calc.py",
+                        target="return a - b",
+                        content="return a + b",
+                    )
+                ],
+            ),
+        ]
+    )
+
+    state = start_mission(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests and tighten maintainability",
+        strategy_backend=backend,
+    )
+
+    assert state.outcome is not None
+    assert state.outcome.value == "success"
+    calc_branch = subprocess.run(
+        ["git", "show", f"{state.summary.branch_name}:calc.py"],
+        cwd=str(python_bug_repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "return a + b" in calc_branch.stdout
+
+
 def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
     repo = tmp_path / "no_commit_repo"
     repo.mkdir()
@@ -95,3 +146,193 @@ def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
             objective="Fix failing tests",
             strategy_backend=ScriptedStrategyBackend([]),
         )
+
+
+def test_execute_prefers_winning_provider_before_widening(python_bug_repo: Path) -> None:
+    class RecordingProposalBackend:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+            self.router = type(
+                "Router",
+                (),
+                {
+                    "config": type(
+                        "Config",
+                        (),
+                        {"enabled_providers": ["anthropic", "openai"]},
+                    )()
+                },
+            )()
+
+        def generate_edit_proposals(
+            self,
+            task,
+            bid,
+            mission_objective,
+            candidate_files,
+            failure_context=None,
+            preview=False,
+            providers=None,
+            on_invocation=None,
+        ):
+            del task, bid, mission_objective, candidate_files, failure_context, preview, on_invocation
+            requested = list(providers or [])
+            self.calls.append(requested)
+            provider = requested[0] if requested else "anthropic"
+            proposal = EditProposal(
+                summary=f"{provider} proposal",
+                files=[] if provider == "anthropic" else [FileUpdate(path="calc.py", content="def add(a, b):\n    return a + b\n")],
+            )
+            invocation = ModelInvocationResult(
+                content=proposal.model_dump_json(),
+                provider=provider,
+                model_id=f"{provider}-proposal",
+                lane=f"proposal_gen.{provider}",
+                generation_mode=BidGenerationMode.PROVIDER_MODEL,
+                prompt_preview="",
+                response_preview=proposal.summary,
+                started_at=utc_now().isoformat(),
+                completed_at=utc_now().isoformat(),
+            )
+            return [
+                ProposalCandidate(
+                    candidate_id=f"{provider}-candidate",
+                    task_id="task-1",
+                    bid_id="bid-1",
+                    provider=provider,
+                    lane=f"proposal_gen.{provider}",
+                    model_id=f"{provider}-proposal",
+                    proposal=proposal,
+                    invocation=invocation,
+                )
+            ]
+
+    backend = RecordingProposalBackend()
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests",
+        mission_id="provider-first-execute",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=backend)
+    try:
+        runtime.store.upsert_mission(
+            mission_id=spec.mission_id,
+            status="running",
+            repo_path=spec.repo_path,
+            objective=spec.objective,
+            branch_name=runtime.branch_name,
+            outcome=None,
+            spec=spec,
+            summary=MissionSummary(mission_id=spec.mission_id, repo_path=spec.repo_path, objective=spec.objective),
+            created_at=spec.created_at.isoformat(),
+        )
+        runtime.store.upsert_control_state(
+            spec.mission_id,
+            RunState.RUNNING.value,
+            None,
+            None,
+            utc_now().isoformat(),
+        )
+
+        task = TaskNode(
+            task_id="task-1",
+            title="Apply calculator fix",
+            task_type=TaskType.BUGFIX,
+            requirement_level=TaskRequirementLevel.REQUIRED,
+            success_criteria=SuccessCriteria(description="Tests pass"),
+            candidate_files=["calc.py"],
+        )
+        bid = Bid(
+            bid_id="bid-1",
+            task_id="task-1",
+            role="quality",
+            provider="anthropic",
+            lane="bid_fast.anthropic",
+            model_id="anthropic-bid-fast",
+            variant_id="quality-base",
+            strategy_family="Quality",
+            strategy_summary="Apply a careful calculator fix.",
+            exact_action="Update calc.py",
+            expected_benefit=0.8,
+            utility=0.8,
+            confidence=0.82,
+            risk=0.15,
+            cost=0.02,
+            estimated_runtime_seconds=20,
+            touched_files=["calc.py"],
+            rollback_plan="revert",
+            rollout_level=RolloutLevel.PAPER,
+            generation_mode=BidGenerationMode.PROVIDER_MODEL,
+        )
+
+        candidates = runtime._generate_execution_candidates(
+            task,
+            bid,
+            {"calc.py": "def add(a, b):\n    return a - b\n"},
+        )
+    finally:
+        runtime.store.close()
+
+    assert backend.calls == [["anthropic"], ["openai"]]
+    assert any(candidate.provider == "openai" and candidate.proposal.files for candidate in candidates)
+
+
+def test_collect_defers_baseline_commands_for_fast_market_open(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests",
+        mission_id="lightweight-collect",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    calls: list[bool] = []
+
+    def fake_collect(*, run_commands: bool = True):
+        calls.append(run_commands)
+        return RepoSnapshot(
+            repo_path=str(python_bug_repo),
+            branch="main",
+            head_commit="abc12345",
+            dirty=False,
+            changed_files=[],
+            untracked_files=[],
+            tree_summary=["calc.py", "tests"],
+            dependency_files=["pyproject.toml"],
+            complexity_hotspots=["calc.py"],
+            failure_signals=[],
+            capabilities=CapabilitySet(runtime="python", risky_paths=["calc.py"], protected_interfaces=[]),
+            initial_test_results=[],
+            initial_lint_results=[],
+            initial_static_results=[],
+        )
+
+    runtime.collector.collect = fake_collect
+    try:
+        runtime.store.upsert_mission(
+            mission_id=spec.mission_id,
+            status="running",
+            repo_path=spec.repo_path,
+            objective=spec.objective,
+            branch_name=runtime.branch_name,
+            outcome=None,
+            spec=spec,
+            summary=MissionSummary(mission_id=spec.mission_id, repo_path=spec.repo_path, objective=spec.objective),
+            created_at=spec.created_at.isoformat(),
+        )
+        runtime.store.upsert_control_state(
+            spec.mission_id,
+            RunState.RUNNING.value,
+            None,
+            None,
+            utc_now().isoformat(),
+        )
+        result = runtime.node_collect()
+        runtime.state.repo_snapshot = None
+        runtime.state.active_phase = ActivePhase.STRATEGIZE
+        runtime._restore_runtime_context()
+    finally:
+        runtime.store.close()
+
+    assert result == {"status": ActivePhase.STRATEGIZE.value}
+    assert calls == [False, False]

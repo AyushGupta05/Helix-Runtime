@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from arbiter.repo.collector import RepoStateCollector
@@ -32,3 +33,28 @@ def test_skips_heavy_ignored_directories_in_scan(tmp_path: Path) -> None:
     assert snapshot.capabilities.runtime == "python"
     assert "app.py" in snapshot.complexity_hotspots
     assert not any("node_modules" in path for path in snapshot.complexity_hotspots)
+
+
+def test_python_static_analysis_is_not_enabled_without_explicit_mypy_config(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+
+    snapshot = RepoStateCollector(str(repo)).collect(run_commands=False)
+
+    assert snapshot.capabilities.runtime == "python"
+    assert snapshot.capabilities.static_commands == []
+
+
+def test_python_static_analysis_uses_mypy_when_explicitly_configured(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname='demo'\n\n[tool.mypy]\npython_version='3.13'\n",
+        encoding="utf-8",
+    )
+
+    snapshot = RepoStateCollector(str(repo)).collect(run_commands=False)
+
+    assert snapshot.capabilities.runtime == "python"
+    assert snapshot.capabilities.static_commands == [[sys.executable, "-m", "mypy", "."]]

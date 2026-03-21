@@ -26,6 +26,11 @@ function statusSummary(mission, usageSummary) {
   const latestCheckpoint = mission.accepted_checkpoints?.at(-1) ?? null;
   const validation = mission.validation_report;
   const civicCount = Object.keys(mission.civic_audit_summary ?? {}).length;
+  const leader =
+    mission.bids?.find((bid) => bid.bid_id === mission.winner_bid_id) ??
+    mission.bids?.find((bid) => bid.selected) ??
+    null;
+  const leaderLabel = leader?.role ?? leader?.strategy_family ?? "Awaiting winner";
 
   return [
     {
@@ -35,8 +40,8 @@ function statusSummary(mission, usageSummary) {
     },
     {
       label: "Latest checkpoint",
-      value: latestCheckpoint?.label ?? "Awaiting acceptance",
-      detail: shortCommit(latestCheckpoint?.commit_sha ?? mission.head_commit)
+      value: latestCheckpoint?.label ?? leaderLabel,
+      detail: latestCheckpoint ? shortCommit(latestCheckpoint.commit_sha ?? mission.head_commit) : "Current leader"
     },
     {
       label: "Civic status",

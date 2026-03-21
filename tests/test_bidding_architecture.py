@@ -82,10 +82,20 @@ def _mock_router_config() -> SimpleNamespace:
     for arch in ARCHETYPES:
         lanes[arch.default_lane] = lane_config
         lanes[f"{arch.default_lane}.anthropic"] = lane_config
-    return SimpleNamespace(model_lanes=lanes)
+        lanes[f"{arch.default_lane}.openai"] = lane_config
+    return SimpleNamespace(
+        model_lanes=lanes,
+        market_lanes_for=lambda provider: ["triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"] if provider == "anthropic" else ["triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"],
+    )
 
 
-def _mock_router_invoke(lane: str, prompt: dict) -> ModelInvocationResult:
+def _mock_router_invoke(
+    lane: str,
+    prompt: dict,
+    *,
+    request_timeout_seconds: float | None = None,
+) -> ModelInvocationResult:
+    del request_timeout_seconds
     return ModelInvocationResult(
         content=json.dumps({
             "strategy_summary": f"Mock strategy for lane {lane}",
@@ -169,6 +179,19 @@ class TestBidGenerationBatch:
         assert len(started) == NUM_SPECS
         assert len(completed) == NUM_SPECS
 
+    def test_provider_market_respects_provider_lane_limits(self):
+        mock_backend = _make_mock_backend()
+        mock_backend.router.config.market_lanes_for = lambda provider: ["bid_deep"] if provider == "anthropic" else ["bid_fast", "bid_deep", "test_gen", "perf_reason"]
+
+        factory = SimulationFactory(
+            backend=mock_backend,
+            provider_pool=["anthropic"],
+        )
+        batch = factory.generate(_make_task(), _make_snapshot())
+
+        assert len(batch.bids) == len([arch for arch in ARCHETYPES if arch.default_lane == "bid_deep"]) * NUM_VARIANTS
+        assert all(bid.lane == "bid_deep.anthropic" for bid in batch.bids)
+
     def test_provider_backed_bids_record_invocation_ids(self):
         mock_backend = _make_mock_backend()
         invocations = []
@@ -189,11 +212,64 @@ class TestBidGenerationBatch:
         for bid in batch.bids:
             assert bid.invocation_id in invocation_ids
 
+    def test_provider_market_respects_lane_budget(self):
+        mock_backend = _make_mock_backend()
+        mock_backend.router.config.market_lanes_for = lambda provider: (
+            ["triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"]
+            if provider == "openai"
+            else ["triage", "bid_deep"]
+        )
+        mock_backend.router.invoke = lambda lane, prompt, request_timeout_seconds=None: ModelInvocationResult(
+            content=json.dumps(
+                {
+                    "strategy_summary": f"Mock strategy for lane {lane}",
+                    "exact_action": "Apply targeted fix",
+                    "utility": 0.8,
+                    "risk": 0.2,
+                    "confidence": 0.75,
+                    "estimated_runtime_seconds": 45,
+                    "touched_files": ["calc.py"],
+                }
+            ),
+            provider=lane.split(".", 1)[1],
+            model_id=f"{lane.split('.', 1)[1]}-model",
+            lane=lane,
+            generation_mode=BidGenerationMode.PROVIDER_MODEL,
+            raw_usage={"input_tokens": 100, "output_tokens": 200},
+            token_usage={"input_tokens": 100, "output_tokens": 200},
+            cost_usage={"usd": 0.003},
+            prompt_preview="Task: Fix broken test",
+            response_preview='{"strategy_summary": "Mock strategy"}',
+            started_at="2026-01-01T00:00:00+00:00",
+            completed_at="2026-01-01T00:00:01+00:00",
+        )
+
+        factory = SimulationFactory(
+            backend=mock_backend,
+            provider_pool=["openai", "anthropic"],
+        )
+        task = _make_task()
+        snapshot = _make_snapshot()
+        batch = factory.generate(task, snapshot)
+
+        anthropic_bids = [bid for bid in batch.bids if bid.provider == "anthropic"]
+        openai_bids = [bid for bid in batch.bids if bid.provider == "openai"]
+
+        assert len(openai_bids) == NUM_SPECS
+        assert len(anthropic_bids) == NUM_VARIANTS * 2
+        assert all(bid.lane.startswith("bid_deep.") for bid in anthropic_bids)
+
     def test_partial_provider_failure_with_fallback(self):
         lock = threading.Lock()
         call_count = 0
 
-        def flaky_invoke(lane: str, prompt: dict) -> ModelInvocationResult:
+        def flaky_invoke(
+            lane: str,
+            prompt: dict,
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            del request_timeout_seconds
             nonlocal call_count
             with lock:
                 call_count += 1
@@ -278,7 +354,13 @@ class TestBidGenerationBatch:
             assert bid.usage_unavailable_reason is None
 
     def test_provider_bid_parses_openai_response_items(self):
-        def wrapped_invoke(lane: str, prompt: dict) -> ModelInvocationResult:
+        def wrapped_invoke(
+            lane: str,
+            prompt: dict,
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            del request_timeout_seconds
             return ModelInvocationResult(
                 content=json.dumps(
                     [
@@ -351,6 +433,30 @@ class TestBidGenerationBatch:
 
         assert reason == "proposed_task_type_mismatch"
 
+    def test_rollout_plan_keeps_sandbox_previews_tight_for_low_risk_rounds(self):
+        factory = SimulationFactory(backend=_make_mock_backend(), provider_pool=["anthropic"])
+        task = _make_task(risk_level=0.35, search_depth=3)
+        snapshot = _make_snapshot()
+        bids = factory.generate(task, snapshot).bids[:4]
+        for index, bid in enumerate(bids):
+            bid.score = 0.9 - (index * 0.03)
+
+        plan = factory.rollout_plan(task, bids, failure_count=0)
+
+        assert len(plan["sandbox"]) == 1
+
+    def test_rollout_plan_expands_sandbox_only_when_recovery_pressure_exists(self):
+        factory = SimulationFactory(backend=_make_mock_backend(), provider_pool=["anthropic"])
+        task = _make_task(risk_level=0.35, search_depth=3)
+        snapshot = _make_snapshot()
+        bids = factory.generate(task, snapshot).bids[:4]
+        for index, bid in enumerate(bids):
+            bid.score = 0.9 - (index * 0.02)
+
+        plan = factory.rollout_plan(task, bids, failure_count=1)
+
+        assert len(plan["sandbox"]) == 2
+
 
 class TestBidArchitectureInMissionRun:
     def test_scripted_backend_sets_fallback_policy(self, python_bug_repo: Path):
@@ -422,7 +528,13 @@ class TestFactoryArchetypeLaneMapping:
     def test_each_archetype_uses_its_default_lane(self):
         lanes_invoked = []
 
-        def capturing_invoke(lane: str, prompt: dict) -> ModelInvocationResult:
+        def capturing_invoke(
+            lane: str,
+            prompt: dict,
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            del request_timeout_seconds
             lanes_invoked.append(lane)
             return _mock_router_invoke(lane, prompt)
 
@@ -444,7 +556,13 @@ class TestFactoryArchetypeLaneMapping:
     def test_each_variant_invoked_per_archetype(self):
         invoked_specs = []
 
-        def capturing_invoke(lane: str, prompt: dict) -> ModelInvocationResult:
+        def capturing_invoke(
+            lane: str,
+            prompt: dict,
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            del request_timeout_seconds
             invoked_specs.append(lane)
             return _mock_router_invoke(lane, prompt)
 

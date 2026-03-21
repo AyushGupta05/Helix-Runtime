@@ -13,7 +13,7 @@ import {
   resumeMission
 } from "./lib/api";
 import { useMissionStream } from "./lib/missionStream";
-import { formatInteger, relativeTime } from "./lib/format";
+import { relativeTime } from "./lib/format";
 import MissionComposer from "./components/MissionComposer";
 import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";

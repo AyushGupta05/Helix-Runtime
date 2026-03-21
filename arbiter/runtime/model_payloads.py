@@ -24,6 +24,7 @@ def _looks_like_edit_payload(value: dict[str, Any]) -> bool:
     return (
         isinstance(value.get("summary"), str)
         and isinstance(value.get("files", []), (list, dict))
+        and isinstance(value.get("operations", []), (list, dict))
         and isinstance(value.get("notes", []), (list, str))
     )
 
@@ -37,6 +38,32 @@ def _normalize_edit_payload(value: dict[str, Any]) -> dict[str, Any]:
         normalized["files"] = files
     else:
         normalized["files"] = []
+
+    operations = normalized.get("operations", [])
+    if isinstance(operations, dict):
+        operations = [operations]
+    elif not isinstance(operations, list):
+        operations = []
+    normalized_operations: list[dict[str, Any]] = []
+    for item in operations:
+        if not isinstance(item, dict):
+            continue
+        normalized_item = dict(item)
+        if "type" not in normalized_item:
+            if isinstance(normalized_item.get("op"), str):
+                normalized_item["type"] = normalized_item["op"]
+            elif isinstance(normalized_item.get("kind"), str):
+                normalized_item["type"] = normalized_item["kind"]
+        if (
+            normalized_item.get("type") == "replace_text"
+            and "content" not in normalized_item
+            and isinstance(normalized_item.get("replace"), str)
+        ):
+            normalized_item["content"] = normalized_item["replace"]
+        if normalized_item.get("type") == "replace_text":
+            normalized_item["type"] = "replace"
+        normalized_operations.append(normalized_item)
+    normalized["operations"] = normalized_operations
 
     notes = normalized.get("notes", [])
     if isinstance(notes, str):

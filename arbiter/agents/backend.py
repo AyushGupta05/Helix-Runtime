@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -20,10 +20,31 @@ class FileUpdate(BaseModel):
     content: str
 
 
+class EditOperation(BaseModel):
+    type: Literal["replace", "insert_after", "insert_before", "append", "prepend", "create_file"]
+    path: str
+    content: str
+    target: str | None = None
+    occurrence: int = 1
+
+
 class EditProposal(BaseModel):
     summary: str
     files: list[FileUpdate] = Field(default_factory=list)
+    operations: list[EditOperation] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.files or self.operations)
+
+    @property
+    def affected_paths(self) -> list[str]:
+        ordered: list[str] = []
+        for path in [item.path for item in self.files] + [item.path for item in self.operations]:
+            if path not in ordered:
+                ordered.append(path)
+        return ordered
 
 
 class ModelInvocationResult(BaseModel):
@@ -333,47 +354,59 @@ class ProviderModelRouter:
             return base_lane, provider
         return lane, self.config.default_provider
 
-    def _get_model(self, lane: str):
+    def _get_model(self, lane: str, request_timeout_seconds: float | None = None):
         base_lane, provider = self._resolve_lane(lane)
         lane_key = f"{base_lane}.{provider}"
         lane_config = self.config.model_lanes.get(lane_key) or self.config.model_lanes[base_lane]
-        if lane_key not in self._models:
+        timeout_seconds = (
+            float(request_timeout_seconds)
+            if request_timeout_seconds is not None
+            else float(self.config.provider_request_timeout_seconds)
+        )
+        cache_key = f"{lane_key}@{timeout_seconds}"
+        if cache_key not in self._models:
             if lane_config.provider == "openai":
                 if not self.config.openai_api_key:
                     raise ValueError("OPENAI_API_KEY is required when MODEL_PROVIDER=openai.")
                 from langchain_openai import ChatOpenAI
 
-                self._models[lane_key] = ChatOpenAI(
+                self._models[cache_key] = ChatOpenAI(
                     model=lane_config.model_id,
                     temperature=lane_config.temperature,
                     api_key=self.config.openai_api_key,
                     max_tokens=lane_config.max_tokens,
-                    request_timeout=self.config.provider_request_timeout_seconds,
+                    request_timeout=timeout_seconds,
                 )
             elif lane_config.provider == "anthropic":
                 if not self.config.anthropic_api_key:
                     raise ValueError("ANTHROPIC_API_KEY is required when MODEL_PROVIDER=anthropic.")
                 from langchain_anthropic import ChatAnthropic
 
-                self._models[lane_key] = ChatAnthropic(
+                self._models[cache_key] = ChatAnthropic(
                     model=lane_config.model_id,
                     temperature=lane_config.temperature,
                     api_key=self.config.anthropic_api_key,
                     max_tokens=lane_config.max_tokens,
-                    default_request_timeout=self.config.provider_request_timeout_seconds,
+                    default_request_timeout=timeout_seconds,
                 )
             else:
                 raise ValueError(f"Unsupported provider: {lane_config.provider}")
-        return self._models[lane_key], lane_config
+        return self._models[cache_key], lane_config
 
-    def invoke(self, lane: str, prompt: dict[str, Any]) -> ModelInvocationResult:
+    def invoke(
+        self,
+        lane: str,
+        prompt: dict[str, Any],
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> ModelInvocationResult:
         if self.replay.mode == "replay":
             recorded = self.replay.load(prompt)
             if recorded:
                 return ModelInvocationResult.model_validate({**recorded, "generation_mode": BidGenerationMode.REPLAY})
             raise RuntimeError("Replay mode is active but no recorded response exists for this prompt.")
         started_at = utc_now().isoformat()
-        model, lane_config = self._get_model(lane)
+        model, lane_config = self._get_model(lane, request_timeout_seconds=request_timeout_seconds)
         messages = [
             ("system", prompt["system"]),
             ("human", prompt["user"]),
@@ -447,7 +480,6 @@ class DefaultStrategyBackend:
         providers: list[str] | None = None,
         on_invocation=None,
     ) -> list[ProposalCandidate]:
-        del preview
         if not candidate_files:
             fallback = ModelInvocationResult(
                 content="{}",
@@ -471,13 +503,37 @@ class DefaultStrategyBackend:
                 )
             ]
         lane = self.lane_for_task(task)
-        system = (
-            "You are Arbiter's execution planner. Return only valid JSON with fields: summary, files, notes. "
-            "Each file entry must contain path and full replacement content. Keep edits minimal and respect the bid strategy."
+        request_timeout = (
+            getattr(self.router.config, "preview_request_timeout_seconds", None)
+            if preview
+            else getattr(self.router.config, "proposal_request_timeout_seconds", None)
         )
+        preferred_files = [path for path in (bid.touched_files or []) if path in candidate_files]
+        remaining_files = [path for path in candidate_files if path not in preferred_files]
+        ordered_files = preferred_files + remaining_files
+        if preview:
+            file_limit = 2
+        else:
+            file_limit = max(1, min(len(preferred_files) if preferred_files else len(ordered_files), 3))
+        char_limit = 6000 if preview else 12000
+        scoped_files = ordered_files[: max(1, file_limit)]
+        scoped_candidate_files = {path: candidate_files[path] for path in scoped_files}
+        system = (
+            "You are Arbiter's execution planner. Return only valid JSON with fields: summary, operations, files, notes. "
+            "Prefer compact operations for existing files. Each operation must contain type, path, and content, and "
+            "replace/insert_before/insert_after operations must also include target. Supported operation types are: "
+            "replace, insert_after, insert_before, append, prepend, create_file. "
+            "Use files only when a full replacement is genuinely required. Keep edits minimal and respect the bid strategy. "
+            "Do not include markdown fences or analysis."
+        )
+        if preview:
+            system += (
+                " This is simulation preview mode. Prefer the smallest viable patch, touch as few files as possible, "
+                "and return quickly if the change cannot be expressed cleanly."
+            )
         file_blob = "\n\n".join(
-            f"FILE: {path}\n```\n{content[:16000]}\n```"
-            for path, content in candidate_files.items()
+            f"FILE: {path}\n```\n{content[:char_limit]}\n```"
+            for path, content in scoped_candidate_files.items()
         )
         user = (
             f"Objective: {mission_objective}\n"
@@ -489,9 +545,12 @@ class DefaultStrategyBackend:
             f"Candidate files:\n{file_blob}\n"
             "This is an executable bounded work unit chosen by Arbiter. "
             "Do not change the task type or return analysis-only output. "
-            "For bugfix, test, refactor, and perf_optimize tasks, files must contain at least one file update. "
+            "For bugfix, test, refactor, and perf_optimize tasks, return at least one operation or file update. "
+            "For existing files, prefer minimal operations over full replacement content. "
             "Return JSON only."
         )
+        if preview:
+            user += "\nPreview goal: prove the bid is viable with a minimal bounded patch, not a broad rewrite."
         provider_pool = providers or self.router.config.enabled_providers
 
         def run_provider(provider: str) -> ProposalCandidate | None:
@@ -517,10 +576,14 @@ class DefaultStrategyBackend:
                     }
                 )
             try:
-                result = self.router.invoke(lane=lane_key, prompt={"system": system, "user": user})
+                result = self.router.invoke(
+                    lane=lane_key,
+                    prompt={"system": system, "user": user},
+                    request_timeout_seconds=request_timeout,
+                )
                 proposal = self._parse_edit_proposal(result.content)
-                if task.task_type.value not in {"localize", "perf_diagnosis", "validate"} and not proposal.files:
-                    raise ValueError("Provider returned no file updates for an executable task.")
+                if task.task_type.value not in {"localize", "perf_diagnosis", "validate"} and not proposal.has_changes:
+                    raise ValueError("Provider returned no executable edits for this task.")
                 result.invocation_id = invocation_id
                 if on_invocation:
                     on_invocation(

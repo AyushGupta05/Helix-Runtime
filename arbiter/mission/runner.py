@@ -88,7 +88,7 @@ class MissionRuntime:
         )
         self.recovery = RecoveryEngine()
         self.civic = CivicRuntime(self.config)
-        self.branch_name = f"codex/arbiter-{sanitize_branch_fragment(spec.mission_id)}"
+        self.branch_name = f"codex/helix-{sanitize_branch_fragment(spec.mission_id)}"
         self.mission_checkpoints = MissionCheckpointManager(spec.mission_id, self.store)
         self.repo_checkpoints = RepoCheckpointManager(spec.mission_id, self.branch_name, self.store)
         self.worktree = WorktreeManager(spec.repo_path, paths.worktree_dir, self.branch_name)
@@ -135,6 +135,8 @@ class MissionRuntime:
     def _record_model_invocation(self, payload: dict) -> None:
         with self._invocation_lock:
             invocation_id = self.persistence.save_model_invocation(payload)
+            self.store.touch_runtime(self.spec.mission_id)
+            self.store.refresh_mission_view(self.spec.mission_id)
             generation_mode = payload.get("generation_mode")
             if generation_mode is not None and not isinstance(generation_mode, BidGenerationMode):
                 generation_mode = BidGenerationMode(generation_mode)
@@ -192,7 +194,7 @@ class MissionRuntime:
 
     def _restore_runtime_context(self) -> None:
         if self.state.repo_snapshot is None and self.state.active_phase not in {ActivePhase.IDLE, ActivePhase.COLLECT}:
-            self.state.repo_snapshot = self.collector.collect(run_commands=True)
+            self.state.repo_snapshot = self.collector.collect(run_commands=False)
         # Map legacy phases to strategize
         if self.state.active_phase in {ActivePhase.DECOMPOSE, ActivePhase.SELECT_TASK, ActivePhase.MARKET}:
             self.state.active_phase = ActivePhase.STRATEGIZE
@@ -239,21 +241,47 @@ class MissionRuntime:
 
     @staticmethod
     def _proposal_score(candidate, bid, task) -> float:
-        files = [item.path for item in candidate.proposal.files]
+        files = candidate.proposal.affected_paths
         if not files:
             return -1.0
         score = 1.0
         if candidate.provider == bid.provider and bid.provider not in {None, "system"}:
-            score += 0.15
+            score += 0.08
         if len(files) <= max(1, len(bid.touched_files or task.candidate_files or files)):
             score += 0.2
         score -= max(0, len(files) - task.risk_level * 10) * 0.03
+        score -= min(0.12, float((candidate.invocation.cost_usage or {}).get("usd", 0.0)) * 10.0)
         score += min(0.25, len(candidate.invocation.token_usage or {}) * 0.02)
         return score
 
     @staticmethod
     def _has_usable_execution_candidate(candidates) -> bool:
-        return any(candidate.proposal.files for candidate in candidates)
+        return any(candidate.proposal.has_changes for candidate in candidates)
+
+    @staticmethod
+    def _proposal_paths(proposal) -> list[str]:
+        return list(getattr(proposal, "affected_paths", [item.path for item in proposal.files]))
+
+    @staticmethod
+    def _proposal_has_changes(proposal) -> bool:
+        return bool(getattr(proposal, "has_changes", bool(proposal.files)))
+
+    @staticmethod
+    def _proposal_payload(proposal) -> dict:
+        return proposal.model_dump(mode="json")
+
+    @staticmethod
+    def _apply_proposal(toolset, proposal) -> list[str]:
+        touched: list[str] = []
+        if proposal.files:
+            touched.extend(toolset.apply_file_updates({item.path: item.content for item in proposal.files}))
+        if proposal.operations:
+            touched.extend(toolset.apply_edit_operations([item.model_dump(mode="json") for item in proposal.operations]))
+        unique: list[str] = []
+        for path in touched:
+            if path not in unique:
+                unique.append(path)
+        return unique
 
     def _generate_execution_candidates(self, task, bid, candidate_files: dict[str, str]):
         failure_context = self.state.failure_context.details if self.state.failure_context else None
@@ -590,7 +618,7 @@ class MissionRuntime:
             self._sync_state("finalized" if self.state.control.run_state == RunState.FINALIZED else self.state.control.run_state.value)
 
     def node_collect(self) -> dict:
-        self.state.repo_snapshot = self.collector.collect(run_commands=True)
+        self.state.repo_snapshot = self.collector.collect(run_commands=False)
         repo_decision = self.governance.evaluate_repo(self.state.repo_snapshot, self.spec)
         self.state.governance.last_decision = repo_decision
         self.state.governance.current_risk_score = repo_decision.risk_score
@@ -949,8 +977,8 @@ class MissionRuntime:
                                 lane=invocation.lane or bid.lane,
                                 status="danger",
                             )
-                        elif proposal.files:
-                            scratch_tools.apply_file_updates({item.path: item.content for item in proposal.files})
+                        elif self._proposal_has_changes(proposal):
+                            self._apply_proposal(scratch_tools, proposal)
                             report = ValidationEngine(scratch_tools, self.spec, self.state.repo_snapshot).validate(task)
                             evidence.append("sandbox:pass" if report.passed else "sandbox:fail")
                         else:
@@ -1083,7 +1111,7 @@ class MissionRuntime:
             candidate.score = self._proposal_score(candidate, bid, task)
         candidates = sorted(candidates, key=lambda item: item.score, reverse=True)
         selected_candidate = candidates[0] if candidates else None
-        if not selected_candidate or not selected_candidate.proposal.files:
+        if not selected_candidate or not self._proposal_has_changes(selected_candidate.proposal):
             return self._stall_failure(task, bid)
         for candidate in candidates[1:]:
             candidate.rejection_reason = "lower_ranked_provider_proposal"
@@ -1106,9 +1134,16 @@ class MissionRuntime:
             summary=selected_candidate.proposal.summary,
         )
         proposal = selected_candidate.proposal
-        if not proposal.files:
+        if not self._proposal_has_changes(proposal):
             return self._stall_failure(task, bid)
-        intent = ActionIntent(action_type="edit_file", task_id=task.task_id, bid_id=bid.bid_id, file_scope=[item.path for item in proposal.files], payload={"summary": proposal.summary})
+        proposal_paths = self._proposal_paths(proposal)
+        intent = ActionIntent(
+            action_type="edit_file",
+            task_id=task.task_id,
+            bid_id=bid.bid_id,
+            file_scope=proposal_paths,
+            payload={"summary": proposal.summary, "proposal": self._proposal_payload(proposal)},
+        )
         decision = self.governance.authorize_action(task, bid, intent, self.spec)
         outcome = self.civic.authorize_and_execute(
             mission_id=self.spec.mission_id,
@@ -1116,7 +1151,7 @@ class MissionRuntime:
             action_type=intent.action_type,
             decision=decision,
             payload=intent.model_dump(mode="json"),
-            executor=lambda: {"touched": self.toolset.apply_file_updates({item.path: item.content for item in proposal.files})},
+            executor=lambda: {"touched": self._apply_proposal(self.toolset, proposal)},
         )
         self.state.last_civic_audit = outcome.audit
         self.state.summary.audit_summary[outcome.audit.audit_id] = outcome.audit.model_dump(mode="json")
@@ -1177,7 +1212,7 @@ class MissionRuntime:
             self._save_task(task)
             changed = self.toolset.changed_files()
             if changed:
-                commit_sha = self.toolset.commit(f"Arbiter mission {self.spec.mission_id}: {task.title}")
+                commit_sha = self.toolset.commit(f"Helix mission {self.spec.mission_id}: {task.title}")
                 checkpoint = AcceptedCheckpoint(
                     checkpoint_id=f"{self.spec.mission_id}-{task.task_id}-{uuid4().hex[:6]}",
                     label=task.task_id,
@@ -1194,7 +1229,7 @@ class MissionRuntime:
                 self.state.accepted_checkpoint = checkpoint
                 self._save_checkpoint(checkpoint)
                 self.emit("checkpoint.accepted", "Accepted checkpoint committed.", task_id=task.task_id, commit_sha=commit_sha)
-                self._refresh_worktree_state("Changes were committed to the Arbiter-managed branch; the worktree is now clean.")
+                self._refresh_worktree_state("Changes were committed to the Helix-managed branch; the worktree is now clean.")
                 self.trace("checkpoint.accepted", "Checkpoint accepted", f"Accepted checkpoint committed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", commit_sha=commit_sha, checkpoint_id=checkpoint.checkpoint_id)
             self.state.decision_history.append(f"{task.task_id}: completed")
             self.emit("task.completed", f"Strategy move {task.task_id} completed.", task_id=task.task_id)

@@ -76,7 +76,7 @@ export default function MissionComposer({
           Objective
           <textarea
             rows={4}
-            placeholder="Describe the user request Arbiter should execute."
+            placeholder="Describe the user request Helix Runtime should execute."
             value={objective}
             onChange={(event) => setObjective(event.target.value)}
           />

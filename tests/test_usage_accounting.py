@@ -148,3 +148,4 @@ def test_usage_summary_prefers_total_tokens_and_usd_without_double_counting(tmp_
     assert usage_summary["active_task"]["total_cost"] == pytest.approx(0.00291125)
     assert usage_summary["by_provider"]["openai"]["total_tokens"] == 1705
     assert usage_summary["by_provider"]["openai"]["total_cost"] == pytest.approx(0.00291125)
+    assert usage_summary["invocations"][0]["invocation_id"] == "inv-1"

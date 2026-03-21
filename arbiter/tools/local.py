@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from arbiter.core.contracts import CommandResult
 from arbiter.repo.collector import IGNORED_DIRECTORIES, _run
@@ -38,6 +39,58 @@ class LocalToolset:
 
     def apply_file_updates(self, updates: dict[str, str]) -> list[str]:
         return [self.edit_file(relative_path, content) for relative_path, content in updates.items()]
+
+    @staticmethod
+    def _replace_nth(text: str, target: str, replacement: str, occurrence: int) -> str:
+        if occurrence < 1:
+            raise ValueError("Edit operations use 1-based occurrence indexes.")
+        start = 0
+        for _ in range(occurrence):
+            index = text.find(target, start)
+            if index == -1:
+                raise ValueError("Edit operation target was not found in file content.")
+            start = index + len(target)
+        return text[:index] + replacement + text[index + len(target) :]
+
+    def apply_edit_operations(self, operations: list[dict[str, Any]]) -> list[str]:
+        touched: list[str] = []
+        for operation in operations:
+            op_type = str(operation.get("type") or "").strip()
+            relative_path = str(operation.get("path") or "").strip()
+            content = str(operation.get("content") or "")
+            target = operation.get("target")
+            occurrence = int(operation.get("occurrence") or 1)
+            if not op_type or not relative_path:
+                raise ValueError("Edit operations must include type and path.")
+            path = self.worktree / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            existing = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+
+            if op_type == "create_file":
+                updated = content
+            elif op_type == "replace":
+                if not isinstance(target, str) or not target:
+                    raise ValueError("Replace operations require a non-empty target string.")
+                updated = self._replace_nth(existing, target, content, occurrence)
+            elif op_type == "insert_after":
+                if not isinstance(target, str) or not target:
+                    raise ValueError("insert_after operations require a non-empty target string.")
+                updated = self._replace_nth(existing, target, f"{target}{content}", occurrence)
+            elif op_type == "insert_before":
+                if not isinstance(target, str) or not target:
+                    raise ValueError("insert_before operations require a non-empty target string.")
+                updated = self._replace_nth(existing, target, f"{content}{target}", occurrence)
+            elif op_type == "append":
+                updated = existing + content
+            elif op_type == "prepend":
+                updated = content + existing
+            else:
+                raise ValueError(f"Unsupported edit operation type: {op_type}")
+
+            path.write_text(updated, encoding="utf-8")
+            if relative_path not in touched:
+                touched.append(relative_path)
+        return touched
 
     def _run_tool(self, command: list[str], timeout: int = 300) -> CommandResult:
         return _run(command, cwd=str(self.worktree), timeout=timeout)

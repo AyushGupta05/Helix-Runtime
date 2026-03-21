@@ -60,7 +60,7 @@ describe("normalizeIncomingBid", () => {
       }
     });
 
-    expect(afterScan.active_phase).toBe("decompose");
+    expect(afterScan.active_phase).toBe("strategize");
     expect(afterScan.repo_snapshot.capabilities.runtime).toBe("python");
 
     const afterCheckpoint = mergeMissionEvent(afterScan, {
@@ -77,7 +77,7 @@ describe("normalizeIncomingBid", () => {
       }
     });
 
-    expect(afterCheckpoint.active_phase).toBe("select_task");
+    expect(afterCheckpoint.active_phase).toBe("strategize");
     expect(afterCheckpoint.head_commit).toBe("abc123def456");
     expect(afterCheckpoint.accepted_checkpoints).toHaveLength(1);
     expect(afterCheckpoint.worktree_state.has_changes).toBe(false);

@@ -1,11 +1,11 @@
-# Arbiter Mission Control
+# Helix Runtime
 
-Arbiter is a local-first, resumable autonomous mission runner for Python repos and conventional single-package TS/JS repos. Arbiter decides what should happen, LangGraph owns the workflow lifecycle, and Codex/Claude-class models execute bounded work units. The runtime breaks a coding objective into dependency-aware tasks, runs a provider-backed strategy market, simulates future execution paths with bounded Monte Carlo search, executes the strongest path in an isolated worktree, validates every material result, and recovers through rollback, standby promotion, or rebidding until it lands a safe branch-ready change.
+Helix Runtime is a local-first, resumable autonomous mission runner for Python repos and conventional single-package TS/JS repos. Helix decides what should happen, LangGraph owns the workflow lifecycle, and Codex/Claude-class models execute bounded work units. The runtime breaks a coding objective into dependency-aware tasks, runs a provider-backed strategy market, simulates future execution paths with bounded Monte Carlo search, executes the strongest path in an isolated worktree, validates every material result, and recovers through rollback, standby promotion, or rebidding until it lands a safe branch-ready change.
 
 ## What is in this repo
 
 - LangGraph-managed mission runtime with persistent checkpoints and resumable phase execution
-- Arbiter mission planning that arbitrates between heuristic and provider-backed task graphs
+- Helix mission planning that arbitrates between heuristic and provider-backed task graphs
 - autonomous mission engine with task decomposition, market rounds, bounded Monte Carlo search, validation, and recovery
 - local mission-control API with history, snapshot materialization, controls, and SSE streaming
 - React + Vite operator dashboard for live bidding, execution, validation, and recovery
@@ -32,7 +32,7 @@ npm install
 npm run dev
 ```
 
-The Vite app proxies `/api` to the local Arbiter server on port `8000`.
+The Vite app proxies `/api` to the local Helix server on port `8000`.
 
 ## CLI
 
@@ -61,4 +61,4 @@ Each mission creates a runtime folder under the target repo's `.arbiter/` direct
 - mission-state checkpoints
 - repo-state checkpoints
 
-Successful missions create validated commits on Arbiter-managed `codex/` branches in isolated worktrees, with checkpointed diff evidence, search diagnostics, and provider provenance available through the API and operator UI.
+Successful missions create validated commits on Helix-managed `codex/` branches in isolated worktrees, with checkpointed diff evidence, search diagnostics, and provider provenance available through the API and operator UI.

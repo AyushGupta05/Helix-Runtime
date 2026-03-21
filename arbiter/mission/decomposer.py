@@ -99,7 +99,14 @@ class GoalDecomposer:
             and getattr(strategy_backend.router.config, "enabled_providers", None)
         ):
             return []
-        providers = list(strategy_backend.router.config.enabled_providers)
+        providers = [
+            provider
+            for provider in strategy_backend.router.config.enabled_providers
+            if not hasattr(strategy_backend.router.config, "market_lanes_for")
+            or "triage" in strategy_backend.router.config.market_lanes_for(provider)
+        ]
+        if not providers:
+            return []
         system_prompt = (
             "You are Arbiter's mission planner. Return only valid JSON with fields: summary and tasks. "
             "Each task must contain title, task_type, requirement_level, dependencies, candidate_files, "
