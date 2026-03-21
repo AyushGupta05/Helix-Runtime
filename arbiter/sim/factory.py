@@ -283,12 +283,15 @@ class SimulationFactory:
         task: TaskNode,
         snapshot: RepoSnapshot,
     ) -> tuple[list[Bid], list[str], list[tuple[ArchetypeDefinition, dict[str, object]]], list[str]]:
-        specs = [
-            (provider, archetype, variant)
-            for provider in self.provider_pool
-            for archetype in ARCHETYPES
-            for variant in VARIANTS
-        ]
+        config = getattr(getattr(self.backend, "router", None), "config", None)
+        specs = []
+        for provider in self.provider_pool:
+            allowed_lanes = set(config.market_lanes_for(provider)) if config and hasattr(config, "market_lanes_for") else None
+            for archetype in ARCHETYPES:
+                if allowed_lanes is not None and archetype.default_lane not in allowed_lanes:
+                    continue
+                for variant in VARIANTS:
+                    specs.append((provider, archetype, variant))
         if not specs:
             return [], [], [], []
         bids: list[Bid] = []
@@ -418,6 +421,7 @@ class SimulationFactory:
             or payload.get("rationale")
             or f"As the {role.role} archetype, this move advances the mission by applying {family_summary.lower()}"
         )
+        provider_cost_signal = min(0.18, float((result.cost_usage or {}).get("usd", 0.0)) * 12.0)
         default_exact_action = (
             f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute the "
             f"{variant['name']} {task.task_type.value.replace('_', ' ')} plan."
@@ -444,7 +448,7 @@ class SimulationFactory:
             utility=_clamp(float(payload.get("utility", 0.62 + role.validator_bias * 0.08)) + float(variant["utility_delta"])),
             confidence=_clamp(float(payload.get("confidence", 0.55 + role.rollback_bias * 0.05)) + float(variant["confidence_delta"])),
             risk=_clamp(float(payload.get("risk", task.risk_level + 0.2 - role.risk_bias * 0.15)) + float(variant["risk_delta"])),
-            cost=_clamp(0.22 + role.diff_bias * 0.2 + (0.08 if variant["name"] == "broad" else 0.0)),
+            cost=_clamp(0.22 + role.diff_bias * 0.2 + (0.08 if variant["name"] == "broad" else 0.0) + provider_cost_signal),
             estimated_runtime_seconds=max(
                 15.0,
                 float(payload.get("estimated_runtime_seconds", 55)) * float(variant["runtime_multiplier"]),
@@ -753,16 +757,19 @@ class SimulationFactory:
         if len({round(bid.confidence, 1) for bid in bids}) > 3:
             base_budget += 2
         partial_count = min(len(ordered), max(4, task.search_depth + 2))
-        sandbox_count = (
-            0
-            if task.task_type.value in {"localize", "perf_diagnosis", "validate"}
-            else min(
-                len(ordered),
-                1
-                + (1 if task.risk_level >= 0.5 or failure_count else 0)
-                + (1 if task.search_depth >= 3 else 0),
-            )
-        )
+        frontier_gap = 1.0
+        if len(ordered) > 1:
+            leader_score = ordered[0].score or ordered[0].utility
+            challenger_score = ordered[1].score or ordered[1].utility
+            frontier_gap = abs(float(leader_score) - float(challenger_score))
+        sandbox_count = 0
+        if task.task_type.value not in {"localize", "perf_diagnosis", "validate"} and ordered:
+            sandbox_count = 1
+            if failure_count and len(ordered) > 1:
+                sandbox_count += 1
+            elif task.risk_level >= 0.65 and frontier_gap <= 0.05 and len(ordered) > 1:
+                sandbox_count += 1
+            sandbox_count = min(len(ordered), sandbox_count)
         return {
             "budget": base_budget,
             "paper": [bid.bid_id for bid in ordered],

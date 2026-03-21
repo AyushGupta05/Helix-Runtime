@@ -489,6 +489,13 @@ class MissionStore:
         )
         self.connection.commit()
 
+    def touch_runtime(self, mission_id: str) -> None:
+        self.connection.execute(
+            "UPDATE mission_runtime SET updated_at = ? WHERE mission_id = ?",
+            (utc_now().isoformat(), mission_id),
+        )
+        self.connection.commit()
+
     def save_mission_state_checkpoint(self, checkpoint: MissionStateCheckpoint) -> None:
         self.connection.execute(
             """
@@ -1132,7 +1139,7 @@ class MissionStore:
                     bucket["cost_usage"][key] = bucket["cost_usage"].get(key, 0.0) + float(value)
             invocations.append(
                 {
-                    "invocation_id": invocation_payload.get("invocation_id", row["id"]),
+                    "invocation_id": invocation_payload.get("invocation_id") or row["id"],
                     "record_id": row["id"],
                     "task_id": row["task_id"],
                     "bid_id": row["bid_id"],

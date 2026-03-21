@@ -93,11 +93,21 @@ def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path,
         assert body["mission_id"] == mission_id
         assert body["repo_path"] == str(python_bug_repo.resolve())
         assert body["outcome"] == "success"
+        assert body["created_at"]
+        assert body["updated_at"]
+        assert body["runtime_seconds"] >= 0
         assert body["latest_event_id"] > 0
         assert body["tasks"]
         assert body["bids"]
         assert body["events"]
         assert body["guardrail_state"]["policy_state"] in {"clear", "restricted", "blocked"}
+        assert body["mission_meta"]["repo_name"] == python_bug_repo.name
+        assert body["mission_meta"]["elapsed_seconds"] >= 0
+        assert body["history_metrics"]["checkpoint_count"] >= 1
+        assert body["repo_insights"]["runtime"] == "python"
+        assert body["outcome_summary"]["plain_summary"]
+        assert "ledger" in body["civic_activity"]
+        assert "stream" in body["activity_summary"]
         assert body["usage_summary"]["mission"]["total_tokens"] >= 0
         assert "worktree_state" in body
         assert "mission_output" in body
@@ -125,6 +135,9 @@ def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path,
         assert missions
         assert missions[0]["mission_id"] == mission_id
         assert missions[0]["outcome"] == "success"
+        assert missions[0]["runtime_seconds"] >= 0
+        assert missions[0]["checkpoint_count"] >= 1
+        assert missions[0]["validator_status"] in {"passed", "failed", "pending"}
 
 
 def test_api_streams_ordered_sse_events(python_bug_repo: Path, tmp_path: Path, monkeypatch) -> None:

@@ -57,7 +57,14 @@ class FakeProviderRouter:
             model_lanes=model_lanes,
         )
 
-    def invoke(self, lane: str, prompt: dict[str, str]) -> ModelInvocationResult:
+    def invoke(
+        self,
+        lane: str,
+        prompt: dict[str, str],
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> ModelInvocationResult:
+        del request_timeout_seconds
         provider = lane.split(".", 1)[1] if "." in lane else self.config.default_provider
         base_lane = lane.split(".", 1)[0]
         system_prompt = prompt["system"].lower()

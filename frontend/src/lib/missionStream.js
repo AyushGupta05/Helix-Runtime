@@ -174,10 +174,10 @@ function updateWorktreeFromCheckpoint(snapshot, checkpoint) {
     diff_stat: snapshot?.diff_stat ?? "",
     diff_patch: snapshot?.diff_patch ?? "",
     accepted_commit: checkpoint.commit_sha,
-    accepted_checkpoint_id: checkpoint.checkpoint_id,
-    reason: checkpoint.summary
-      ? `Accepted checkpoint ${checkpoint.label} is anchored at ${checkpoint.commit_sha?.slice(0, 8) ?? "n/a"}.`
-      : "Accepted checkpoint is anchored on the Arbiter-managed branch."
+      accepted_checkpoint_id: checkpoint.checkpoint_id,
+      reason: checkpoint.summary
+        ? `Accepted checkpoint ${checkpoint.label} is anchored at ${checkpoint.commit_sha?.slice(0, 8) ?? "n/a"}.`
+      : "Accepted checkpoint is anchored on the Helix-managed branch."
   };
 }
 

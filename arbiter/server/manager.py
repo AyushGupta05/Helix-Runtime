@@ -74,7 +74,7 @@ class MissionService:
                     status="running",
                     repo_path=spec.repo_path,
                     objective=spec.objective,
-                    branch_name=f"codex/arbiter-{spec.mission_id}",
+                    branch_name=f"codex/helix-{spec.mission_id}",
                     outcome=None,
                     spec=spec,
                     summary=MissionSummary(mission_id=spec.mission_id, repo_path=spec.repo_path, objective=spec.objective),

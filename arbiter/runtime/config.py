@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+_MARKET_LANES = ("triage", "bid_fast", "bid_deep", "test_gen", "perf_reason")
 
 
 class ModelLaneConfig(BaseSettings):
@@ -54,11 +55,15 @@ class RuntimeConfig(BaseSettings):
     anthropic_model_proposal_gen: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_PROPOSAL_GEN")
     anthropic_model_test_gen: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_TEST_GEN")
     anthropic_model_perf_reason: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_PERF_REASON")
+    openai_market_lanes_raw: str | None = Field(default=None, alias="ARBITER_OPENAI_MARKET_LANES")
+    anthropic_market_lanes_raw: str | None = Field(default="triage,bid_deep", alias="ARBITER_ANTHROPIC_MARKET_LANES")
 
     max_parallel_bidders: int = Field(default=8, alias="ARBITER_MAX_PARALLEL_BIDDERS")
     max_parallel_validators: int = Field(default=4, alias="ARBITER_MAX_PARALLEL_VALIDATORS")
     provider_request_timeout_seconds: float = Field(default=45.0, alias="ARBITER_PROVIDER_REQUEST_TIMEOUT_SECONDS")
-    proposal_generation_max_tokens: int = Field(default=8192, alias="ARBITER_PROPOSAL_GENERATION_MAX_TOKENS")
+    preview_request_timeout_seconds: float = Field(default=18.0, alias="ARBITER_PREVIEW_REQUEST_TIMEOUT_SECONDS")
+    proposal_request_timeout_seconds: float = Field(default=24.0, alias="ARBITER_PROPOSAL_REQUEST_TIMEOUT_SECONDS")
+    proposal_generation_max_tokens: int = Field(default=4096, alias="ARBITER_PROPOSAL_GENERATION_MAX_TOKENS")
     max_runtime_minutes: int = Field(default=10, alias="ARBITER_MAX_RUNTIME_MINUTES")
     max_file_churn: int = Field(default=8, alias="ARBITER_MAX_FILE_CHURN")
     max_recovery_rounds: int = Field(default=3, alias="ARBITER_MAX_RECOVERY_ROUNDS")
@@ -87,6 +92,16 @@ class RuntimeConfig(BaseSettings):
     @cached_property
     def default_provider(self) -> Literal["openai", "anthropic"]:
         return self.enabled_providers[0]
+
+    def market_lanes_for(self, provider: Literal["openai", "anthropic"]) -> list[str]:
+        if len(self.enabled_providers) <= 1:
+            return list(_MARKET_LANES)
+        raw = self.openai_market_lanes_raw if provider == "openai" else self.anthropic_market_lanes_raw
+        if raw:
+            parsed = [item.strip() for item in raw.split(",") if item.strip()]
+            ordered = [lane for lane in _MARKET_LANES if lane in parsed]
+            return ordered or list(_MARKET_LANES)
+        return list(_MARKET_LANES)
 
     @cached_property
     def model_lanes(self) -> dict[str, ModelLaneConfig]:

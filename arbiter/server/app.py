@@ -31,7 +31,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
         finally:
             service.close()
 
-    app = FastAPI(title="Arbiter Mission Control", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Helix Runtime", version="0.2.0", lifespan=lifespan)
     app.state.mission_service = service
     app.add_middleware(
         CORSMiddleware,
