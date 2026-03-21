@@ -879,7 +879,15 @@ class MissionRuntime:
                     if hasattr(self.strategy_backend, "scripted"):
                         evidence.append("sandbox:heuristic")
                     else:
-                        proposal, invocation = self.strategy_backend.generate_edit_proposal(task=task, bid=bid, mission_objective=self.spec.objective, candidate_files=files, failure_context=self.state.failure_context.details if self.state.failure_context else None, preview=True)
+                        proposal, invocation = self.strategy_backend.generate_edit_proposal(
+                            task=task,
+                            bid=bid,
+                            mission_objective=self.spec.objective,
+                            candidate_files=files,
+                            failure_context=self.state.failure_context.details if self.state.failure_context else None,
+                            preview=True,
+                            on_invocation=self._record_model_invocation,
+                        )
                         self._merge_usage(invocation.token_usage, invocation.cost_usage)
                         if invocation.error:
                             evidence.append("sandbox:error")

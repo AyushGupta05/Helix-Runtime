@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,18 +22,21 @@ class ReplayManager:
         self.replay_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
         self.mission_id = mission_id
+        self._lock = threading.RLock()
 
     def record(self, lane: str, prompt: dict[str, Any], response: dict[str, Any]) -> ReplayRecord:
         record = ReplayRecord(lane=lane, key=replay_key(prompt), prompt=prompt, response=response)
-        self.store.add_replay_record(mission_id=self.mission_id, lane=lane, replay_key=record.key, payload=record)
-        target = self.replay_dir / f"{record.key}.json"
-        target.write_text(record.model_dump_json(indent=2), encoding="utf-8")
+        with self._lock:
+            self.store.add_replay_record(mission_id=self.mission_id, lane=lane, replay_key=record.key, payload=record)
+            target = self.replay_dir / f"{record.key}.json"
+            target.write_text(record.model_dump_json(indent=2), encoding="utf-8")
         return record
 
     def load(self, prompt: dict[str, Any]) -> dict[str, Any] | None:
         key = replay_key(prompt)
         target = self.replay_dir / f"{key}.json"
-        if target.exists():
-            data = json.loads(target.read_text(encoding="utf-8"))
-            return data["response"]
+        with self._lock:
+            if target.exists():
+                data = json.loads(target.read_text(encoding="utf-8"))
+                return data["response"]
         return None

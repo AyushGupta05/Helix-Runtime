@@ -85,6 +85,28 @@ def test_generate_edit_proposal_returns_safe_empty_result_when_provider_generati
     assert invocation.error == "Provider proposal generation produced no viable candidate."
 
 
+def test_generate_edit_proposal_emits_invocation_callbacks_for_preview() -> None:
+    backend = make_provider_backend(providers=("anthropic",))
+    invocations: list[dict[str, object]] = []
+
+    proposal, invocation = backend.generate_edit_proposal(
+        task=_task(),
+        bid=_bid(provider="anthropic"),
+        mission_objective="Fix failing tests",
+        candidate_files=_candidate_files(),
+        preview=True,
+        on_invocation=lambda payload: invocations.append(payload),
+    )
+
+    assert proposal.files
+    assert invocation.provider == "anthropic"
+    assert any(item["status"] == "started" for item in invocations)
+    completed = [item for item in invocations if item["status"] == "completed"]
+    assert completed
+    assert completed[-1]["invocation_kind"] == "proposal_generation"
+    assert completed[-1]["lane"] == "proposal_gen.anthropic"
+
+
 def test_parse_edit_proposal_accepts_openai_response_items_payload() -> None:
     payload = json.dumps(
         [
