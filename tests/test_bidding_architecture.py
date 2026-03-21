@@ -26,6 +26,7 @@ from arbiter.core.contracts import (
     SuccessCriteria,
 )
 from arbiter.market.archetypes import ARCHETYPES
+from arbiter.market.scoring import hard_filter_reason
 from arbiter.mission.decomposer import GoalDecomposer
 from arbiter.mission.runner import start_mission
 from arbiter.sim.factory import BidGenerationBatch, SimulationFactory, VARIANTS
@@ -61,6 +62,13 @@ def _make_snapshot(**overrides) -> RepoSnapshot:
     )
     defaults.update(overrides)
     return RepoSnapshot(**defaults)
+
+
+def _make_spec():
+    return SimpleNamespace(
+        protected_paths=[],
+        stop_policy=SimpleNamespace(max_runtime_minutes=10, max_file_scope=8),
+    )
 
 
 def _mock_lane_config(model_id: str = "claude-sonnet-4-5") -> SimpleNamespace:
@@ -269,6 +277,80 @@ class TestBidGenerationBatch:
             assert bid.cost_usage is not None
             assert bid.usage_unavailable_reason is None
 
+    def test_provider_bid_parses_openai_response_items(self):
+        def wrapped_invoke(lane: str, prompt: dict) -> ModelInvocationResult:
+            return ModelInvocationResult(
+                content=json.dumps(
+                    [
+                        {"id": "rs_1", "summary": [], "type": "reasoning"},
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "strategy_summary": "Apply a narrow calculator fix.",
+                                    "exact_action": ["Edit calc.py", "Run targeted tests"],
+                                    "proposed_task_title": "Apply calculator fix",
+                                    "proposed_task_type": "bugfix",
+                                    "utility": 0.84,
+                                    "risk": 0.18,
+                                    "confidence": 0.9,
+                                    "estimated_runtime_seconds": 35,
+                                    "touched_files": ["calc.py"],
+                                }
+                            ),
+                        },
+                    ]
+                ),
+                provider="openai",
+                model_id="gpt-5.1-codex-mini",
+                lane=lane,
+                generation_mode=BidGenerationMode.PROVIDER_MODEL,
+                raw_usage={"usage_metadata": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}},
+                token_usage={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+                cost_usage={"usd": 0.001},
+                prompt_preview=prompt["user"],
+                response_preview="wrapped payload",
+                started_at="2026-01-01T00:00:00+00:00",
+                completed_at="2026-01-01T00:00:01+00:00",
+            )
+
+        mock_backend = _make_mock_backend()
+        mock_backend.router.invoke = wrapped_invoke
+
+        factory = SimulationFactory(
+            backend=mock_backend,
+            provider_pool=["openai"],
+        )
+        batch = factory.generate(_make_task(), _make_snapshot())
+
+        assert batch.bids
+        assert all(bid.strategy_summary == "Apply a narrow calculator fix." for bid in batch.bids)
+        assert all("Edit calc.py" in bid.exact_action for bid in batch.bids)
+        assert all(bid.proposed_task_type == "bugfix" for bid in batch.bids)
+
+    def test_hard_filter_rejects_task_type_mismatch(self):
+        task = _make_task(task_type=TaskType.BUGFIX)
+        mismatched_bid = SimulationFactory(
+            backend=_make_mock_backend(),
+            provider_pool=["anthropic"],
+        )._build_non_provider_role_variants(
+            task,
+            _make_snapshot(),
+            generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
+            reason="test",
+        )[0]
+        mismatched_bid.proposed_task_type = "localize"
+
+        reason = hard_filter_reason(
+            mismatched_bid,
+            task,
+            _make_spec(),
+            available_tools=set(task.allowed_tools),
+            failed_families=set(),
+        )
+
+        assert reason == "proposed_task_type_mismatch"
+
 
 class TestBidArchitectureInMissionRun:
     def test_scripted_backend_sets_fallback_policy(self, python_bug_repo: Path):
@@ -451,3 +533,43 @@ class TestProviderMissionPlanning:
         assert tasks[0].risk_level == 0.2
         assert tasks[0].runtime_class == "small"
         assert tasks[1].runtime_class == "medium"
+
+    def test_provider_planner_parses_openai_response_items(self):
+        decomposer = GoalDecomposer()
+        tasks, summary = decomposer._parse_provider_plan(
+            json.dumps(
+                [
+                    {"id": "rs_1", "summary": [], "type": "reasoning"},
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "summary": "Wrapped provider plan",
+                                "tasks": [
+                                    {
+                                        "title": "Localize the issue",
+                                        "task_type": "localize",
+                                        "requirement_level": "required",
+                                        "dependencies": [],
+                                        "candidate_files": ["calc.py"],
+                                        "validator_requirements": [],
+                                        "strategy_families": ["Safe"],
+                                        "acceptance_criteria": ["candidate files identified"],
+                                        "risk_level": 0.2,
+                                        "runtime_class": "small",
+                                        "search_depth": 2,
+                                        "monte_carlo_samples": 20,
+                                    }
+                                ],
+                            }
+                        ),
+                    },
+                ]
+            ),
+            snapshot=_make_snapshot(),
+            objective="Fix failing tests",
+        )
+
+        assert summary == "Wrapped provider plan"
+        assert tasks
+        assert tasks[0].task_type == TaskType.LOCALIZE

@@ -7,14 +7,16 @@ const STREAM_LIMIT = 200;
 
 const EVENT_PHASE_MAP = {
   "mission.started": "collect",
-  "repo.scan.completed": "decompose",
-  "task.created": "decompose",
-  "task.ready": "select_task",
-  "task.selected": "market",
-  "market.opened": "market",
-  "bid.generated": "market",
-  "bid.submitted": "market",
-  "bid.rejected": "market",
+  "repo.scan.completed": "strategize",
+  "strategy.landscape_generated": "strategize",
+  "strategy.market_opened": "strategize",
+  "strategy.objective_met": "strategize",
+  "task.created": "strategize",
+  "task.ready": "strategize",
+  "task.selected": "strategize",
+  "bid.generated": "strategize",
+  "bid.submitted": "strategize",
+  "bid.rejected": "strategize",
   "bid.won": "select",
   "standby.selected": "select",
   "simulation.rollout": "simulate",
@@ -29,11 +31,12 @@ const EVENT_PHASE_MAP = {
   "recovery.started": "recover",
   "recovery.round_opened": "recover",
   "recovery.completed": "recover",
-  "checkpoint.accepted": "select_task",
+  "checkpoint.accepted": "strategize",
   "checkpoint.reverted": "recover",
   "mission.finalized": "finalize",
   "mission.cancelled": "finalize",
-  "bidding.architecture_violation": "finalize"
+  "bidding.architecture_violation": "finalize",
+  "bidding.degraded_mode_entered": "strategize"
 };
 
 function appendBounded(items, nextItem, limit = STREAM_LIMIT, key = "id") {

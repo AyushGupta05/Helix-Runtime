@@ -97,9 +97,9 @@ describe("BidBoard", () => {
       />
     );
 
-    expect(screen.getByText(/Live Bidding Arena/i)).toBeInTheDocument();
+    expect(screen.getByText(/Strategy Market/i)).toBeInTheDocument();
     expect(screen.getByText(/Round 3/i)).toBeInTheDocument();
-    expect(screen.getByText(/Degraded bidding mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Degraded strategy mode/i)).toBeInTheDocument();
     expect(screen.getByText(/Provider lanes were unavailable/i)).toBeInTheDocument();
     expect(screen.getAllByText("Openai").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Mock").length).toBeGreaterThan(0);
@@ -107,12 +107,12 @@ describe("BidBoard", () => {
     expect(screen.getAllByText(/Safe \| Openai \| gpt-4\.1 \| Provider Model/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Fast \| System \| model unavailable \| Deterministic Fallback/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("WINNER")).toBeInTheDocument();
+    expect(screen.getByText("LEADING")).toBeInTheDocument();
     expect(screen.getByText("STANDBY")).toBeInTheDocument();
     expect(screen.getByText("REJECTED")).toBeInTheDocument();
-    expect(screen.getByText(/Current task spend/i)).toBeInTheDocument();
+    expect(screen.getByText(/Round spend/i)).toBeInTheDocument();
     expect(screen.getByText(/Mission spend/i)).toBeInTheDocument();
-    expect(screen.getByText(/Winner: Safe \| Openai \| gpt-4\.1 \| Provider Model/i)).toBeInTheDocument();
+    expect(screen.getByText(/Leading: Safe \| Openai \| gpt-4\.1 \| Provider Model/i)).toBeInTheDocument();
     expect(screen.getByText(/Standby: Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i)).toBeInTheDocument();
   });
 
@@ -131,9 +131,9 @@ describe("BidBoard", () => {
       />
     );
 
-    expect(screen.getByText(/Active task: T3/i)).toBeInTheDocument();
-    expect(screen.getByText(/Winner: Safe \| Openai \| gpt-4\.1 \| Provider Model/i)).toBeInTheDocument();
+    expect(screen.getByText(/Current move: T3/i)).toBeInTheDocument();
+    expect(screen.getByText(/Leading: Safe \| Openai \| gpt-4\.1 \| Provider Model/i)).toBeInTheDocument();
     expect(screen.getByText(/Standby: Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i)).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for bids on T3/i)).toBeInTheDocument();
+    expect(screen.getByText(/Strategies are forming to compete for the next mission move/i)).toBeInTheDocument();
   });
 });

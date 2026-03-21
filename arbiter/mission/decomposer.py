@@ -19,6 +19,7 @@ from arbiter.core.contracts import (
     TaskType,
     utc_now,
 )
+from arbiter.runtime.model_payloads import extract_plan_payload
 
 
 @dataclass
@@ -641,15 +642,9 @@ class GoalDecomposer:
 
     @staticmethod
     def _parse_json_payload(content: str) -> dict[str, Any]:
-        cleaned = content.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in cleaned:
-            chunks = cleaned.split("```")
-            cleaned = chunks[-2].replace("json", "", 1).strip() if len(chunks) >= 3 else cleaned
         try:
-            parsed = json.loads(cleaned)
-        except Exception:
+            parsed = extract_plan_payload(content)
+        except ValueError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
