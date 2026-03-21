@@ -62,6 +62,7 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     checkpoint_count = connection.execute("SELECT COUNT(*) FROM accepted_checkpoints").fetchone()[0]
     mission_checkpoint_count = connection.execute("SELECT COUNT(*) FROM mission_state_checkpoints").fetchone()[0]
     repo_checkpoint_count = connection.execute("SELECT COUNT(*) FROM repo_state_checkpoints").fetchone()[0]
+    langgraph_checkpoint_count = connection.execute("SELECT COUNT(*) FROM langgraph_checkpoints").fetchone()[0]
     view_count = connection.execute("SELECT COUNT(*) FROM mission_view_cache").fetchone()[0]
     invocation_count = connection.execute("SELECT COUNT(*) FROM model_invocations").fetchone()[0]
     trace_count = connection.execute("SELECT COUNT(*) FROM trace_entries").fetchone()[0]
@@ -72,6 +73,7 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     assert checkpoint_count >= 1
     assert mission_checkpoint_count >= 1
     assert repo_checkpoint_count >= 1
+    assert langgraph_checkpoint_count >= 1
     assert view_count == 1
     assert invocation_count >= 1
     assert trace_count >= 1

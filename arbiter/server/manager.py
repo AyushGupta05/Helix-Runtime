@@ -122,6 +122,8 @@ class MissionService:
                     self._active.thread.join(timeout=10.0)
                     if not self._active.thread.is_alive():
                         self._active = None
+                    elif self._current_run_state(resolved_repo, mission_id) == RunState.PAUSED.value:
+                        self._active = None
                 if self._active and self._active.thread.is_alive():
                     raise MissionConflictError("Only one active mission is supported per process in V1.")
             self._update_control(resolved_repo, mission_id, RunState.RUNNING.value, None, None)
@@ -223,6 +225,16 @@ class MissionService:
         migrate_legacy_mission(paths, mission_id)
         if not Path(paths.db_path).exists():
             raise MissionNotFoundError(mission_id)
+
+    def _current_run_state(self, repo_path: str, mission_id: str) -> str | None:
+        paths = build_mission_paths(repo_path, mission_id)
+        migrate_legacy_mission(paths, mission_id)
+        store = MissionStore(paths.db_path)
+        try:
+            control = store.fetch_control_state(mission_id)
+            return control["run_state"] if control else None
+        finally:
+            store.close()
 
     def _normalize_mission_state(self, repo_path: str, mission_id: str) -> None:
         with self._lock:

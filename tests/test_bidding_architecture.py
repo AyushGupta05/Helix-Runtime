@@ -26,8 +26,10 @@ from arbiter.core.contracts import (
     SuccessCriteria,
 )
 from arbiter.market.archetypes import ARCHETYPES
+from arbiter.mission.decomposer import GoalDecomposer
 from arbiter.mission.runner import start_mission
 from arbiter.sim.factory import BidGenerationBatch, SimulationFactory, VARIANTS
+from tests.fake_provider_backend import make_provider_backend
 
 NUM_ARCHETYPES = len(ARCHETYPES)
 NUM_VARIANTS = len(VARIANTS)
@@ -386,3 +388,18 @@ class TestFactoryArchetypeLaneMapping:
             assert len(arch_bids) == NUM_VARIANTS
             arch_variants = {b.mutation_kind for b in arch_bids}
             assert arch_variants == {"base", "narrow", "broad"}
+
+
+class TestProviderMissionPlanning:
+    def test_provider_planner_can_outscore_heuristic_graph(self):
+        decomposer = GoalDecomposer()
+        tasks = decomposer.decompose(
+            "Fix failing tests and improve reliability",
+            _make_snapshot(),
+            strategy_backend=make_provider_backend(),
+        )
+
+        assert tasks
+        assert decomposer.last_plan_source == "provider_plan"
+        assert any(task.search_depth >= 3 for task in tasks)
+        assert any(task.monte_carlo_samples >= 32 for task in tasks)

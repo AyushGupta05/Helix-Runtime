@@ -671,7 +671,7 @@ class MissionStore:
         return rows
 
     def _events_for_view(self, mission_id: str) -> list[dict[str, Any]]:
-        rows = self.connection.execute("SELECT * FROM events WHERE mission_id = ? ORDER BY id DESC LIMIT 200", (mission_id,)).fetchall()
+        rows = self.connection.execute("SELECT * FROM events WHERE mission_id = ? ORDER BY id DESC LIMIT 500", (mission_id,)).fetchall()
         rows.reverse()
         return [{"id": row["id"], "event_type": row["event_type"], "created_at": row["created_at"], "message": json.loads(row["payload_json"]).get("message", ""), "payload": json.loads(row["payload_json"]).get("payload", {})} for row in rows]
 
