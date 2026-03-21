@@ -7,7 +7,10 @@ from pathlib import Path
 import typer
 import uvicorn
 
+from arbiter.civic.runtime import CivicRuntime
 from arbiter.mission.runner import mission_status, resume_mission, start_mission
+from arbiter.repo.collector import RepoStateCollector
+from arbiter.runtime.config import load_runtime_config
 from arbiter.runtime.migrate import migrate_legacy_mission
 from arbiter.runtime.paths import build_mission_paths, resolve_repo_path
 from arbiter.runtime.store import MissionStore
@@ -15,7 +18,9 @@ from arbiter.server.app import create_app
 
 app = typer.Typer(add_completion=False)
 mission_app = typer.Typer(add_completion=False)
+civic_app = typer.Typer(add_completion=False)
 app.add_typer(mission_app, name="mission")
+app.add_typer(civic_app, name="civic")
 
 
 @mission_app.command("start")
@@ -24,6 +29,7 @@ def start(
     objective: str = typer.Option(..., "--objective"),
     constraints: list[str] = typer.Option(None, "--constraint"),
     preferences: list[str] = typer.Option(None, "--preference"),
+    requested_skills: list[str] = typer.Option(None, "--requested-skill"),
     max_runtime: int = typer.Option(10, "--max-runtime"),
     benchmark_requirement: str | None = typer.Option(None, "--benchmark-requirement"),
     protected_paths: list[str] = typer.Option(None, "--protected-path"),
@@ -34,12 +40,62 @@ def start(
         objective=objective,
         constraints=constraints or [],
         preferences=preferences or [],
+        requested_skills=requested_skills or [],
         max_runtime=max_runtime,
         benchmark_requirement=benchmark_requirement,
         protected_paths=protected_paths or [],
         public_api_surface=public_api_surface or [],
     )
     print(json.dumps({"mission_id": state.mission.mission_id, "outcome": state.outcome.value if state.outcome else None, "branch": state.summary.branch_name}, indent=2))
+
+
+@civic_app.command("check")
+def civic_check(
+    repo: str | None = typer.Option(None, "--repo"),
+    objective: str | None = typer.Option(None, "--objective"),
+) -> None:
+    config = load_runtime_config()
+    runtime = CivicRuntime(config)
+    repo_snapshot = None
+    if repo:
+        repo_path = resolve_repo_path(repo)
+        repo_snapshot = RepoStateCollector(str(repo_path)).collect(run_commands=False, objective=objective)
+    refreshed = runtime.refresh_capability_state(repo_snapshot, force=True)
+    payload = {
+        "civic_connection": refreshed["connection"].model_dump(mode="json"),
+        "civic_capabilities": [capability.model_dump(mode="json") for capability in refreshed["capabilities"]],
+        "available_skills": refreshed["available_skills"],
+        "skill_health": {
+            key: value.model_dump(mode="json")
+            for key, value in refreshed["skill_health"].items()
+        },
+    }
+    if repo_snapshot is not None:
+        payload["repo_insights"] = {
+            "remote_provider": repo_snapshot.remote_provider,
+            "remote_slug": repo_snapshot.remote_slug,
+            "branch": repo_snapshot.branch,
+            "tracking_branch": repo_snapshot.tracking_branch,
+            "objective_hints": repo_snapshot.objective_hints,
+        }
+        if repo_snapshot.remote_provider == "github" and "github_context" in refreshed["available_skills"]:
+            preflight_payload = {
+                "repo": repo_snapshot.remote_slug,
+                "branch": repo_snapshot.branch,
+            }
+            pr_numbers = repo_snapshot.objective_hints.get("pr_numbers", [])
+            if pr_numbers:
+                preflight_payload["pr_number"] = pr_numbers[0]
+            preflight = runtime.preflight_action(
+                mission_id="civic-check",
+                task_id="health",
+                bid_id=None,
+                action_type="fetch_ci_status",
+                payload=preflight_payload,
+                skill_id="github_context",
+            )
+            payload["preflight"] = preflight.model_dump(mode="json")
+    print(json.dumps(payload, indent=2))
 
 
 @mission_app.command("resume")

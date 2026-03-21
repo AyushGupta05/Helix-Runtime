@@ -36,7 +36,22 @@ const EVENT_PHASE_MAP = {
   "mission.finalized": "finalize",
   "mission.cancelled": "finalize",
   "bidding.architecture_violation": "finalize",
-  "bidding.degraded_mode_entered": "strategize"
+  "bidding.degraded_mode_entered": "strategize",
+  "civic.connection.checked": "collect",
+  "civic.capabilities.refreshed": "collect",
+  "civic.skills.derived": "collect",
+  "civic.bid.preflighted": "strategize",
+  "civic.bid.preflight_allowed": "strategize",
+  "civic.bid.preflight_blocked": "strategize",
+  "civic.action.preflight_allowed": "execute",
+  "civic.action.preflight_blocked": "recover",
+  "civic.action.executed": "execute",
+  "civic.action.blocked": "recover",
+  "civic.action.failed": "recover",
+  "civic.action.revoked": "recover",
+  "civic.envelope.revoked": "recover",
+  "civic.skill.executed": "collect",
+  "civic.skill.github_context": "collect"
 };
 
 function appendBounded(items, nextItem, limit = STREAM_LIMIT, key = "id") {
@@ -67,6 +82,54 @@ function replaceTaskStatus(tasks, taskId, nextStatus, extra = {}) {
       ...extra
     }
   ];
+}
+
+function appendSkillList(current, nextSkills = []) {
+  const merged = [...(current ?? []), ...(nextSkills ?? [])].filter(Boolean);
+  return [...new Set(merged)];
+}
+
+function mergeCivicSnapshot(snapshot, payload = {}) {
+  return {
+    ...(snapshot ?? {}),
+    ...(payload.civic_connection ? { civic_connection: payload.civic_connection } : {}),
+    ...(payload.civic_capabilities ? { civic_capabilities: payload.civic_capabilities } : {}),
+    available_skills: appendSkillList(snapshot?.available_skills, payload.available_skills),
+    skill_health: {
+      ...(snapshot?.skill_health ?? {}),
+      ...(payload.skill_health ?? {})
+    },
+    skill_outputs: {
+      ...(snapshot?.skill_outputs ?? {}),
+      ...(payload.skill_outputs ?? {})
+    },
+    governed_bid_envelopes: payload.governed_bid_envelopes ?? snapshot?.governed_bid_envelopes ?? [],
+    recent_civic_actions: appendBounded(
+      snapshot?.recent_civic_actions ?? [],
+      payload.recent_civic_action ?? payload.civic_action ?? payload.action ?? payload,
+      STREAM_LIMIT,
+      "audit_id"
+    )
+  };
+}
+
+function updateBidCivicState(bids, payload = {}) {
+  if (!payload.bid_id) {
+    return bids;
+  }
+  return bids.map((bid) =>
+    bid.bid_id === payload.bid_id
+      ? {
+          ...bid,
+          governed_envelope: payload.governed_envelope ?? bid.governed_envelope ?? null,
+          civic_preflight: payload.civic_preflight ?? bid.civic_preflight ?? null,
+          status:
+            payload.civic_preflight?.decision === "blocked" && !bid.rejection_reason
+              ? "rejected"
+              : bid.status
+        }
+      : bid
+  );
 }
 
 function upsertTask(tasks, payload, nextStatus) {
@@ -107,6 +170,15 @@ export function normalizeIncomingBid(event) {
     rollout_level: payload.rollout_level ?? null,
     search_summary: payload.search_summary ?? null,
     policy_state: payload.policy_state ?? null,
+    required_skills: payload.required_skills ?? [],
+    optional_skills: payload.optional_skills ?? [],
+    governed_action_plan: payload.governed_action_plan ?? null,
+    external_evidence_plan: payload.external_evidence_plan ?? null,
+    capability_reliance_score: payload.capability_reliance_score ?? null,
+    policy_friction_score: payload.policy_friction_score ?? null,
+    revocation_risk_score: payload.revocation_risk_score ?? null,
+    governed_envelope: payload.governed_envelope ?? null,
+    civic_preflight: payload.civic_preflight ?? null,
     token_usage: payload.token_usage ?? null,
     cost_usage: payload.cost_usage ?? null,
     usage_unavailable_reason: payload.usage_unavailable_reason ?? null,
@@ -145,6 +217,24 @@ function mergeBiddingState(snapshot, event) {
       payload.active_provider_bids ?? snapshot?.active_provider_bids ?? 0,
     active_fallback_bids:
       payload.active_fallback_bids ?? snapshot?.active_fallback_bids ?? 0
+  };
+}
+
+function civicActionPayload(event) {
+  const payload = event.payload ?? {};
+  return {
+    audit_id: payload.audit_id ?? payload.id ?? `${event.event_type}-${event.id ?? Date.now()}`,
+    event_type: event.event_type,
+    title: payload.title ?? event.event_type,
+    message: payload.message ?? event.message,
+    status: payload.status ?? (String(event.event_type).includes("blocked") ? "blocked" : "captured"),
+    created_at: payload.created_at ?? event.created_at,
+    task_id: payload.task_id ?? null,
+    bid_id: payload.bid_id ?? null,
+    skill: payload.skill ?? null,
+    tool: payload.tool ?? payload.tool_name ?? null,
+    reason: payload.reason ?? payload.details ?? null,
+    payload
   };
 }
 
@@ -256,6 +346,38 @@ export function mergeMissionEvent(snapshot, event) {
   };
 
   switch (event.event_type) {
+    case "civic.connection.checked":
+    case "civic.capabilities.refreshed":
+    case "civic.skills.derived":
+      return {
+        ...next,
+        ...mergeCivicSnapshot(snapshot, payload)
+      };
+    case "civic.bid.preflighted":
+    case "civic.bid.preflight_allowed":
+    case "civic.bid.preflight_blocked":
+      return {
+        ...next,
+        ...mergeCivicSnapshot(snapshot, payload),
+        bids: updateBidCivicState(snapshot.bids ?? [], payload)
+      };
+    case "civic.action.preflight_allowed":
+    case "civic.action.preflight_blocked":
+    case "civic.action.executed":
+    case "civic.action.blocked":
+    case "civic.action.failed":
+    case "civic.action.revoked":
+    case "civic.envelope.revoked":
+    case "civic.skill.executed":
+    case "civic.skill.github_context":
+      return {
+        ...next,
+        ...mergeCivicSnapshot(snapshot, {
+          ...payload,
+          recent_civic_action: civicActionPayload(event)
+        }),
+        bids: updateBidCivicState(snapshot.bids ?? [], payload)
+      };
     case "mission.paused":
       return { ...next, run_state: "paused" };
     case "mission.resumed":
@@ -278,7 +400,9 @@ export function mergeMissionEvent(snapshot, event) {
           capabilities: {
             ...(snapshot.repo_snapshot?.capabilities ?? {}),
             runtime: payload.runtime ?? snapshot.repo_snapshot?.capabilities?.runtime ?? "unknown",
-            risky_paths: payload.risky_paths ?? snapshot.repo_snapshot?.capabilities?.risky_paths ?? []
+            risky_paths: payload.risky_paths ?? snapshot.repo_snapshot?.capabilities?.risky_paths ?? [],
+            protected_interfaces:
+              payload.protected_interfaces ?? snapshot.repo_snapshot?.capabilities?.protected_interfaces ?? []
           }
         }
       };
@@ -340,7 +464,8 @@ export function mergeMissionEvent(snapshot, event) {
                 rejection_reason: payload.reason ?? bid.rejection_reason,
                 selected: false,
                 standby: false,
-                status: "rejected"
+                status: "rejected",
+                governed_envelope: payload.governed_envelope ?? bid.governed_envelope ?? null
               }
             : bid
         )
@@ -350,7 +475,14 @@ export function mergeMissionEvent(snapshot, event) {
         ...next,
         winner_bid_id: payload.bid_id ?? snapshot.winner_bid_id ?? null,
         bids: ensureBid(snapshot.bids ?? [], event).map((bid) =>
-          bid.bid_id === payload.bid_id ? { ...bid, selected: true, status: "winner" } : { ...bid, selected: false }
+          bid.bid_id === payload.bid_id
+            ? {
+                ...bid,
+                selected: true,
+                status: "winner",
+                governed_envelope: payload.governed_envelope ?? bid.governed_envelope ?? null
+              }
+            : { ...bid, selected: false }
         )
       };
     case "standby.selected":
@@ -358,7 +490,14 @@ export function mergeMissionEvent(snapshot, event) {
         ...next,
         standby_bid_id: payload.bid_id ?? snapshot.standby_bid_id ?? null,
         bids: ensureBid(snapshot.bids ?? [], event).map((bid) =>
-          bid.bid_id === payload.bid_id ? { ...bid, standby: true, status: "standby" } : bid
+          bid.bid_id === payload.bid_id
+            ? {
+                ...bid,
+                standby: true,
+                status: "standby",
+                governed_envelope: payload.governed_envelope ?? bid.governed_envelope ?? null
+              }
+            : bid
         )
       };
     case "standby.promoted":
@@ -534,7 +673,14 @@ export function reconcileMissionSnapshot(current, incoming) {
     usage_summary: incoming.usage_summary ?? current.usage_summary ?? {},
     validation_report: incoming.validation_report ?? current.validation_report ?? null,
     failure_context: incoming.failure_context ?? current.failure_context ?? null,
-    worktree_state: incoming.worktree_state ?? current.worktree_state ?? {}
+    worktree_state: incoming.worktree_state ?? current.worktree_state ?? {},
+    civic_connection: incoming.civic_connection ?? current.civic_connection ?? null,
+    civic_capabilities: incoming.civic_capabilities ?? current.civic_capabilities ?? null,
+    available_skills: incoming.available_skills ?? current.available_skills ?? [],
+    skill_health: incoming.skill_health ?? current.skill_health ?? {},
+    skill_outputs: incoming.skill_outputs ?? current.skill_outputs ?? {},
+    governed_bid_envelopes: incoming.governed_bid_envelopes ?? current.governed_bid_envelopes ?? [],
+    recent_civic_actions: incoming.recent_civic_actions ?? current.recent_civic_actions ?? []
   };
 }
 

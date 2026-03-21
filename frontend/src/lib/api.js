@@ -38,7 +38,15 @@ const EVENT_TYPES = [
   "recovery.completed",
   "recovery.round_opened",
   "checkpoint.accepted",
-  "checkpoint.reverted"
+  "checkpoint.reverted",
+  "civic.connection.checked",
+  "civic.capabilities.refreshed",
+  "civic.skills.derived",
+  "civic.bid.preflighted",
+  "civic.action.executed",
+  "civic.action.blocked",
+  "civic.action.revoked",
+  "civic.skill.executed"
 ];
 
 async function apiRequest(path, options = {}) {
@@ -139,6 +147,10 @@ export function getMissionDiff(missionId, repo) {
 
 export function getMissionUsage(missionId, repo) {
   return apiRequest(withRepo(`/api/missions/${missionId}/usage`, repo));
+}
+
+export function getCivicHealth() {
+  return apiRequest("/api/civic/health");
 }
 
 export { EVENT_TYPES };

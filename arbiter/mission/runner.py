@@ -13,9 +13,12 @@ from arbiter.core.contracts import (
     ActionIntent,
     ActivePhase,
     ArbiterState,
+    Bid,
     BidGenerationMode,
     BidStatus,
     BiddingState,
+    GovernedActionRecord,
+    GovernedBidEnvelope,
     ExecutionStep,
     FailureContext,
     MissionControlState,
@@ -169,6 +172,388 @@ class MissionRuntime:
             return self.strategy_backend.market_generation_mode()
         return BidGenerationMode.DETERMINISTIC_FALLBACK
 
+    def _required_skill_set(self) -> set[str]:
+        return {*(self.spec.requested_skills or []), *self.config.civic_required_skills}
+
+    def _should_engage_civic(self) -> bool:
+        if self.spec.requested_skills or self.config.civic_required or self.config.civic_required_skills:
+            return True
+        if not self.state.repo_snapshot:
+            return False
+        if self.state.repo_snapshot.remote_provider == "github":
+            return True
+        return bool(self.state.repo_snapshot.objective_hints.get("has_github_reference"))
+
+    def _record_audit(self, audit) -> None:
+        self.state.last_civic_audit = audit
+        self.state.summary.audit_summary[audit.audit_id] = audit.model_dump(mode="json")
+        if audit.audit_id not in self.state.summary.civic_audit_ids:
+            self.state.summary.civic_audit_ids.append(audit.audit_id)
+
+    def _save_governed_bid_envelope(self, envelope: GovernedBidEnvelope) -> None:
+        self.store.save_governed_bid_envelope(
+            mission_id=self.spec.mission_id,
+            envelope=envelope,
+            envelope_id=envelope.envelope_id,
+            task_id=envelope.task_id,
+            bid_id=envelope.bid_id,
+            status=envelope.status,
+            created_at=envelope.created_at.isoformat(),
+        )
+
+    def _save_governed_action_record(self, record: GovernedActionRecord) -> None:
+        self.store.save_governed_action_record(
+            mission_id=self.spec.mission_id,
+            record=record,
+            action_id=record.action_id,
+            task_id=record.task_id,
+            bid_id=record.bid_id,
+            action_type=record.action_type,
+            status=record.status,
+            created_at=record.created_at.isoformat(),
+        )
+
+    def _register_governed_action(self, record: GovernedActionRecord, *, refresh_view: bool = False) -> None:
+        audit = self.civic.record_audit(record)
+        record.audit_id = audit.audit_id
+        self._record_audit(audit)
+        self.state.recent_civic_actions.append(record)
+        self.state.recent_civic_actions = self.state.recent_civic_actions[-20:]
+        self._save_governed_action_record(record)
+        self.emit(
+            f"civic.action.{record.status}",
+            f"Civic {record.action_type} {record.status.replace('_', ' ')}.",
+            task_id=record.task_id,
+            bid_id=record.bid_id,
+            action_type=record.action_type,
+            skill_id=record.skill_id,
+            envelope_id=record.envelope_id,
+            tool_name=record.tool_name,
+            policy_state=record.policy_state.value,
+            reasoning=record.reasoning,
+            audit_id=record.audit_id,
+            refresh_view=refresh_view,
+        )
+        self.trace(
+            f"civic.action.{record.status}",
+            "Governed action",
+            f"{record.action_type} {record.status.replace('_', ' ')}.",
+            task_id=record.task_id,
+            bid_id=record.bid_id,
+            status="danger" if record.status in {"preflight_blocked", "failed", "revoked", "unavailable"} else "info",
+            refresh_view=refresh_view,
+            skill_id=record.skill_id,
+            envelope_id=record.envelope_id,
+            tool_name=record.tool_name,
+            policy_state=record.policy_state.value,
+            reasoning=record.reasoning,
+            audit_id=record.audit_id,
+        )
+
+    @staticmethod
+    def _freshness_score(output: dict | None) -> float:
+        if not output:
+            return 0.5
+        freshness = output.get("freshness") or {}
+        age_seconds = freshness.get("age_seconds")
+        if age_seconds is None:
+            return 1.0 if freshness else 0.75
+        try:
+            age = float(age_seconds)
+        except (TypeError, ValueError):
+            return 0.75
+        if age <= 300:
+            return 1.0
+        if age <= 3600:
+            return 0.85
+        if age <= 21600:
+            return 0.65
+        return 0.45
+
+    def _capability_simulation_context(self, bid: Bid) -> dict[str, float]:
+        skill_ids = list(dict.fromkeys([*bid.required_skills, *bid.optional_skills]))
+        if not skill_ids:
+            return {
+                "capability_availability_probability": 1.0,
+                "policy_friction_cost": 0.0,
+                "revocation_likelihood": 0.0,
+                "evidence_quality_impact": 0.0,
+                "freshness_decay": 1.0,
+                "guardrail_narrowing_effect": 0.0,
+            }
+        available_count = sum(1 for skill_id in skill_ids if self.state.skill_health.get(skill_id) and self.state.skill_health[skill_id].available)
+        capability_availability = available_count / max(1, len(skill_ids))
+        outputs = [self.state.skill_outputs.get(skill_id) for skill_id in skill_ids if self.state.skill_outputs.get(skill_id)]
+        evidence_quality = sum(float(output.get("confidence", 0.5)) for output in outputs) / max(1, len(outputs))
+        freshness = sum(self._freshness_score(output) for output in outputs) / max(1, len(outputs))
+        envelope = self.state.governed_bid_envelopes.get(bid.bid_id)
+        allowed_actions = len(envelope.allowed_actions) if envelope else len(bid.governed_action_plan)
+        planned_actions = max(1, len(bid.governed_action_plan))
+        guardrail_narrowing = max(0.0, 1.0 - (allowed_actions / planned_actions))
+        return {
+            "capability_availability_probability": round(capability_availability, 4),
+            "policy_friction_cost": round(float(bid.policy_friction_score or 0.0), 4),
+            "revocation_likelihood": round(float(bid.revocation_risk_score or 0.0), 4),
+            "evidence_quality_impact": round(evidence_quality, 4),
+            "freshness_decay": round(freshness, 4),
+            "guardrail_narrowing_effect": round(guardrail_narrowing, 4),
+        }
+
+    def _refresh_civic_capability_plane(self, reason: str, *, force: bool = True, refresh_view: bool = False) -> bool:
+        if not self._should_engage_civic():
+            self.state.civic_capabilities = []
+            self.state.available_skills = []
+            self.state.skill_health = {}
+            self.state.skill_outputs = {}
+            return True
+        previous_status = self.state.civic_connection.status
+        previous_skills = set(self.state.available_skills)
+        refreshed = self.civic.refresh_capability_state(self.state.repo_snapshot, force=force)
+        self.state.civic_connection = refreshed["connection"]
+        self.state.civic_capabilities = refreshed["capabilities"]
+        self.state.available_skills = refreshed["available_skills"]
+        self.state.skill_health = refreshed["skill_health"]
+        if previous_status != self.state.civic_connection.status:
+            self.emit(
+                "civic.connection.checked",
+                "Civic connection state refreshed.",
+                reason=reason,
+                civic_connection=self.state.civic_connection.model_dump(mode="json"),
+                refresh_view=refresh_view,
+            )
+            self.trace(
+                "civic.connection.checked",
+                "Civic connection refreshed",
+                self.state.civic_connection.message or f"Civic status is {self.state.civic_connection.status}.",
+                status="danger" if self.state.civic_connection.status == "unavailable" else "info",
+                refresh_view=refresh_view,
+                reason=reason,
+                civic_connection=self.state.civic_connection.model_dump(mode="json"),
+            )
+        if previous_skills != set(self.state.available_skills):
+            self.emit(
+                "civic.skills.derived",
+                "Civic-derived skill set refreshed.",
+                reason=reason,
+                available_skills=self.state.available_skills,
+                skill_health={key: value.model_dump(mode="json") for key, value in self.state.skill_health.items()},
+                refresh_view=refresh_view,
+            )
+            self.trace(
+                "civic.skills.derived",
+                "Civic skills refreshed",
+                f"Available skills: {', '.join(self.state.available_skills) or 'none'}.",
+                status="info",
+                refresh_view=refresh_view,
+                reason=reason,
+                available_skills=self.state.available_skills,
+            )
+        self._reconcile_governed_envelopes(refresh_view=refresh_view)
+        missing_requested = [skill for skill in self.spec.requested_skills if skill not in self.state.available_skills]
+        if missing_requested:
+            self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
+            self.state.governance.stop_reason = f"requested_skill_unavailable:{','.join(missing_requested)}"
+            return False
+        missing_required = [skill for skill in self._required_skill_set() if skill not in self.state.available_skills]
+        if self.config.civic_required and (self.state.civic_connection.status == "unavailable" or missing_required):
+            self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
+            self.state.governance.stop_reason = (
+                "civic_connection_unavailable"
+                if self.state.civic_connection.status == "unavailable"
+                else f"missing_required_skills:{','.join(missing_required)}"
+            )
+            return False
+        return True
+
+    def _reconcile_governed_envelopes(self, *, refresh_view: bool = False) -> None:
+        for bid_id, envelope in list(self.state.governed_bid_envelopes.items()):
+            if envelope.status != "approved":
+                continue
+            bid = next((item for item in self.state.active_bids if item.bid_id == bid_id), None)
+            if bid is None:
+                continue
+            if any(skill not in self.state.available_skills for skill in bid.required_skills):
+                envelope.status = "revoked"
+                envelope.revoked_at = utc_now()
+                envelope.policy_state = PolicyState.BLOCKED
+                envelope.reasoning.append("Required governed skill became unavailable during the mission.")
+                self._save_governed_bid_envelope(envelope)
+                self.emit(
+                    "civic.envelope.revoked",
+                    f"Governed envelope revoked for {bid_id}.",
+                    bid_id=bid_id,
+                    task_id=envelope.task_id,
+                    envelope_id=envelope.envelope_id,
+                    reason=envelope.reasoning[-1],
+                    refresh_view=refresh_view,
+                )
+                self.trace(
+                    "civic.envelope.revoked",
+                    "Governed envelope revoked",
+                    envelope.reasoning[-1],
+                    task_id=envelope.task_id,
+                    bid_id=bid_id,
+                    status="warning",
+                    envelope_id=envelope.envelope_id,
+                    refresh_view=refresh_view,
+                )
+
+    def _github_skill_confidence(self, records: list[GovernedActionRecord]) -> float:
+        if not records:
+            return 0.0
+        successes = sum(1 for record in records if record.status == "executed")
+        return round(successes / len(records), 3)
+
+    def _enrich_github_context(self) -> None:
+        if "github_context" not in self.state.available_skills or self.state.repo_snapshot is None:
+            return
+        repo = self.state.repo_snapshot
+        pr_numbers = list(repo.objective_hints.get("pr_numbers", []))
+        actions: list[tuple[str, dict]] = [
+            (
+                "fetch_ci_status",
+                {
+                    "repo": repo.remote_slug,
+                    "branch": repo.branch,
+                    "tracking_branch": repo.tracking_branch,
+                    **({"pr_number": pr_numbers[0]} if pr_numbers else {}),
+                },
+            )
+        ]
+        for pr_number in pr_numbers[:1]:
+            actions.append(("open_pr_metadata", {"repo": repo.remote_slug, "pr_number": pr_number}))
+        for issue_number in repo.objective_hints.get("issue_numbers", [])[:3]:
+            actions.append(("open_issue_metadata", {"repo": repo.remote_slug, "issue_number": issue_number}))
+        for discussion_number in repo.objective_hints.get("discussion_numbers", [])[:1]:
+            actions.append(("fetch_discussion_context", {"repo": repo.remote_slug, "discussion_number": discussion_number}))
+        successful: dict[str, list[dict]] = {}
+        records: list[GovernedActionRecord] = []
+        for action_type, payload in actions:
+            result = self.civic.execute_governed_action(
+                mission_id=self.spec.mission_id,
+                task_id=self.state.active_task_id or "collect",
+                bid_id=None,
+                action_type=action_type,
+                payload=payload,
+                skill_id="github_context",
+            )
+            records.append(result.record)
+            self._register_governed_action(result.record, refresh_view=False)
+            if result.success:
+                successful.setdefault(action_type, []).append(result.result)
+        if not records:
+            return
+        ci_result = (successful.get("fetch_ci_status") or [{}])[0]
+        ci_summary = ci_result.get("summary") or ci_result.get("status") or ci_result.get("conclusion")
+        failing_checks = ci_result.get("failing_checks") or ci_result.get("failed_checks") or ci_result.get("checks") or []
+        pr_result = (successful.get("open_pr_metadata") or [None])[0]
+        issue_results = successful.get("open_issue_metadata") or []
+        discussion_result = (successful.get("fetch_discussion_context") or [None])[0]
+        output = {
+            "repo": repo.remote_slug,
+            "branch": repo.branch,
+            "pr": pr_result,
+            "ci_summary": ci_summary,
+            "failing_checks": failing_checks,
+            "issues": issue_results,
+            "discussion": discussion_result,
+            "provenance": {
+                "source": "civic",
+                "toolkit_id": self.config.civic_toolkit_id,
+            },
+            "audit_ids": [record.audit_id for record in records if record.audit_id],
+            "freshness": {
+                "checked_at": utc_now().isoformat(),
+                "age_seconds": 0,
+            },
+            "confidence": self._github_skill_confidence(records),
+        }
+        self.state.skill_outputs["github_context"] = output
+        if ci_summary:
+            self.state.repo_snapshot.failure_signals.append(f"Civic CI summary: {ci_summary}")
+        if failing_checks:
+            self.state.repo_snapshot.failure_signals.append(f"Civic failing checks: {', '.join(map(str, failing_checks[:5]))}")
+        self.trace(
+            "civic.skill.github_context",
+            "GitHub context enriched",
+            "Collected governed GitHub context before strategy generation.",
+            status="info",
+            refresh_view=True,
+            skill_output=output,
+        )
+
+    @staticmethod
+    def _civic_rejection_reason(envelope: GovernedBidEnvelope) -> str:
+        joined = " ".join(envelope.reasoning).lower()
+        if "missing required skills" in joined:
+            return "missing_skill"
+        if "connection is unavailable" in joined:
+            return "civic_connection_unavailable"
+        if "missing governed actions" in joined:
+            return "civic_tool_denied"
+        if "budget" in joined:
+            return "civic_budget_exceeded"
+        return "civic_policy_block"
+
+    def _preflight_governed_bids(self, task: TaskNode) -> None:
+        candidates = [
+            bid
+            for bid in sorted(self.state.active_bids, key=lambda item: item.score or -999, reverse=True)
+            if bid.required_skills or bid.optional_skills or bid.governed_action_plan or bid.external_evidence_plan
+        ][:3]
+        for bid in candidates:
+            envelope = self.civic.preflight_bid(
+                mission_id=self.spec.mission_id,
+                task_id=task.task_id,
+                bid_id=bid.bid_id,
+                required_skills=bid.required_skills,
+                optional_skills=bid.optional_skills,
+                governed_action_plan=bid.governed_action_plan,
+                estimated_runtime_seconds=bid.estimated_runtime_seconds,
+                repo_snapshot=self.state.repo_snapshot,
+            )
+            bid.active_envelope_id = envelope.envelope_id
+            self.state.governed_bid_envelopes[bid.bid_id] = envelope
+            self._save_governed_bid_envelope(envelope)
+            if envelope.status != "approved":
+                bid.policy_friction_score = max(bid.policy_friction_score, 0.65)
+                if bid.required_skills:
+                    bid.rejection_reason = self._civic_rejection_reason(envelope)
+                    bid.status = BidStatus.REJECTED
+                    self._save_bid(bid, self.state.active_bid_round)
+                    self.emit(
+                        "bid.rejected",
+                        f"Strategy {bid.bid_id} rejected by Civic preflight.",
+                        bid_id=bid.bid_id,
+                        task_id=task.task_id,
+                        reason=bid.rejection_reason,
+                        envelope_id=envelope.envelope_id,
+                        required_skills=bid.required_skills,
+                        refresh_view=True,
+                    )
+                    self.trace(
+                        "civic.bid.preflight_blocked",
+                        "Civic preflight blocked bid",
+                        f"{bid.bid_id} was blocked by Civic preflight.",
+                        task_id=task.task_id,
+                        bid_id=bid.bid_id,
+                        status="danger",
+                        reason=bid.rejection_reason,
+                        envelope=envelope.model_dump(mode="json"),
+                        refresh_view=True,
+                    )
+            else:
+                bid.policy_friction_score = max(0.05, bid.policy_friction_score)
+                self.trace(
+                    "civic.bid.preflight_allowed",
+                    "Civic preflight admitted bid",
+                    f"{bid.bid_id} passed Civic preflight.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    status="info",
+                    envelope=envelope.model_dump(mode="json"),
+                )
+
     def _update_bidding_state(self, *, generation_mode: BidGenerationMode, warning: str | None = None, architecture_violation: str | None = None) -> None:
         self.state.bidding_state.generation_mode = generation_mode
         self.state.bidding_state.degraded = generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK
@@ -194,7 +579,7 @@ class MissionRuntime:
 
     def _restore_runtime_context(self) -> None:
         if self.state.repo_snapshot is None and self.state.active_phase not in {ActivePhase.IDLE, ActivePhase.COLLECT}:
-            self.state.repo_snapshot = self.collector.collect(run_commands=False)
+            self.state.repo_snapshot = self.collector.collect(run_commands=False, objective=self.spec.objective)
         # Map legacy phases to strategize
         if self.state.active_phase in {ActivePhase.DECOMPOSE, ActivePhase.SELECT_TASK, ActivePhase.MARKET}:
             self.state.active_phase = ActivePhase.STRATEGIZE
@@ -369,6 +754,11 @@ class MissionRuntime:
             simulation_summary=self.state.simulation_summary,
             worktree_state=self.state.worktree_state,
             bidding_state=self.state.bidding_state.model_dump(mode="json"),
+            civic_connection=self.state.civic_connection.model_dump(mode="json"),
+            civic_capabilities=[capability.model_dump(mode="json") for capability in self.state.civic_capabilities],
+            available_skills=list(self.state.available_skills),
+            skill_health={key: value.model_dump(mode="json") for key, value in self.state.skill_health.items()},
+            skill_outputs=self.state.skill_outputs,
             latest_validation_task_id=self.state.validation_report.task_id if self.state.validation_report else None,
             latest_failure_task_id=self.state.failure_context.task_id if self.state.failure_context else None,
             accepted_checkpoint_id=self.state.accepted_checkpoint.checkpoint_id if self.state.accepted_checkpoint else None,
@@ -559,6 +949,10 @@ class MissionRuntime:
     def _run_workflow_node(self, workflow_state: dict, phase: ActivePhase, handler_name: str) -> dict:
         self._restore_from_workflow_state(workflow_state)
         self._cooperate()
+        if phase != ActivePhase.COLLECT and self.state.repo_snapshot is not None:
+            if not self._refresh_civic_capability_plane(f"workflow:{phase.value}", refresh_view=True):
+                self._sync_state("running")
+                return self._workflow_payload(ActivePhase.FINALIZE.value)
         previous_phase = self.state.active_phase
         self._emit_phase_change(previous_phase, phase)
         self.state.active_phase = phase
@@ -605,6 +999,7 @@ class MissionRuntime:
             self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
             self.state.governance.stop_reason = str(exc)
             self.state.control = MissionControlState(run_state=RunState.FINALIZED, reason=str(exc))
+            self._sync_state("finalized")
             self.emit("mission.cancelled", "Mission cancelled.", reason=str(exc), refresh_view=True)
             return self.state
         finally:
@@ -612,7 +1007,7 @@ class MissionRuntime:
             self._sync_state("finalized" if self.state.control.run_state == RunState.FINALIZED else self.state.control.run_state.value)
 
     def node_collect(self) -> dict:
-        self.state.repo_snapshot = self.collector.collect(run_commands=False)
+        self.state.repo_snapshot = self.collector.collect(run_commands=False, objective=self.spec.objective)
         repo_decision = self.governance.evaluate_repo(self.state.repo_snapshot, self.spec)
         self.state.governance.last_decision = repo_decision
         self.state.governance.current_risk_score = repo_decision.risk_score
@@ -630,6 +1025,10 @@ class MissionRuntime:
             baseline_lint=len(self.state.repo_snapshot.initial_lint_results),
             baseline_static=len(self.state.repo_snapshot.initial_static_results),
         )
+        if not self._refresh_civic_capability_plane("collect", refresh_view=True):
+            return {"status": ActivePhase.FINALIZE.value}
+        if "github_context" in self.state.available_skills:
+            self._enrich_github_context()
         return {"status": ActivePhase.STRATEGIZE.value}
 
     def _build_mission_context(self) -> dict:
@@ -647,6 +1046,10 @@ class MissionRuntime:
             "failure_context": self.state.failure_context.details if self.state.failure_context else None,
             "failed_families": {tid: sorted(fams) for tid, fams in self.failed_families.items()},
             "decision_history": self.state.decision_history[-8:],
+            "requested_skills": list(self.spec.requested_skills),
+            "available_skills": list(self.state.available_skills),
+            "skill_outputs": {key: value for key, value in self.state.skill_outputs.items()},
+            "civic_connection": self.state.civic_connection.model_dump(mode="json"),
         }
 
     def _assess_mission_progress(self) -> str | None:
@@ -843,6 +1246,34 @@ class MissionRuntime:
                 return self._fail_bidding_round(task.task_id, f"Provider-backed strategy {bid.bid_id} is missing an invocation reference.")
             decision = self.governance.evaluate_bid(task, bid, self.spec, failed)
             bid.policy_feasibility = decision
+            missing_required_skills = [skill for skill in bid.required_skills if skill not in self.state.available_skills]
+            if missing_required_skills:
+                bid.rejection_reason = f"missing_skill:{','.join(missing_required_skills)}"
+                bid.status = BidStatus.REJECTED
+                self._save_bid(bid, self.state.active_bid_round)
+                self.emit(
+                    "bid.rejected",
+                    f"Strategy {bid.bid_id} rejected.",
+                    bid_id=bid.bid_id,
+                    task_id=task.task_id,
+                    reason=bid.rejection_reason,
+                    role=bid.role,
+                    required_skills=bid.required_skills,
+                    optional_skills=bid.optional_skills,
+                    refresh_view=True,
+                )
+                self.trace(
+                    "bid.retired",
+                    "Strategy rejected",
+                    f"{bid.bid_id} requires unavailable governed skills.",
+                    task_id=task.task_id,
+                    bid_id=bid.bid_id,
+                    provider=bid.provider,
+                    lane=bid.lane,
+                    status="danger",
+                    reason=bid.rejection_reason,
+                )
+                continue
             if not decision.allowed:
                 bid.rejection_reason = "; ".join(decision.reasons)
                 bid.status = BidStatus.REJECTED
@@ -869,8 +1300,10 @@ class MissionRuntime:
             valid.append(bid)
 
         self.state.active_bids = cluster_and_select(valid, per_family=1, max_candidates=7)
+        self._preflight_governed_bids(task)
         self._set_bidding_metrics(self.state.active_bids, provider_invocation_ids=batch.provider_invocation_ids)
         for bid in self.state.active_bids:
+            bid.score = score_bid(bid)
             self._save_bid(bid, self.state.active_bid_round)
             self.emit(
                 "bid.submitted",
@@ -897,6 +1330,14 @@ class MissionRuntime:
                 risk=bid.risk,
                 cost=bid.cost,
                 confidence=bid.confidence,
+                required_skills=bid.required_skills,
+                optional_skills=bid.optional_skills,
+                governed_action_plan=bid.governed_action_plan,
+                external_evidence_plan=bid.external_evidence_plan,
+                capability_reliance_score=bid.capability_reliance_score,
+                policy_friction_score=bid.policy_friction_score,
+                revocation_risk_score=bid.revocation_risk_score,
+                envelope_id=bid.active_envelope_id,
             )
             self.trace(
                 "bid.generated",
@@ -914,6 +1355,12 @@ class MissionRuntime:
                 invocation_id=bid.invocation_id,
                 generation_mode=bid.generation_mode.value,
                 usage_unavailable_reason=bid.usage_unavailable_reason,
+                required_skills=bid.required_skills,
+                optional_skills=bid.optional_skills,
+                capability_reliance_score=bid.capability_reliance_score,
+                policy_friction_score=bid.policy_friction_score,
+                revocation_risk_score=bid.revocation_risk_score,
+                envelope_id=bid.active_envelope_id,
             )
         if not self.state.active_bids:
             reason = batch.degraded_reason or "Strategy market produced no valid contenders."
@@ -985,6 +1432,7 @@ class MissionRuntime:
                 bid,
                 rollout_evidence=evidence,
                 failure_count=len(self.failed_families.get(task.task_id, set())),
+                capability_context=self._capability_simulation_context(bid),
             )
             bid.search_diagnostics = diagnostics
             bid.search_reward = float(diagnostics["search_reward"])
@@ -992,7 +1440,8 @@ class MissionRuntime:
             bid.search_summary = (
                 f"{', '.join(evidence) or 'paper'} | "
                 f"mc={diagnostics['sample_count']} mean={diagnostics['mean_score']} "
-                f"success={diagnostics['success_rate']} rollback={diagnostics['rollback_rate']}"
+                f"success={diagnostics['success_rate']} rollback={diagnostics['rollback_rate']} "
+                f"cap={diagnostics['capability_availability_probability']} policy={diagnostics['policy_friction_cost']}"
             )
             bid.status = BidStatus.SIMULATED
             bid.score = score_bid(bid)
@@ -1088,6 +1537,31 @@ class MissionRuntime:
         task = self._active_task()
         bid = self.state.current_bid
         assert bid is not None
+        envelope = self.state.governed_bid_envelopes.get(bid.bid_id)
+        if bid.required_skills and (
+            any(skill not in self.state.available_skills for skill in bid.required_skills)
+            or (envelope is not None and envelope.status != "approved")
+        ):
+            reason = "envelope_revoked" if envelope is not None and envelope.status != "approved" else "required_skill_unavailable"
+            civic_history = [value for value in [envelope.audit_id if envelope else None] if value]
+            self.state.failure_context = FailureContext(
+                task_id=task.task_id,
+                failure_type="governed_capability_block",
+                details=reason,
+                diff_summary=self.toolset.diff(),
+                validator_deltas=[],
+                recommended_recovery_scope="standby_or_rebid",
+                strategy_family=bid.strategy_family,
+                attempted_file_scope=bid.touched_files,
+                rollout_evidence=[value for value in [bid.search_summary, bid.selection_reason] if value],
+                civic_action_history=civic_history,
+            )
+            self._save_failure(self.state.failure_context)
+            if self.config.civic_required:
+                self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
+                self.state.governance.stop_reason = reason
+                return {"status": ActivePhase.FINALIZE.value}
+            return {"status": ActivePhase.RECOVER.value}
         task.status = TaskStatus.RUNNING
         self._save_task(task)
         self.emit("task.running", f"Task {task.task_id} is running.", task_id=task.task_id)
@@ -1147,8 +1621,7 @@ class MissionRuntime:
             payload=intent.model_dump(mode="json"),
             executor=lambda: {"touched": self._apply_proposal(self.toolset, proposal)},
         )
-        self.state.last_civic_audit = outcome.audit
-        self.state.summary.audit_summary[outcome.audit.audit_id] = outcome.audit.model_dump(mode="json")
+        self._record_audit(outcome.audit)
         if not outcome.success:
             if outcome.result.get("blocked"):
                 self.state.policy_collisions += 1
@@ -1293,7 +1766,7 @@ class MissionRuntime:
                 payload=intent.model_dump(mode="json"),
                 executor=lambda: {"checkpoint": self.state.accepted_checkpoint.commit_sha, "reverted": self._revert()},
             )
-            self.state.last_civic_audit = outcome.audit
+            self._record_audit(outcome.audit)
             reverted = bool(outcome.result.get("reverted"))
             self.state.failure_context.rollback_result = "rollback_succeeded" if reverted else "rollback_failed"
             self.state.failure_context.created_at = utc_now()
@@ -1367,6 +1840,7 @@ class MissionRuntime:
             else:
                 self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
         self.state.control = MissionControlState(run_state=RunState.FINALIZED, reason=self.state.governance.stop_reason)
+        self._sync_state("finalized")
         self.emit("mission.finalized", "Mission finalized.", outcome=self.state.outcome.value, stop_reason=self.state.governance.stop_reason, refresh_view=True)
         return {"status": "done"}
 
@@ -1410,7 +1884,7 @@ class MissionRuntime:
             self.state.cost_usage[key] = self.state.cost_usage.get(key, 0.0) + float(value)
 
 
-def build_mission_spec(repo: str, objective: str, constraints: list[str] | None = None, preferences: list[str] | None = None, max_runtime: int | None = None, benchmark_requirement: str | None = None, protected_paths: list[str] | None = None, public_api_surface: list[str] | None = None, mission_id: str | None = None) -> MissionSpec:
+def build_mission_spec(repo: str, objective: str, constraints: list[str] | None = None, preferences: list[str] | None = None, requested_skills: list[str] | None = None, max_runtime: int | None = None, benchmark_requirement: str | None = None, protected_paths: list[str] | None = None, public_api_surface: list[str] | None = None, mission_id: str | None = None) -> MissionSpec:
     config = load_runtime_config()
     resolved_repo = resolve_repo_path(repo)
     return MissionSpec(
@@ -1419,6 +1893,7 @@ def build_mission_spec(repo: str, objective: str, constraints: list[str] | None 
         objective=objective,
         constraints=constraints or [],
         preferences=preferences or [],
+        requested_skills=requested_skills or [],
         max_runtime_minutes=max_runtime or config.max_runtime_minutes,
         benchmark_requirement=benchmark_requirement,
         protected_paths=protected_paths or [],
@@ -1437,13 +1912,14 @@ def _adjust_bidding_policy_for_backend(spec: MissionSpec, strategy_backend) -> M
     return spec
 
 
-def start_mission(repo: str, objective: str, constraints: list[str] | None = None, preferences: list[str] | None = None, max_runtime: int | None = None, benchmark_requirement: str | None = None, protected_paths: list[str] | None = None, public_api_surface: list[str] | None = None, strategy_backend=None, mission_id: str | None = None) -> ArbiterState:
+def start_mission(repo: str, objective: str, constraints: list[str] | None = None, preferences: list[str] | None = None, requested_skills: list[str] | None = None, max_runtime: int | None = None, benchmark_requirement: str | None = None, protected_paths: list[str] | None = None, public_api_surface: list[str] | None = None, strategy_backend=None, mission_id: str | None = None) -> ArbiterState:
     spec = _adjust_bidding_policy_for_backend(
         build_mission_spec(
             repo=repo,
             objective=objective,
             constraints=constraints,
             preferences=preferences,
+            requested_skills=requested_skills,
             max_runtime=max_runtime,
             benchmark_requirement=benchmark_requirement,
             protected_paths=protected_paths,

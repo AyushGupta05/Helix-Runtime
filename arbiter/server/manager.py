@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 import threading
 import traceback
@@ -38,6 +39,15 @@ def _mission_roots(repo_path: str) -> list[Path]:
     return [path for path in root.iterdir() if path.is_dir()]
 
 
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 class MissionService:
     def __init__(self, strategy_backend_factory=None) -> None:
         self.strategy_backend_factory = strategy_backend_factory or (lambda: None)
@@ -61,6 +71,7 @@ class MissionService:
                 objective=request.objective,
                 constraints=request.constraints,
                 preferences=request.preferences,
+                requested_skills=request.requested_skills,
                 max_runtime=request.max_runtime,
                 benchmark_requirement=request.benchmark_requirement,
                 protected_paths=request.protected_paths,
@@ -96,6 +107,7 @@ class MissionService:
                 objective=request.objective,
                 constraints=request.constraints,
                 preferences=request.preferences,
+                requested_skills=request.requested_skills,
                 max_runtime=request.max_runtime,
                 benchmark_requirement=request.benchmark_requirement,
                 protected_paths=request.protected_paths,
@@ -273,6 +285,43 @@ class MissionService:
             }:
                 return
             mission = store.fetch_mission(mission_id)
+            runtime = store.fetch_runtime(mission_id)
+            if reason == "session_ended":
+                activity = [
+                    _parse_timestamp(mission["updated_at"]) if mission is not None else None,
+                    _parse_timestamp(runtime["updated_at"]) if runtime is not None else None,
+                    _parse_timestamp(control["updated_at"]),
+                ]
+                latest_event = store.fetch_ordered("events", "created_at DESC, id DESC", mission_id)
+                latest_trace = store.fetch_ordered("trace_entries", "created_at DESC, id DESC", mission_id)
+                latest_invocation = store.fetch_ordered("model_invocations", "COALESCE(completed_at, started_at) DESC, id DESC", mission_id)
+                activity.extend(
+                    [
+                        _parse_timestamp(latest_event[0]["created_at"]) if latest_event else None,
+                        _parse_timestamp(latest_trace[0]["created_at"]) if latest_trace else None,
+                        _parse_timestamp(latest_invocation[0]["completed_at"] or latest_invocation[0]["started_at"])
+                        if latest_invocation
+                        else None,
+                    ]
+                )
+                in_flight_invocation = next(
+                    (
+                        row
+                        for row in latest_invocation
+                        if row["status"] == "started" and not row["completed_at"]
+                    ),
+                    None,
+                )
+                in_flight_started_at = (
+                    _parse_timestamp(in_flight_invocation["started_at"])
+                    if in_flight_invocation is not None
+                    else None
+                )
+                if in_flight_started_at is not None and utc_now() - in_flight_started_at <= timedelta(minutes=2):
+                    return
+                latest_activity = max((value for value in activity if value is not None), default=None)
+                if latest_activity is not None and utc_now() - latest_activity <= timedelta(seconds=20):
+                    return
             if mission is not None:
                 summary = MissionSummary.model_validate(json.loads(mission["summary_json"]))
                 if summary.outcome is None:

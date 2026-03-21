@@ -35,6 +35,35 @@ function riskLabel(value) {
   return "Low";
 }
 
+function scoreLabel(value) {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  return formatNumber(value, 2);
+}
+
+function skillList(bid, key) {
+  const skills = Array.isArray(bid?.[key]) ? bid[key] : [];
+  return skills.length ? skills.slice(0, 3).join(", ") : "none";
+}
+
+function envelopeLabel(bid) {
+  const envelope = bid?.governed_envelope ?? bid?.civic_preflight ?? null;
+  if (!envelope) {
+    return null;
+  }
+  if (typeof envelope === "string") {
+    return envelope;
+  }
+  if (envelope.status) {
+    return String(envelope.status).replace(/[_-]/g, " ");
+  }
+  if (envelope.decision) {
+    return String(envelope.decision).replace(/[_-]/g, " ");
+  }
+  return "governed";
+}
+
 function providerLabelForBid(bid) {
   if (isDeterministicFallbackBid(bid)) {
     return "System";
@@ -87,6 +116,7 @@ function StrategyCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
   const totalTokens = metricTotal(bid.token_usage);
   const totalCost = metricTotal(bid.cost_usage);
   const modeTone = bidModeTone(bid.generation_mode);
+  const envelope = envelopeLabel(bid);
 
   return (
     <article
@@ -110,8 +140,18 @@ function StrategyCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
         <span>Risk {riskLabel(bid.risk)}</span>
       </div>
       <div className="leaderboard-line">
+        <span>Skill reliance {scoreLabel(bid.capability_reliance_score)}</span>
+        <span>Policy friction {scoreLabel(bid.policy_friction_score)}</span>
+        <span>Revocation {scoreLabel(bid.revocation_risk_score)}</span>
+      </div>
+      <div className="leaderboard-line">
         <span>Model {bid.model_id || "n/a"}</span>
         <span>Mode {humanizeGenerationMode(bid.generation_mode || "unknown")}</span>
+      </div>
+      <div className="file-token-list">
+        <span className="muted-chip">Required: {skillList(bid, "required_skills")}</span>
+        <span className="muted-chip">Optional: {skillList(bid, "optional_skills")}</span>
+        {envelope ? <span className="muted-chip">Envelope: {envelope}</span> : null}
       </div>
       <div className="leaderboard-line leaderboard-line-strong">
         <span>{formatInteger(totalTokens)} tok</span>

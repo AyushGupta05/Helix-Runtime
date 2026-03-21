@@ -12,7 +12,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
+from arbiter.civic.runtime import CivicRuntime
 from arbiter.core.contracts import RunState
+from arbiter.runtime.config import load_runtime_config
 from arbiter.runtime.migrate import migrate_legacy_mission
 from arbiter.runtime.paths import build_mission_paths
 from arbiter.runtime.store import MissionStore
@@ -43,6 +45,20 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/api/civic/health")
+    def civic_health() -> dict:
+        runtime = CivicRuntime(load_runtime_config())
+        refreshed = runtime.refresh_capability_state(force=True)
+        return {
+            "civic_connection": refreshed["connection"].model_dump(mode="json"),
+            "civic_capabilities": [capability.model_dump(mode="json") for capability in refreshed["capabilities"]],
+            "available_skills": refreshed["available_skills"],
+            "skill_health": {
+                key: value.model_dump(mode="json")
+                for key, value in refreshed["skill_health"].items()
+            },
+        }
 
     @app.post("/api/missions")
     def create_mission(payload: MissionCreateRequest, request: Request):

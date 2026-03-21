@@ -10,7 +10,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from arbiter.agents.backend import EditProposal, FileUpdate, ScriptedStrategyBackend
-from arbiter.core.contracts import MissionSummary, RunState, utc_now
+from arbiter.core.contracts import MissionSummary, ModelInvocation, RunState, utc_now
 from arbiter.runtime.paths import build_mission_paths
 from arbiter.runtime.store import MissionStore
 from arbiter.server.app import create_app
@@ -115,6 +115,13 @@ def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path,
         assert "repo_state_checkpoints" in body
         assert "recent_trace" in body
         assert "provider_market_summary" in body
+        assert "civic_connection" in body
+        assert "civic_capabilities" in body
+        assert "available_skills" in body
+        assert "skill_health" in body
+        assert "skill_outputs" in body
+        assert "governed_bid_envelopes" in body
+        assert "recent_civic_actions" in body
 
         trace = client.get(f"/api/missions/{mission_id}/trace{repo_query(python_bug_repo)}")
         assert trace.status_code == 200
@@ -230,6 +237,21 @@ def test_api_returns_400_for_invalid_provider_config(python_bug_repo: Path, tmp_
     assert "MODEL_PROVIDER" in response.json()["detail"]
 
 
+def test_api_reports_civic_health(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ARBITER_CONTROL_ROOT", str(tmp_path / "control"))
+    monkeypatch.delenv("CIVIC_URL", raising=False)
+    monkeypatch.delenv("CIVIC_TOKEN", raising=False)
+    with TestClient(create_app(strategy_backend_factory=scripted_factory())) as client:
+        response = client.get("/api/civic/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "civic_connection" in body
+    assert "civic_capabilities" in body
+    assert "available_skills" in body
+    assert "skill_health" in body
+
+
 def test_list_history_refreshes_stale_cached_run_state(python_bug_repo: Path) -> None:
     repo_path = str(python_bug_repo.resolve())
     mission_id = "stale-view-cache"
@@ -288,3 +310,343 @@ def test_list_history_refreshes_stale_cached_run_state(python_bug_repo: Path) ->
     assert stale_entry.outcome == "failed_safe_stop"
     assert stale_entry.created_at == created_at
     assert stale_entry.updated_at == finalized_updated_at
+
+
+def test_refresh_view_does_not_invent_failed_safe_stop_for_successful_finalize(python_bug_repo: Path) -> None:
+    repo_path = str(python_bug_repo.resolve())
+    mission_id = "finalize-race"
+    created_at = utc_now().isoformat()
+    paths = build_mission_paths(repo_path, mission_id)
+    store = MissionStore(paths.db_path)
+    try:
+        store.upsert_mission(
+            mission_id=mission_id,
+            status="running",
+            repo_path=repo_path,
+            objective="Fix the failing checkout tests",
+            branch_name="codex/test",
+            outcome=None,
+            spec=MissionCreateRequest(repo=repo_path, objective="Fix the failing checkout tests"),
+            summary=MissionSummary(
+                mission_id=mission_id,
+                repo_path=repo_path,
+                objective="Fix the failing checkout tests",
+            ),
+            created_at=created_at,
+        )
+        store.upsert_runtime(
+            mission_id,
+            active_phase="finalize",
+            active_task_id="T1",
+            active_bid_round=1,
+            simulation_round=0,
+            recovery_round=0,
+            winner_bid_id=None,
+            standby_bid_id=None,
+            latest_diff_summary="",
+            stop_reason="mission_objective_met",
+            policy_state="clear",
+            current_risk_score=0.0,
+            simulation_summary=None,
+            worktree_state={},
+            bidding_state={},
+            latest_validation_task_id=None,
+            latest_failure_task_id=None,
+            accepted_checkpoint_id=None,
+            civic_connection={},
+            civic_capabilities=[],
+            available_skills=[],
+            skill_health={},
+            skill_outputs={},
+        )
+        store.upsert_control_state(
+            mission_id,
+            RunState.FINALIZED.value,
+            None,
+            "mission_objective_met",
+            created_at,
+        )
+
+        view = store.refresh_mission_view(mission_id)
+    finally:
+        store.close()
+
+    assert view["run_state"] == RunState.FINALIZED.value
+    assert view["outcome"] is None
+
+
+def test_list_history_keeps_recent_running_mission_live(python_bug_repo: Path) -> None:
+    repo_path = str(python_bug_repo.resolve())
+    mission_id = "recent-running"
+    recent_time = utc_now().isoformat()
+    created_at = (utc_now() - timedelta(minutes=1)).isoformat()
+    paths = build_mission_paths(repo_path, mission_id)
+    store = MissionStore(paths.db_path)
+    try:
+        store.upsert_mission(
+            mission_id=mission_id,
+            status="running",
+            repo_path=repo_path,
+            objective="Fix the failing checkout tests",
+            branch_name="codex/test",
+            outcome=None,
+            spec=MissionCreateRequest(repo=repo_path, objective="Fix the failing checkout tests"),
+            summary=MissionSummary(
+                mission_id=mission_id,
+                repo_path=repo_path,
+                objective="Fix the failing checkout tests",
+            ),
+            created_at=created_at,
+        )
+        store.connection.execute(
+            "UPDATE mission SET updated_at = ? WHERE id = ?",
+            (recent_time, mission_id),
+        )
+        store.connection.commit()
+        store.upsert_runtime(
+            mission_id,
+            active_phase="strategize",
+            active_task_id="T1",
+            active_bid_round=1,
+            simulation_round=0,
+            recovery_round=0,
+            winner_bid_id=None,
+            standby_bid_id=None,
+            latest_diff_summary="",
+            stop_reason=None,
+            policy_state="clear",
+            current_risk_score=0.0,
+            simulation_summary=None,
+            worktree_state={},
+            bidding_state={},
+            civic_connection={},
+            civic_capabilities=[],
+            available_skills=[],
+            skill_health={},
+            skill_outputs={},
+            latest_validation_task_id=None,
+            latest_failure_task_id=None,
+            accepted_checkpoint_id=None,
+        )
+        store.upsert_control_state(
+            mission_id,
+            RunState.RUNNING.value,
+            None,
+            None,
+            recent_time,
+        )
+    finally:
+        store.close()
+
+    history = MissionService().list_history(repo_path)
+    recent_entry = next(item for item in history if item.mission_id == mission_id)
+
+    assert recent_entry.run_state == RunState.RUNNING.value
+    assert recent_entry.outcome is None
+
+
+def test_orphan_finalization_waits_for_recent_inflight_model_work(python_bug_repo: Path) -> None:
+    repo_path = str(python_bug_repo.resolve())
+    mission_id = "recent-inflight-model"
+    base_time = utc_now()
+    created_at = (base_time - timedelta(minutes=2)).isoformat()
+    stale_time = (base_time - timedelta(minutes=1)).isoformat()
+    in_flight_started_at = (base_time - timedelta(seconds=10)).isoformat()
+    paths = build_mission_paths(repo_path, mission_id)
+    store = MissionStore(paths.db_path)
+    try:
+        store.upsert_mission(
+            mission_id=mission_id,
+            status="running",
+            repo_path=repo_path,
+            objective="Fix the failing checkout tests",
+            branch_name="codex/test",
+            outcome=None,
+            spec=MissionCreateRequest(repo=repo_path, objective="Fix the failing checkout tests"),
+            summary=MissionSummary(
+                mission_id=mission_id,
+                repo_path=repo_path,
+                objective="Fix the failing checkout tests",
+            ),
+            created_at=created_at,
+        )
+        store.connection.execute(
+            "UPDATE mission SET updated_at = ? WHERE id = ?",
+            (stale_time, mission_id),
+        )
+        store.connection.commit()
+        store.upsert_runtime(
+            mission_id,
+            active_phase="strategize",
+            active_task_id=None,
+            active_bid_round=0,
+            simulation_round=0,
+            recovery_round=0,
+            winner_bid_id=None,
+            standby_bid_id=None,
+            latest_diff_summary="",
+            stop_reason=None,
+            policy_state="clear",
+            current_risk_score=0.0,
+            simulation_summary=None,
+            worktree_state={},
+            bidding_state={},
+            latest_validation_task_id=None,
+            latest_failure_task_id=None,
+            accepted_checkpoint_id=None,
+            civic_connection={},
+            civic_capabilities=[],
+            available_skills=[],
+            skill_health={},
+            skill_outputs={},
+        )
+        store.connection.execute(
+            "UPDATE mission_runtime SET updated_at = ? WHERE mission_id = ?",
+            (stale_time, mission_id),
+        )
+        store.connection.commit()
+        store.upsert_control_state(
+            mission_id,
+            RunState.RUNNING.value,
+            None,
+            None,
+            stale_time,
+        )
+        store.save_model_invocation(
+            mission_id=mission_id,
+            invocation=ModelInvocation(
+                invocation_id="inv-recent",
+                mission_id=mission_id,
+                task_id=None,
+                bid_id=None,
+                provider="openai",
+                lane="triage.openai",
+                model_id="gpt-5-mini",
+                invocation_kind="mission_planning",
+                status="started",
+                generation_mode="provider_model",
+                started_at=in_flight_started_at,
+                completed_at=None,
+            ),
+            invocation_id="inv-recent",
+            task_id=None,
+            bid_id=None,
+            provider="openai",
+            lane="triage.openai",
+            model_id="gpt-5-mini",
+            invocation_kind="mission_planning",
+            status="started",
+            generation_mode="provider_model",
+            started_at=in_flight_started_at,
+            completed_at=None,
+            prompt_preview="Objective: investigate",
+        )
+    finally:
+        store.close()
+
+    service = MissionService()
+    service._finalize_orphaned_mission(repo_path, mission_id, reason="session_ended")
+
+    store = MissionStore(paths.db_path)
+    try:
+        control = store.fetch_control_state(mission_id)
+        mission = store.fetch_mission(mission_id)
+    finally:
+        store.close()
+
+    assert control["run_state"] == RunState.RUNNING.value
+    assert mission["outcome"] is None
+
+
+def test_refresh_view_keeps_transient_session_end_running_when_model_work_is_inflight(python_bug_repo: Path) -> None:
+    repo_path = str(python_bug_repo.resolve())
+    mission_id = "transient-session-ended"
+    created_at = utc_now().isoformat()
+    paths = build_mission_paths(repo_path, mission_id)
+    store = MissionStore(paths.db_path)
+    try:
+        store.upsert_mission(
+            mission_id=mission_id,
+            status="finalized",
+            repo_path=repo_path,
+            objective="Fix the failing checkout tests",
+            branch_name="codex/test",
+            outcome="failed_safe_stop",
+            spec=MissionCreateRequest(repo=repo_path, objective="Fix the failing checkout tests"),
+            summary=MissionSummary(
+                mission_id=mission_id,
+                repo_path=repo_path,
+                objective="Fix the failing checkout tests",
+                outcome="failed_safe_stop",
+            ),
+            created_at=created_at,
+        )
+        store.upsert_runtime(
+            mission_id,
+            active_phase="strategize",
+            active_task_id=None,
+            active_bid_round=0,
+            simulation_round=0,
+            recovery_round=0,
+            winner_bid_id=None,
+            standby_bid_id=None,
+            latest_diff_summary="",
+            stop_reason=None,
+            policy_state="clear",
+            current_risk_score=0.0,
+            simulation_summary=None,
+            worktree_state={},
+            bidding_state={},
+            latest_validation_task_id=None,
+            latest_failure_task_id=None,
+            accepted_checkpoint_id=None,
+            civic_connection={},
+            civic_capabilities=[],
+            available_skills=[],
+            skill_health={},
+            skill_outputs={},
+        )
+        store.upsert_control_state(
+            mission_id,
+            RunState.FINALIZED.value,
+            None,
+            "session_ended",
+            created_at,
+        )
+        store.save_model_invocation(
+            mission_id=mission_id,
+            invocation=ModelInvocation(
+                invocation_id="inv-inflight",
+                mission_id=mission_id,
+                task_id=None,
+                bid_id=None,
+                provider="openai",
+                lane="triage.openai",
+                model_id="gpt-5-mini",
+                invocation_kind="mission_planning",
+                status="started",
+                generation_mode="provider_model",
+                started_at=created_at,
+                completed_at=None,
+            ),
+            invocation_id="inv-inflight",
+            task_id=None,
+            bid_id=None,
+            provider="openai",
+            lane="triage.openai",
+            model_id="gpt-5-mini",
+            invocation_kind="mission_planning",
+            status="started",
+            generation_mode="provider_model",
+            started_at=created_at,
+            completed_at=None,
+            prompt_preview="Objective: investigate",
+        )
+
+        view = store.refresh_mission_view(mission_id)
+    finally:
+        store.close()
+
+    assert view["run_state"] == RunState.RUNNING.value
+    assert view["status"] == "strategize"
+    assert view["outcome"] is None

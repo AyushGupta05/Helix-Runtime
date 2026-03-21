@@ -35,6 +35,12 @@ class RuntimeConfig(BaseSettings):
     enabled_providers_raw: str | None = Field(default=None, alias="ARBITER_ENABLED_PROVIDERS")
     civic_url: str | None = Field(default=None, alias="CIVIC_URL")
     civic_token: str | None = Field(default=None, alias="CIVIC_TOKEN")
+    civic_toolkit_id: str | None = Field(default=None, alias="CIVIC_TOOLKIT_ID")
+    civic_required: bool = Field(default=False, alias="CIVIC_REQUIRED")
+    civic_connection_timeout_seconds: float = Field(default=10.0, alias="CIVIC_CONNECTION_TIMEOUT_SECONDS")
+    civic_required_skills_raw: str | None = Field(default=None, alias="CIVIC_REQUIRED_SKILLS")
+    civic_required_tools_raw: str | None = Field(default=None, alias="CIVIC_REQUIRED_TOOLS")
+    run_live_civic_tests: bool = Field(default=False, alias="RUN_LIVE_CIVIC_TESTS")
     
     bidder_models: list[str] = Field(
         default_factory=lambda: ["triage", "bid_fast", "bid_deep"],
@@ -49,12 +55,12 @@ class RuntimeConfig(BaseSettings):
     openai_model_proposal_gen: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_PROPOSAL_GEN")
     openai_model_test_gen: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_TEST_GEN")
     openai_model_perf_reason: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_PERF_REASON")
-    anthropic_model_triage: str = Field(default="claude-3-5-haiku-20241022", alias="ANTHROPIC_MODEL_TRIAGE")
-    anthropic_model_bid_fast: str = Field(default="claude-3-5-haiku-20241022", alias="ANTHROPIC_MODEL_BID_FAST")
+    anthropic_model_triage: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_TRIAGE")
+    anthropic_model_bid_fast: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_BID_FAST")
     anthropic_model_bid_deep: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_BID_DEEP")
-    anthropic_model_proposal_gen: str = Field(default="claude-3-5-haiku-20241022", alias="ANTHROPIC_MODEL_PROPOSAL_GEN")
-    anthropic_model_test_gen: str = Field(default="claude-3-5-haiku-20241022", alias="ANTHROPIC_MODEL_TEST_GEN")
-    anthropic_model_perf_reason: str = Field(default="claude-3-5-haiku-20241022", alias="ANTHROPIC_MODEL_PERF_REASON")
+    anthropic_model_proposal_gen: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_PROPOSAL_GEN")
+    anthropic_model_test_gen: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_TEST_GEN")
+    anthropic_model_perf_reason: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_PERF_REASON")
     openai_market_lanes_raw: str | None = Field(default=None, alias="ARBITER_OPENAI_MARKET_LANES")
     anthropic_market_lanes_raw: str | None = Field(default="triage,bid_fast", alias="ARBITER_ANTHROPIC_MARKET_LANES")
 
@@ -92,6 +98,21 @@ class RuntimeConfig(BaseSettings):
     @cached_property
     def default_provider(self) -> Literal["openai", "anthropic"]:
         return self.enabled_providers[0]
+
+    @staticmethod
+    def _parse_csv(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    @cached_property
+    def civic_required_skills(self) -> list[str]:
+        return self._parse_csv(self.civic_required_skills_raw)
+
+    @cached_property
+    def civic_required_tools(self) -> list[str]:
+        parsed = self._parse_csv(self.civic_required_tools_raw)
+        return parsed or ["fetch_ci_status", "open_pr_metadata"]
 
     def market_lanes_for(self, provider: Literal["openai", "anthropic"]) -> list[str]:
         if len(self.enabled_providers) <= 1:

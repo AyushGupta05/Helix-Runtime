@@ -21,6 +21,14 @@ const bids = [
     cost: 0.11,
     estimated_runtime_seconds: 42,
     touched_files: ["calc.py"],
+    required_skills: ["github_context"],
+    optional_skills: ["knowledge_context"],
+    governed_action_plan: { type: "github_context" },
+    external_evidence_plan: { sources: ["ci"] },
+    capability_reliance_score: 0.73,
+    policy_friction_score: 0.14,
+    revocation_risk_score: 0.08,
+    governed_envelope: { status: "allowed" },
     token_usage: { input_tokens: 120, output_tokens: 44 },
     cost_usage: { usd: 0.02 },
     usage_unavailable_reason: null,
@@ -44,6 +52,14 @@ const bids = [
     cost: 0.22,
     estimated_runtime_seconds: 65,
     touched_files: ["calc.py", "tests/test_calc.py"],
+    required_skills: ["github_context", "knowledge_context"],
+    optional_skills: [],
+    governed_action_plan: { type: "read_only" },
+    external_evidence_plan: { sources: ["pr"] },
+    capability_reliance_score: 0.54,
+    policy_friction_score: 0.31,
+    revocation_risk_score: 0.17,
+    civic_preflight: { decision: "allowed" },
     token_usage: null,
     cost_usage: null,
     usage_unavailable_reason: "Mock strategy backend generated this proposal without a provider call.",
@@ -107,6 +123,11 @@ describe("BidBoard", () => {
     expect(screen.getAllByText(/Safe \| Openai \| gpt-4\.1 \| Provider Model/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Quality \| Anthropic \| claude-sonnet-4-5 \| Mock/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Fast \| System \| model unavailable \| Deterministic Fallback/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Required: github_context$/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Optional: knowledge_context/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Envelope: allowed/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Skill reliance 0\.73/i)).toBeInTheDocument();
+    expect(screen.getByText(/Policy friction 0\.14/i)).toBeInTheDocument();
     expect(screen.getByText("LEADING")).toBeInTheDocument();
     expect(screen.getByText("STANDBY")).toBeInTheDocument();
     expect(screen.getByText("REJECTED")).toBeInTheDocument();

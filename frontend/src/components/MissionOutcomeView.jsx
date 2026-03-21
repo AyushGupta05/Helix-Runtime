@@ -111,6 +111,21 @@ function outcomeTone(mission) {
   return "neutral";
 }
 
+function civicImpactSummary(mission) {
+  const skills = mission.available_skills ?? [];
+  const outputs = mission.skill_outputs ?? {};
+  const envelopes = mission.governed_bid_envelopes ?? [];
+  const connection = mission.civic_connection ?? {};
+  const connectionStatus = String(connection.status ?? connection.state ?? "idle").replace(/[_-]/g, " ");
+  const skillsText = skills.length ? skills.slice(0, 3).join(", ") : "no active skills";
+  const outputCount = Object.keys(outputs).length;
+  const envelopeCount = envelopes.length;
+  return {
+    headline: `${connectionStatus} | ${skills.length} skills`,
+    detail: `${skillsText}${outputCount ? ` | ${outputCount} evidence packet${outputCount === 1 ? "" : "s"}` : ""}${envelopeCount ? ` | ${envelopeCount} envelope${envelopeCount === 1 ? "" : "s"}` : ""}`
+  };
+}
+
 export default function MissionOutcomeView({
   mission,
   trace,
@@ -138,6 +153,7 @@ export default function MissionOutcomeView({
   const confidenceNarrative = outcomeSummary.confidence_reasons?.length
     ? outcomeSummary.confidence_reasons.join(" ")
     : confidenceSummary(selectedBid, mission);
+  const civicImpact = civicImpactSummary(mission);
   const latestCheckpoint = mission.accepted_checkpoints?.at(-1) ?? null;
   const activity = [...(trace ?? [])].reverse();
 
@@ -173,6 +189,11 @@ export default function MissionOutcomeView({
               <strong>{mission.branch_name ?? "branch pending"}</strong>
               <p>{shortCommit(latestCheckpoint?.commit_sha ?? mission.head_commit)}</p>
             </article>
+            <article className="outcome-stat-card">
+              <span>Civic</span>
+              <strong>{civicImpact.headline}</strong>
+              <p>{civicImpact.detail || "No governed capability data surfaced yet."}</p>
+            </article>
           </div>
           <div className="outcome-action-row">
             <button className="primary-button" type="button" onClick={() => onOpenIntelligence("diff")}>
@@ -206,6 +227,10 @@ export default function MissionOutcomeView({
                 <p>{selectedBid ? summarizeBidOrigin(selectedBid) : "Provider-backed strategy competition is still being established."}</p>
               </article>
               <article className="outcome-step">
+                <strong>Checked governed capabilities</strong>
+                <p>{civicImpact.detail || "Civic did not surface additional skills for this mission."}</p>
+              </article>
+              <article className="outcome-step">
                 <strong>Selected and executed the bounded path</strong>
                 <p>{latestProposalTrace?.payload?.summary ?? "The mission executed the strongest currently selected bounded work unit."}</p>
               </article>
@@ -236,6 +261,11 @@ export default function MissionOutcomeView({
                 <span>Latest checkpoint</span>
                 <strong>{latestCheckpoint?.label ?? "Pending"}</strong>
                 <p>{latestCheckpoint ? shortCommit(latestCheckpoint.commit_sha) : "No accepted checkpoint yet."}</p>
+              </article>
+              <article className="insight-card">
+                <span>Civic influence</span>
+                <strong>{civicImpact.headline}</strong>
+                <p>{mission.recent_civic_actions?.length ? `${mission.recent_civic_actions.length} governed actions recorded.` : "No governed actions were recorded in the mission snapshot."}</p>
               </article>
               <article className="insight-card">
                 <span>Elapsed time</span>

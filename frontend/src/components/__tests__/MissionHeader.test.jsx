@@ -26,7 +26,15 @@ describe("MissionHeader", () => {
           branch_name: "codex/helix-abc123",
           head_commit: "1234567890abcdef",
           runtime_seconds: 132,
-          civic_audit_summary: { preflight: 2 }
+          civic_audit_summary: { preflight: 2 },
+          civic_connection: {
+            status: "healthy",
+            toolkit_id: "toolkit-7",
+            checked_at: "2026-03-20T10:00:00Z"
+          },
+          available_skills: ["github_context", "knowledge_context"],
+          skill_health: { github_context: "healthy" },
+          skill_outputs: { github_context: { summary: "CI status is green." } }
         }}
         usageSummary={{ mission: { total_tokens: 456, total_cost: 0.1234 } }}
         busy={false}
@@ -53,6 +61,9 @@ describe("MissionHeader", () => {
     expect(screen.getByText(/Mission health/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Latest checkpoint/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Civic status/i)).toBeInTheDocument();
+    expect(screen.getByText(/healthy/i)).toBeInTheDocument();
+    expect(screen.getByText(/toolkit-7/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 active skills/i)).toBeInTheDocument();
     expect(screen.getByText(/Validator status/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Live Market/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Outcome/i })).toBeInTheDocument();

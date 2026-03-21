@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 from arbiter.repo.collector import RepoStateCollector
@@ -59,3 +60,23 @@ def test_python_static_analysis_uses_mypy_when_explicitly_configured(tmp_path: P
 
     assert snapshot.capabilities.runtime == "python"
     assert snapshot.capabilities.static_commands == [[sys.executable, "-m", "mypy", "."]]
+
+
+def test_collects_github_remote_and_objective_hints(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    (repo / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), check=True, capture_output=True, text=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:openai/arbiter.git"], cwd=str(repo), check=True, capture_output=True, text=True)
+
+    snapshot = RepoStateCollector(str(repo)).collect(
+        run_commands=False,
+        objective="Investigate PR #42 and issue #7 from https://github.com/openai/arbiter/pull/42",
+    )
+
+    assert snapshot.remote_provider == "github"
+    assert snapshot.remote_slug == "openai/arbiter"
+    assert snapshot.remotes["origin"] == "git@github.com:openai/arbiter.git"
+    assert snapshot.objective_hints["pr_numbers"] == [42]
+    assert snapshot.objective_hints["issue_numbers"] == [7]

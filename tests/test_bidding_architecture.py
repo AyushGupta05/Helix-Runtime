@@ -179,6 +179,41 @@ class TestBidGenerationBatch:
         assert len(started) == NUM_SPECS
         assert len(completed) == NUM_SPECS
 
+    def test_partial_provider_failure_without_fallback_keeps_provider_round_clean(self):
+        lock = threading.Lock()
+        call_count = 0
+
+        def flaky_invoke(
+            lane: str,
+            prompt: dict,
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            del lane, prompt, request_timeout_seconds
+            nonlocal call_count
+            with lock:
+                call_count += 1
+                current = call_count
+            if current <= 2:
+                raise ConnectionError("Provider timeout")
+            return _mock_router_invoke("bid_fast.openai", {})
+
+        mock_backend = _make_mock_backend()
+        mock_backend.router.invoke = flaky_invoke
+
+        factory = SimulationFactory(
+            backend=mock_backend,
+            provider_pool=["anthropic"],
+        )
+        task = _make_task()
+        snapshot = _make_snapshot()
+        batch = factory.generate(task, snapshot, allow_fallback=False)
+
+        assert batch.generation_mode == GenerationMode.PROVIDER_MODEL
+        assert len(batch.bids) > 0
+        assert len(batch.provider_errors) == 2
+        assert batch.degraded_reason is None
+
     def test_provider_market_respects_provider_lane_limits(self):
         mock_backend = _make_mock_backend()
         mock_backend.router.config.market_lanes_for = lambda provider: ["bid_deep"] if provider == "anthropic" else ["bid_fast", "bid_deep", "test_gen", "perf_reason"]
@@ -294,6 +329,41 @@ class TestBidGenerationBatch:
         assert len(provider_bids) > 0
         assert len(fallback_bids) > 0
         assert len(batch.provider_errors) == 2
+
+    def test_partial_provider_failure_without_fallback_keeps_provider_market_clean(self):
+        lock = threading.Lock()
+        call_count = 0
+
+        def flaky_invoke(
+            lane: str,
+            prompt: dict,
+            *,
+            request_timeout_seconds: float | None = None,
+        ) -> ModelInvocationResult:
+            del request_timeout_seconds
+            nonlocal call_count
+            with lock:
+                call_count += 1
+                current = call_count
+            if current <= 2:
+                raise ConnectionError("Provider timeout")
+            return _mock_router_invoke(lane, prompt)
+
+        mock_backend = _make_mock_backend()
+        mock_backend.router.invoke = flaky_invoke
+
+        factory = SimulationFactory(
+            backend=mock_backend,
+            provider_pool=["anthropic"],
+        )
+        task = _make_task()
+        snapshot = _make_snapshot()
+        batch = factory.generate(task, snapshot, allow_fallback=False)
+
+        assert batch.generation_mode == GenerationMode.PROVIDER_MODEL
+        assert batch.degraded_reason is None
+        assert len(batch.provider_errors) == 2
+        assert len(batch.bids) == NUM_SPECS - 2
 
     def test_total_provider_failure_without_fallback(self):
         mock_backend = _make_mock_backend()

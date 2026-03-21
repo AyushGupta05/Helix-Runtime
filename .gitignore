@@ -3,6 +3,7 @@
 .arbiter/
 __pycache__/
 .pytest_cache/
+.pytest-tmp/
 .mypy_cache/
 .ruff_cache/
 .tmp/
@@ -16,7 +17,12 @@ frontend/node_modules/
 frontend/test-results/
 .claude/
 docs/
+.playwright-cli/
 output/
 codex-debug-*/
 codex-mission-*/
+codex-manual*/
+codex_pytest*/
 codex_pytest_cache/
+pytest-temp*/
+tmp*/

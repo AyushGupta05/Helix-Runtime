@@ -21,6 +21,12 @@ describe("EventStrip", () => {
           },
           {
             id: 2,
+            event_type: "civic.connection.checked",
+            created_at: "2026-03-20T10:00:03Z",
+            message: "Civic connection checked.",
+            payload: { toolkit_id: "toolkit-7", status: "healthy", skill: "github_context", audit_id: "audit-1" }
+          },
+          {
             event_type: "recovery.round_opened",
             created_at: "2026-03-20T10:00:05Z",
             message: "Rebidding with prior evidence.",
@@ -43,6 +49,8 @@ describe("EventStrip", () => {
     expect(screen.getByText(/Current phase/i)).toBeInTheDocument();
     expect(screen.getAllByText(/^Recover$/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Repository Scan Completed/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Civic Connection Checked/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/skill github_context/i)).toBeInTheDocument();
     expect(screen.getByText(/Rebidding with Prior Evidence/i)).toBeInTheDocument();
     expect(screen.getByText(/task T1_localize/i)).toBeInTheDocument();
   });

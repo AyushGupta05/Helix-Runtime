@@ -86,24 +86,7 @@ function auditRows(mission, trace) {
       entry.target ||
       "Governance evidence captured in the Civic ledger."
   }));
-  if (ledgerRows.length) {
-    return ledgerRows;
-  }
-
-  const traceRows = (trace ?? [])
-    .filter(
-      (entry) =>
-        String(entry.trace_type ?? "").toLowerCase().includes("civic") ||
-        String(entry.title ?? "").toLowerCase().includes("civic") ||
-        String(entry.message ?? "").toLowerCase().includes("policy")
-    )
-    .map((entry) => ({
-      id: `trace-${entry.id}`,
-      time: entry.created_at,
-      action: entry.title ?? humanizeEventType(entry.trace_type),
-      result: entry.status ?? "captured",
-      reason: entry.message ?? "Governance note captured in mission trace."
-    }));
+  const traceRows = governedActionRows(mission, trace);
   const summaryRows = Object.entries(mission.civic_audit_summary ?? {}).map(([key, value]) => ({
     id: `summary-${key}`,
     time: null,
@@ -111,13 +94,112 @@ function auditRows(mission, trace) {
     result: typeof value === "number" ? `${value} records` : "captured",
     reason: "Aggregated from mission audit summary."
   }));
-  return [...traceRows, ...summaryRows];
+  return [...ledgerRows, ...traceRows, ...summaryRows];
 }
 
 function usageRows(usageSummary) {
   return Object.values(usageSummary?.by_provider ?? {}).sort(
     (left, right) => Number(right.total_tokens ?? 0) - Number(left.total_tokens ?? 0)
   );
+}
+
+function civicConnectionSummary(mission) {
+  const connection = mission.civic_connection ?? {};
+  const status = String(connection.status ?? connection.state ?? "idle").replace(/[_-]/g, " ");
+  const toolkit = connection.toolkit_id ?? connection.toolkit ?? "default toolkit";
+  return {
+    status,
+    toolkit,
+    detail: connection.checked_at ? `${toolkit} | ${relativeTime(connection.checked_at)}` : toolkit
+  };
+}
+
+function civicCapabilityCards(mission) {
+  const connection = civicConnectionSummary(mission);
+  const capabilities = mission.civic_capabilities ?? {};
+  const availableSkills = mission.available_skills ?? [];
+  const health = mission.skill_health ?? {};
+  const skillOutputs = mission.skill_outputs ?? {};
+  const envelopes = mission.governed_bid_envelopes ?? [];
+  return [
+    {
+      label: "Connection",
+      value: connection.status,
+      detail: connection.detail
+    },
+    {
+      label: "Toolkit",
+      value: connection.toolkit,
+      detail: capabilities.provider ?? capabilities.source ?? "Civic capability plane"
+    },
+    {
+      label: "Active skills",
+      value: String(availableSkills.length),
+      detail: availableSkills.length ? availableSkills.slice(0, 3).join(" | ") : "No active skills surfaced yet"
+    },
+    {
+      label: "Health",
+      value: Object.keys(health).length ? `${Object.keys(health).length} signals` : "Pending",
+      detail: health.blocked ? "One or more capabilities are blocked" : "No degraded capability reported"
+    },
+    {
+      label: "Skill outputs",
+      value: Object.keys(skillOutputs).length ? `${Object.keys(skillOutputs).length} packets` : "None",
+      detail: Object.keys(skillOutputs).length ? "Read-only evidence packets recorded" : "Skill evidence has not been surfaced yet"
+    },
+    {
+      label: "Envelopes",
+      value: `${envelopes.length}`,
+      detail: envelopes.length ? "Civic-issued bid contracts are present" : "No governed envelopes recorded yet"
+    }
+  ];
+}
+
+function skillOutputEntries(mission) {
+  const outputs = mission.skill_outputs ?? {};
+  return Object.entries(outputs).map(([skill, value]) => ({
+    id: skill,
+    skill,
+    summary:
+      typeof value === "string"
+        ? value
+        : value?.summary ??
+          value?.CI_summary ??
+          value?.ci_summary ??
+          value?.detail ??
+          "No summary captured",
+    provenance: typeof value === "object" && value !== null ? value?.provenance ?? value?.source ?? "Civic" : "Civic",
+    freshness: typeof value === "object" && value !== null ? value?.freshness ?? value?.last_checked ?? value?.updated_at ?? null : null,
+    confidence: typeof value === "object" && value !== null ? value?.confidence ?? value?.score ?? null : null
+  }));
+}
+
+function governedActionRows(mission, trace) {
+  const actions = mission.recent_civic_actions ?? [];
+  if (actions.length) {
+    return actions.map((entry, index) => ({
+      id: entry.audit_id ?? `${entry.event_type ?? "civic"}-${index}`,
+      time: entry.created_at,
+      action: humanizeEventType(entry.event_type ?? entry.action_type ?? "civic action"),
+      result: entry.status ?? entry.policy_state ?? "captured",
+      reason: entry.reason ?? entry.message ?? entry.details ?? "Governed Civic action"
+    }));
+  }
+
+  return (trace ?? [])
+    .filter(
+      (entry) =>
+        String(entry.trace_type ?? "").toLowerCase().includes("civic") ||
+        String(entry.title ?? "").toLowerCase().includes("skill") ||
+        String(entry.title ?? "").toLowerCase().includes("envelope")
+    )
+    .map((entry) => ({
+      id: `trace-${entry.id}`,
+      time: entry.created_at,
+      action: entry.title ?? humanizeEventType(entry.trace_type),
+      result: entry.status ?? "captured",
+      reason: entry.message ?? "Governed Civic state captured in mission trace."
+    }));
 }
 
 function changedFilesFor(mission, diffState) {
@@ -475,12 +557,76 @@ function UsageSection({ usageSummary, trace }) {
 
 function CivicSection({ mission, trace }) {
   const rows = auditRows(mission, trace);
+  const capabilityCards = civicCapabilityCards(mission);
+  const skillOutputs = skillOutputEntries(mission);
+  const envelopes = mission.governed_bid_envelopes ?? [];
 
   return (
     <section className="panel intelligence-panel">
       <div className="section-title">
         <h2>Civic evidence</h2>
         <p>Governance stays inspectable as a ledger rather than being mixed into every other panel.</p>
+      </div>
+      <div className="intelligence-card-grid">
+        {capabilityCards.map((card) => (
+          <article key={card.label} className="insight-card">
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            <p>{card.detail}</p>
+          </article>
+        ))}
+      </div>
+
+      <div className="section-title" style={{ marginTop: "1rem" }}>
+        <h2>Skill outputs</h2>
+        <p>Read-only evidence packets stay grouped by skill so operators can see what shaped the market.</p>
+      </div>
+      <div className="intelligence-card-grid">
+        {skillOutputs.length ? (
+          skillOutputs.map((item) => (
+            <article key={item.id} className="insight-card">
+              <span>{item.skill}</span>
+              <strong>{item.summary}</strong>
+              <p>
+                {item.provenance}
+                {item.freshness ? ` | ${relativeTime(item.freshness)}` : ""}
+                {item.confidence !== null && item.confidence !== undefined ? ` | confidence ${Math.round(Number(item.confidence) * 100)}%` : ""}
+              </p>
+            </article>
+          ))
+        ) : (
+          <div className="section-empty">No skill outputs have been captured yet.</div>
+        )}
+      </div>
+
+      <div className="section-title" style={{ marginTop: "1rem" }}>
+        <h2>Governed envelopes</h2>
+        <p>Shortlisted strategies carry Civic-issued constraints that shape what they are allowed to do.</p>
+      </div>
+      <div className="ledger-list">
+        {envelopes.length ? (
+          envelopes.map((envelope, index) => (
+            <article key={envelope.envelope_id ?? envelope.bid_id ?? index} className="ledger-row">
+              <div>
+                <strong>{envelope.bid_id ?? envelope.task_id ?? "Bid envelope"}</strong>
+                <p>
+                  {envelope.allowed_skills?.length ? envelope.allowed_skills.join(" | ") : "No allowed skills surfaced"}
+                </p>
+              </div>
+              <div className="ledger-meta">
+                <span>{String(envelope.policy_decision ?? envelope.status ?? "governed").replace(/[_-]/g, " ")}</span>
+                <span>{envelope.runtime_limit_seconds ? `${envelope.runtime_limit_seconds}s` : envelope.toolkit_id ?? "Civic"}</span>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div className="section-empty">No governed envelopes have been recorded yet.</div>
+        )}
+      </div>
+
+      <div className="section-title" style={{ marginTop: "1rem" }}>
+        <h2>Governed actions</h2>
+        <p>Audited Civic actions and revocations are retained here for operational review.</p>
       </div>
       <div className="ledger-list">
         {rows.length ? (

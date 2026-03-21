@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import sqlite3
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from pydantic import BaseModel
@@ -83,18 +84,41 @@ class MissionStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = RLock()
         self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         self.connection.execute("PRAGMA foreign_keys = ON")
         self._init_schema()
         self._ensure_column("mission_runtime", "worktree_state_json", "TEXT")
         self._ensure_column("mission_runtime", "bidding_state_json", "TEXT")
+        self._ensure_column("mission_runtime", "civic_connection_json", "TEXT")
+        self._ensure_column("mission_runtime", "civic_capabilities_json", "TEXT")
+        self._ensure_column("mission_runtime", "available_skills_json", "TEXT")
+        self._ensure_column("mission_runtime", "skill_health_json", "TEXT")
+        self._ensure_column("mission_runtime", "skill_outputs_json", "TEXT")
         self._ensure_column("model_invocations", "generation_mode", "TEXT")
         self._ensure_column("model_invocations", "usage_unavailable_reason", "TEXT")
 
+    def _execute(self, query: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        with self._lock:
+            cursor = self.connection.execute(query, params)
+            self.connection.commit()
+            return cursor
+
+    def _fetchone(self, query: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self.connection.execute(query, params).fetchone()
+
+    def _fetchall(self, query: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self.connection.execute(query, params).fetchall()
+
     def _init_schema(self) -> None:
-        self.connection.executescript(
-            """
+        with self._lock:
+            self.connection.executescript(
+                """
             CREATE TABLE IF NOT EXISTS mission (
                 id TEXT PRIMARY KEY,
                 repo_path TEXT NOT NULL,
@@ -123,6 +147,11 @@ class MissionStore:
                 simulation_summary_json TEXT,
                 worktree_state_json TEXT,
                 bidding_state_json TEXT,
+                civic_connection_json TEXT,
+                civic_capabilities_json TEXT,
+                available_skills_json TEXT,
+                skill_health_json TEXT,
+                skill_outputs_json TEXT,
                 latest_validation_task_id TEXT,
                 latest_failure_task_id TEXT,
                 accepted_checkpoint_id TEXT,
@@ -174,6 +203,27 @@ class MissionStore:
                 action TEXT NOT NULL,
                 result TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS governed_bid_envelopes (
+                id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                bid_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS governed_action_records (
+                id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                task_id TEXT,
+                bid_id TEXT,
+                action_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
             );
@@ -300,22 +350,24 @@ class MissionStore:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(mission_id) REFERENCES mission(id) ON DELETE CASCADE
             );
-            """
-        )
-        self.connection.commit()
-
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in columns:
-            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                """
+            )
             self.connection.commit()
 
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        with self._lock:
+            columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column not in columns:
+                self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                self.connection.commit()
+
     def close(self) -> None:
-        self.connection.close()
+        with self._lock:
+            self.connection.close()
 
     def upsert_mission(self, mission_id: str, status: str, repo_path: str, objective: str, branch_name: str | None, outcome: str | None, spec: BaseModel, summary: BaseModel, created_at: str | None = None) -> None:
         now = utc_now().isoformat()
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO mission (id, repo_path, objective, status, created_at, updated_at, branch_name, outcome, spec_json, summary_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -331,17 +383,18 @@ class MissionStore:
             """,
             (mission_id, repo_path, objective, status, created_at or now, now, branch_name, outcome, spec.model_dump_json(), summary.model_dump_json()),
         )
-        self.connection.commit()
 
-    def upsert_runtime(self, mission_id: str, *, active_phase: str, active_task_id: str | None, active_bid_round: int, simulation_round: int, recovery_round: int, winner_bid_id: str | None, standby_bid_id: str | None, latest_diff_summary: str, stop_reason: str | None, policy_state: str, current_risk_score: float, simulation_summary: SimulationSummary | None, worktree_state: dict[str, Any] | None, bidding_state: dict[str, Any] | None, latest_validation_task_id: str | None, latest_failure_task_id: str | None, accepted_checkpoint_id: str | None) -> None:
-        self.connection.execute(
+    def upsert_runtime(self, mission_id: str, *, active_phase: str, active_task_id: str | None, active_bid_round: int, simulation_round: int, recovery_round: int, winner_bid_id: str | None, standby_bid_id: str | None, latest_diff_summary: str, stop_reason: str | None, policy_state: str, current_risk_score: float, simulation_summary: SimulationSummary | None, worktree_state: dict[str, Any] | None, bidding_state: dict[str, Any] | None, civic_connection: dict[str, Any] | None, civic_capabilities: list[dict[str, Any]] | None, available_skills: list[str] | None, skill_health: dict[str, Any] | None, skill_outputs: dict[str, Any] | None, latest_validation_task_id: str | None, latest_failure_task_id: str | None, accepted_checkpoint_id: str | None) -> None:
+        self._execute(
             """
             INSERT INTO mission_runtime (
                 mission_id, active_phase, active_task_id, active_bid_round, simulation_round, recovery_round,
                 winner_bid_id, standby_bid_id, latest_diff_summary, stop_reason, policy_state, current_risk_score,
-                simulation_summary_json, worktree_state_json, bidding_state_json, latest_validation_task_id, latest_failure_task_id, accepted_checkpoint_id, updated_at
+                simulation_summary_json, worktree_state_json, bidding_state_json, civic_connection_json, civic_capabilities_json,
+                available_skills_json, skill_health_json, skill_outputs_json, latest_validation_task_id, latest_failure_task_id,
+                accepted_checkpoint_id, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mission_id) DO UPDATE SET
                 active_phase=excluded.active_phase,
                 active_task_id=excluded.active_task_id,
@@ -357,6 +410,11 @@ class MissionStore:
                 simulation_summary_json=excluded.simulation_summary_json,
                 worktree_state_json=excluded.worktree_state_json,
                 bidding_state_json=excluded.bidding_state_json,
+                civic_connection_json=excluded.civic_connection_json,
+                civic_capabilities_json=excluded.civic_capabilities_json,
+                available_skills_json=excluded.available_skills_json,
+                skill_health_json=excluded.skill_health_json,
+                skill_outputs_json=excluded.skill_outputs_json,
                 latest_validation_task_id=excluded.latest_validation_task_id,
                 latest_failure_task_id=excluded.latest_failure_task_id,
                 accepted_checkpoint_id=excluded.accepted_checkpoint_id,
@@ -378,16 +436,20 @@ class MissionStore:
                 simulation_summary.model_dump_json() if simulation_summary else None,
                 _dump(worktree_state or {}),
                 _dump(bidding_state or {}),
+                _dump(civic_connection or {}),
+                _dump(civic_capabilities or []),
+                _dump(available_skills or []),
+                _dump(skill_health or {}),
+                _dump(skill_outputs or {}),
                 latest_validation_task_id,
                 latest_failure_task_id,
                 accepted_checkpoint_id,
                 utc_now().isoformat(),
             ),
         )
-        self.connection.commit()
 
     def upsert_control_state(self, mission_id: str, run_state: str, requested_action: str | None, reason: str | None, updated_at: str) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO mission_control (mission_id, run_state, requested_action, reason, updated_at)
             VALUES (?, ?, ?, ?, ?)
@@ -399,10 +461,9 @@ class MissionStore:
             """,
             (mission_id, run_state, requested_action, reason, updated_at),
         )
-        self.connection.commit()
 
     def save_task(self, mission_id: str, task: BaseModel, *, task_id: str, title: str, task_type: str, status: str, required: bool, dependencies: list[str]) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO tasks (id, mission_id, title, type, status, required, dependencies, payload_json, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -417,10 +478,9 @@ class MissionStore:
             """,
             (task_id, mission_id, title, task_type, status, int(required), _dump(dependencies), task.model_dump_json(), utc_now().isoformat()),
         )
-        self.connection.commit()
 
     def save_bid(self, mission_id: str, bid: BaseModel, *, bid_id: str, task_id: str, role: str, strategy_family: str, score: float | None, risk: float, cost: float, confidence: float, is_winner: bool, is_standby: bool, status: str, round_index: int) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO bids (id, mission_id, task_id, role, strategy_family, score, risk, cost, confidence, is_winner, is_standby, status, round_index, payload_json, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -441,10 +501,9 @@ class MissionStore:
             """,
             (bid_id, mission_id, task_id, role, strategy_family, score, risk, cost, confidence, int(is_winner), int(is_standby), status, round_index, bid.model_dump_json(), utc_now().isoformat()),
         )
-        self.connection.commit()
 
     def save_execution_step(self, mission_id: str, step: BaseModel, *, step_id: str, task_id: str, action: str, result: str, timestamp: str) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO execution_steps (id, mission_id, task_id, action, result, timestamp, payload_json)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -457,24 +516,52 @@ class MissionStore:
             """,
             (step_id, mission_id, task_id, action, result, timestamp, step.model_dump_json()),
         )
-        self.connection.commit()
+
+    def save_governed_bid_envelope(self, mission_id: str, envelope: BaseModel, *, envelope_id: str, task_id: str, bid_id: str, status: str, created_at: str) -> None:
+        self._execute(
+            """
+            INSERT INTO governed_bid_envelopes (id, mission_id, task_id, bid_id, status, created_at, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                task_id=excluded.task_id,
+                bid_id=excluded.bid_id,
+                status=excluded.status,
+                created_at=excluded.created_at,
+                payload_json=excluded.payload_json
+            """,
+            (envelope_id, mission_id, task_id, bid_id, status, created_at, envelope.model_dump_json()),
+        )
+
+    def save_governed_action_record(self, mission_id: str, record: BaseModel, *, action_id: str, task_id: str | None, bid_id: str | None, action_type: str, status: str, created_at: str) -> None:
+        self._execute(
+            """
+            INSERT INTO governed_action_records (id, mission_id, task_id, bid_id, action_type, status, created_at, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                task_id=excluded.task_id,
+                bid_id=excluded.bid_id,
+                action_type=excluded.action_type,
+                status=excluded.status,
+                created_at=excluded.created_at,
+                payload_json=excluded.payload_json
+            """,
+            (action_id, mission_id, task_id, bid_id, action_type, status, created_at, record.model_dump_json()),
+        )
 
     def save_validation_report(self, mission_id: str, report: BaseModel, *, record_id: str, task_id: str, passed: bool, details: list[str], timestamp: str) -> None:
-        self.connection.execute(
+        self._execute(
             "INSERT INTO validation_reports (id, mission_id, task_id, passed, details, timestamp, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (record_id, mission_id, task_id, int(passed), _dump(details), timestamp, report.model_dump_json()),
         )
-        self.connection.commit()
 
     def save_failure_context(self, mission_id: str, failure: BaseModel, *, record_id: str, task_id: str, failure_type: str, details: str, diff_summary: str, strategy_family: str | None, timestamp: str) -> None:
-        self.connection.execute(
+        self._execute(
             "INSERT INTO failure_contexts (id, mission_id, task_id, failure_type, details, diff_summary, strategy_family, timestamp, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (record_id, mission_id, task_id, failure_type, details, diff_summary, strategy_family, timestamp, failure.model_dump_json()),
         )
-        self.connection.commit()
 
     def save_accepted_checkpoint(self, mission_id: str, checkpoint: AcceptedCheckpoint) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO accepted_checkpoints (id, mission_id, label, commit_sha, diff_summary, created_at, payload_json)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -487,17 +574,15 @@ class MissionStore:
             """,
             (checkpoint.checkpoint_id, mission_id, checkpoint.label, checkpoint.commit_sha, checkpoint.diff_summary, checkpoint.created_at.isoformat(), checkpoint.model_dump_json()),
         )
-        self.connection.commit()
 
     def touch_runtime(self, mission_id: str) -> None:
-        self.connection.execute(
+        self._execute(
             "UPDATE mission_runtime SET updated_at = ? WHERE mission_id = ?",
             (utc_now().isoformat(), mission_id),
         )
-        self.connection.commit()
 
     def save_mission_state_checkpoint(self, checkpoint: MissionStateCheckpoint) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO mission_state_checkpoints (
                 id, mission_id, label, active_phase, active_task_id, active_bid_round, recovery_round,
@@ -535,10 +620,9 @@ class MissionStore:
                 checkpoint.model_dump_json(),
             ),
         )
-        self.connection.commit()
 
     def save_repo_state_checkpoint(self, checkpoint: RepoStateCheckpoint) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO repo_state_checkpoints (
                 id, mission_id, label, checkpoint_kind, branch_name, commit_sha, accepted, diff_summary, created_at, payload_json
@@ -567,10 +651,9 @@ class MissionStore:
                 checkpoint.model_dump_json(),
             ),
         )
-        self.connection.commit()
 
     def save_model_invocation(self, mission_id: str, invocation: BaseModel, *, invocation_id: str, task_id: str | None, bid_id: str | None, provider: str, lane: str, model_id: str | None, invocation_kind: str, status: str, generation_mode: str = "provider_model", started_at: str | None = None, completed_at: str | None = None, prompt_preview: str | None = None, response_preview: str | None = None, raw_usage: dict[str, Any] | None = None, token_usage: dict[str, int] | None = None, cost_usage: dict[str, float] | None = None, usage_unavailable_reason: str | None = None, error: str | None = None) -> None:
-        self.connection.execute(
+        self._execute(
             """
             INSERT INTO model_invocations (
                 id, mission_id, task_id, bid_id, provider, lane, model_id, invocation_kind, status,
@@ -621,10 +704,9 @@ class MissionStore:
                 invocation.model_dump_json(),
             ),
         )
-        self.connection.commit()
 
     def save_trace_entry(self, mission_id: str, trace: BaseModel, *, task_id: str | None, bid_id: str | None, trace_type: str, title: str, message: str, status: str, provider: str | None, lane: str | None) -> int:
-        cursor = self.connection.execute(
+        cursor = self._execute(
             """
             INSERT INTO trace_entries (mission_id, task_id, bid_id, trace_type, title, message, status, provider, lane, payload_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -643,94 +725,90 @@ class MissionStore:
                 getattr(trace, "created_at", utc_now()).isoformat(),
             ),
         )
-        self.connection.commit()
         return int(cursor.lastrowid)
 
     def add_replay_record(self, mission_id: str | None, lane: str, replay_key: str, payload: ReplayRecord) -> None:
-        self.connection.execute(
+        self._execute(
             "INSERT INTO replay_records (mission_id, lane, replay_key, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
             (mission_id, lane, replay_key, payload.model_dump_json(), payload.created_at.isoformat()),
         )
-        self.connection.commit()
 
     def append_event(self, mission_id: str, event_type: str, payload: dict[str, Any], created_at: str) -> int:
-        cursor = self.connection.execute(
+        cursor = self._execute(
             "INSERT INTO events (mission_id, event_type, payload_json, created_at, jsonl_written) VALUES (?, ?, ?, ?, 0)",
             (mission_id, event_type, _dump(payload), created_at),
         )
-        self.connection.commit()
         return int(cursor.lastrowid)
 
     def mark_event_jsonl_written(self, event_id: int) -> None:
-        self.connection.execute("UPDATE events SET jsonl_written = 1 WHERE id = ?", (event_id,))
-        self.connection.commit()
+        self._execute("UPDATE events SET jsonl_written = 1 WHERE id = ?", (event_id,))
 
     def fetch_events_needing_jsonl(self, mission_id: str) -> list[sqlite3.Row]:
-        return self.connection.execute("SELECT * FROM events WHERE mission_id = ? AND jsonl_written = 0 ORDER BY id ASC", (mission_id,)).fetchall()
+        return self._fetchall("SELECT * FROM events WHERE mission_id = ? AND jsonl_written = 0 ORDER BY id ASC", (mission_id,))
 
     def fetch_mission(self, mission_id: str | None = None) -> sqlite3.Row | None:
         if mission_id is None:
-            return self.connection.execute("SELECT * FROM mission LIMIT 1").fetchone()
-        return self.connection.execute("SELECT * FROM mission WHERE id = ?", (mission_id,)).fetchone()
+            return self._fetchone("SELECT * FROM mission LIMIT 1")
+        return self._fetchone("SELECT * FROM mission WHERE id = ?", (mission_id,))
 
     def fetch_runtime(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute("SELECT * FROM mission_runtime WHERE mission_id = ?", (mission_id,)).fetchone()
+        return self._fetchone("SELECT * FROM mission_runtime WHERE mission_id = ?", (mission_id,))
 
     def fetch_control_state(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute("SELECT * FROM mission_control WHERE mission_id = ?", (mission_id,)).fetchone()
+        return self._fetchone("SELECT * FROM mission_control WHERE mission_id = ?", (mission_id,))
 
     def fetch_events_after(self, mission_id: str, last_id: int = 0) -> list[sqlite3.Row]:
-        return self.connection.execute("SELECT * FROM events WHERE mission_id = ? AND id > ? ORDER BY id ASC", (mission_id, last_id)).fetchall()
+        return self._fetchall("SELECT * FROM events WHERE mission_id = ? AND id > ? ORDER BY id ASC", (mission_id, last_id))
 
     def fetch_all(self, table: str, mission_id: str | None = None) -> list[sqlite3.Row]:
         if mission_id is None:
-            return self.connection.execute(f"SELECT * FROM {table}").fetchall()
+            return self._fetchall(f"SELECT * FROM {table}")
         key = "id" if table == "mission" else "mission_id"
-        return self.connection.execute(f"SELECT * FROM {table} WHERE {key} = ?", (mission_id,)).fetchall()
+        return self._fetchall(f"SELECT * FROM {table} WHERE {key} = ?", (mission_id,))
 
     def fetch_ordered(self, table: str, order_by: str, mission_id: str | None = None) -> list[sqlite3.Row]:
         if mission_id is None:
-            return self.connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
+            return self._fetchall(f"SELECT * FROM {table} ORDER BY {order_by}")
         key = "id" if table == "mission" else "mission_id"
-        return self.connection.execute(f"SELECT * FROM {table} WHERE {key} = ? ORDER BY {order_by}", (mission_id,)).fetchall()
+        return self._fetchall(f"SELECT * FROM {table} WHERE {key} = ? ORDER BY {order_by}", (mission_id,))
 
     def fetch_latest_validation(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute("SELECT * FROM validation_reports WHERE mission_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1", (mission_id,)).fetchone()
+        return self._fetchone("SELECT * FROM validation_reports WHERE mission_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1", (mission_id,))
 
     def fetch_latest_failure(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute("SELECT * FROM failure_contexts WHERE mission_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1", (mission_id,)).fetchone()
+        return self._fetchone("SELECT * FROM failure_contexts WHERE mission_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1", (mission_id,))
 
     def fetch_latest_checkpoint(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute("SELECT * FROM accepted_checkpoints WHERE mission_id = ? ORDER BY created_at DESC, id DESC LIMIT 1", (mission_id,)).fetchone()
+        return self._fetchone("SELECT * FROM accepted_checkpoints WHERE mission_id = ? ORDER BY created_at DESC, id DESC LIMIT 1", (mission_id,))
 
     def fetch_latest_mission_state_checkpoint(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute(
+        return self._fetchone(
             "SELECT * FROM mission_state_checkpoints WHERE mission_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
             (mission_id,),
-        ).fetchone()
+        )
 
     def fetch_latest_repo_state_checkpoint(self, mission_id: str) -> sqlite3.Row | None:
-        return self.connection.execute(
+        return self._fetchone(
             "SELECT * FROM repo_state_checkpoints WHERE mission_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
             (mission_id,),
-        ).fetchone()
+        )
 
     def fetch_model_invocations(self, mission_id: str, task_id: str | None = None) -> list[sqlite3.Row]:
         if task_id is None:
-            return self.connection.execute("SELECT * FROM model_invocations WHERE mission_id = ? ORDER BY started_at ASC, id ASC", (mission_id,)).fetchall()
-        return self.connection.execute("SELECT * FROM model_invocations WHERE mission_id = ? AND task_id = ? ORDER BY started_at ASC, id ASC", (mission_id, task_id)).fetchall()
+            return self._fetchall("SELECT * FROM model_invocations WHERE mission_id = ? ORDER BY started_at ASC, id ASC", (mission_id,))
+        return self._fetchall("SELECT * FROM model_invocations WHERE mission_id = ? AND task_id = ? ORDER BY started_at ASC, id ASC", (mission_id, task_id))
 
     def fetch_trace_entries(self, mission_id: str, limit: int = 200, after_id: int = 0) -> list[sqlite3.Row]:
-        rows = self.connection.execute(
+        rows = self._fetchall(
             "SELECT * FROM trace_entries WHERE mission_id = ? AND id > ? ORDER BY id DESC LIMIT ?",
             (mission_id, after_id, limit),
-        ).fetchall()
+        )
         rows = list(rows)
         rows.reverse()
         return rows
 
     def _events_for_view(self, mission_id: str) -> list[dict[str, Any]]:
-        rows = self.connection.execute("SELECT * FROM events WHERE mission_id = ? ORDER BY id DESC LIMIT 500", (mission_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM events WHERE mission_id = ? ORDER BY id DESC LIMIT 500", (mission_id,))
         rows.reverse()
         return [{"id": row["id"], "event_type": row["event_type"], "created_at": row["created_at"], "message": json.loads(row["payload_json"]).get("message", ""), "payload": json.loads(row["payload_json"]).get("payload", {})} for row in rows]
 
@@ -755,6 +833,12 @@ class MissionStore:
 
     def _execution_steps_for_view(self, mission_id: str) -> list[dict[str, Any]]:
         return [json.loads(row["payload_json"]) for row in self.fetch_ordered("execution_steps", "timestamp ASC", mission_id)]
+
+    def _governed_bid_envelopes_for_view(self, mission_id: str) -> list[dict[str, Any]]:
+        return [json.loads(row["payload_json"]) for row in self.fetch_ordered("governed_bid_envelopes", "created_at ASC", mission_id)]
+
+    def _governed_action_records_for_view(self, mission_id: str) -> list[dict[str, Any]]:
+        return [json.loads(row["payload_json"]) for row in self.fetch_ordered("governed_action_records", "created_at ASC", mission_id)]
 
     def _checkpoints_for_view(self, mission_id: str) -> list[dict[str, Any]]:
         return [json.loads(row["payload_json"]) for row in self.fetch_ordered("accepted_checkpoints", "created_at ASC", mission_id)]
@@ -866,8 +950,14 @@ class MissionStore:
         return {
             "runtime": capabilities.get("runtime", "unknown"),
             "branch": repo_snapshot.get("branch"),
+            "tracking_branch": repo_snapshot.get("tracking_branch"),
             "head_commit": repo_snapshot.get("head_commit") or summary.get("head_commit"),
             "dirty": bool(repo_snapshot.get("dirty")),
+            "remotes": dict(repo_snapshot.get("remotes", {})),
+            "default_remote": repo_snapshot.get("default_remote"),
+            "remote_provider": repo_snapshot.get("remote_provider"),
+            "remote_slug": repo_snapshot.get("remote_slug"),
+            "objective_hints": dict(repo_snapshot.get("objective_hints", {})),
             "tree_summary": list(repo_snapshot.get("tree_summary", [])),
             "dependency_files": list(repo_snapshot.get("dependency_files", [])),
             "complexity_hotspots": list(repo_snapshot.get("complexity_hotspots", [])),
@@ -902,6 +992,7 @@ class MissionStore:
         summary: dict[str, Any],
         runtime: sqlite3.Row | None,
         failure_context: dict[str, Any] | None,
+        governed_actions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         records = []
         for audit_id, payload in (summary.get("audit_summary") or {}).items():
@@ -919,6 +1010,20 @@ class MissionStore:
                     "reasons": list(payload.get("reasons", [])),
                     "target": record_payload.get("file_scope") or record_payload.get("checkpoint"),
                     "payload": record_payload,
+                }
+            )
+        for record in governed_actions or []:
+            records.append(
+                {
+                    "audit_id": record.get("audit_id") or record.get("action_id"),
+                    "created_at": record.get("created_at"),
+                    "task_id": record.get("task_id"),
+                    "action_type": record.get("action_type"),
+                    "status": record.get("status"),
+                    "policy_state": record.get("policy_state"),
+                    "reasons": list(record.get("reasoning", [])),
+                    "target": record.get("tool_name") or record.get("skill_id"),
+                    "payload": record.get("input_payload", {}),
                 }
             )
         records.sort(key=lambda item: item.get("created_at") or "")
@@ -1064,13 +1169,14 @@ class MissionStore:
         mission: sqlite3.Row,
         runtime: sqlite3.Row | None,
         control: sqlite3.Row | None,
+        run_state: str,
         active_task: dict[str, Any] | None,
         usage_summary: dict[str, Any],
         runtime_seconds: float,
         history_metrics: dict[str, Any],
         civic_activity: dict[str, Any],
+        available_skills: list[str] | None = None,
     ) -> dict[str, Any]:
-        run_state = control["run_state"] if control else RunState.IDLE.value
         health = "healthy"
         if civic_activity.get("status") == PolicyState.BLOCKED.value:
             health = "blocked"
@@ -1098,11 +1204,12 @@ class MissionStore:
             "failure_count": history_metrics.get("failure_count", 0),
             "validator_status": history_metrics.get("validation", {}).get("status"),
             "civic_status": civic_activity.get("status"),
+            "active_skill_count": len(available_skills or []),
             "mission_health": health,
         }
 
-    def _usage_summary(self, mission_id: str, active_task_id: str | None) -> dict[str, Any]:
-        rows = self.fetch_model_invocations(mission_id)
+    def _usage_summary(self, mission_id: str, active_task_id: str | None, rows: list[sqlite3.Row] | None = None) -> dict[str, Any]:
+        rows = rows if rows is not None else self.fetch_model_invocations(mission_id)
         mission_tokens: dict[str, int] = {}
         mission_costs: dict[str, float] = {}
         active_tokens: dict[str, int] = {}
@@ -1225,9 +1332,30 @@ class MissionStore:
         control = self.fetch_control_state(mission_id)
         status = mission["status"]
         outcome = mission["outcome"]
-        if control and control["run_state"] == RunState.FINALIZED.value:
+        control_run_state = control["run_state"] if control else RunState.IDLE.value
+        control_reason = control["reason"] if control and "reason" in control.keys() else None
+        invocation_rows = self.fetch_model_invocations(mission_id)
+        has_inflight_model_work = any(
+            row["status"] == "started" and not row["completed_at"]
+            for row in invocation_rows
+        )
+        stale_session_finalize = (
+            control_run_state == RunState.FINALIZED.value
+            and control_reason in {"session_ended", "session_terminated"}
+            and outcome in {None, MissionOutcome.FAILED_SAFE_STOP.value}
+            and runtime is not None
+            and runtime["active_phase"] != ActivePhase.FINALIZE.value
+            and has_inflight_model_work
+        )
+        if stale_session_finalize:
+            control_run_state = RunState.RUNNING.value
+            status = runtime["active_phase"] or mission["status"]
+            outcome = None
+        elif control_run_state == RunState.FINALIZED.value:
             status = RunState.FINALIZED.value
-            outcome = outcome or summary.get("outcome") or MissionOutcome.FAILED_SAFE_STOP.value
+            outcome = outcome or summary.get("outcome")
+            if outcome is None and control_reason in {"session_ended", "session_terminated"}:
+                outcome = MissionOutcome.FAILED_SAFE_STOP.value
         validation = self.fetch_latest_validation(mission_id)
         validation_report = json.loads(validation["payload_json"]) if validation else None
         failure = self.fetch_latest_failure(mission_id)
@@ -1239,7 +1367,11 @@ class MissionStore:
         tasks = [json.loads(row["payload_json"]) for row in self.fetch_ordered("tasks", "updated_at ASC", mission_id)]
         bids = [json.loads(row["payload_json"]) for row in self.fetch_ordered("bids", "updated_at ASC", mission_id)]
         active_task = next((task for task in tasks if task["task_id"] == (runtime["active_task_id"] if runtime else None)), None)
-        usage_summary = self._usage_summary(mission_id, runtime["active_task_id"] if runtime else None)
+        usage_summary = self._usage_summary(
+            mission_id,
+            runtime["active_task_id"] if runtime else None,
+            rows=invocation_rows,
+        )
         bidding_state = self._bidding_state_for_view(
             summary,
             runtime,
@@ -1250,6 +1382,8 @@ class MissionStore:
         accepted_checkpoints = self._checkpoints_for_view(mission_id)
         mission_state_checkpoints = self._mission_state_checkpoints_for_view(mission_id)
         repo_state_checkpoints = self._repo_state_checkpoints_for_view(mission_id)
+        governed_bid_envelopes = self._governed_bid_envelopes_for_view(mission_id)
+        recent_civic_actions = self._governed_action_records_for_view(mission_id)
         mission_output = self._mission_output(mission, runtime, accepted_checkpoints)
         failure_count = len(self.fetch_all("failure_contexts", mission_id))
         runtime_seconds = self._runtime_seconds(mission, summary, control, runtime)
@@ -1262,7 +1396,7 @@ class MissionStore:
             repo_state_checkpoints,
             mission_output,
         )
-        civic_activity = self._civic_activity(summary, runtime, failure_context)
+        civic_activity = self._civic_activity(summary, runtime, failure_context, recent_civic_actions)
         provider_market_summary = self._provider_market_summary(
             bids,
             runtime["active_task_id"] if runtime else None,
@@ -1274,7 +1408,7 @@ class MissionStore:
             mission=mission,
             runtime=runtime,
             outcome=outcome,
-            run_state=control["run_state"] if control else RunState.IDLE.value,
+            run_state=control_run_state,
             winner_bid=winner_bid,
             validation_report=validation_report,
             failure_context=failure_context,
@@ -1285,11 +1419,13 @@ class MissionStore:
             mission=mission,
             runtime=runtime,
             control=control,
+            run_state=control_run_state,
             active_task=active_task,
             usage_summary=usage_summary,
             runtime_seconds=runtime_seconds,
             history_metrics=history_metrics,
             civic_activity=civic_activity,
+            available_skills=json.loads(runtime["available_skills_json"]) if runtime and runtime["available_skills_json"] else [],
         )
         mission_meta["status"] = status
         mission_meta["outcome"] = outcome
@@ -1314,7 +1450,7 @@ class MissionStore:
             "runtime_seconds": runtime_seconds,
             "status": status,
             "outcome": outcome,
-            "run_state": control["run_state"] if control else RunState.IDLE.value,
+            "run_state": control_run_state,
             "active_phase": runtime["active_phase"] if runtime else ActivePhase.IDLE.value,
             "active_task_id": runtime["active_task_id"] if runtime else None,
             "active_bid_round": runtime["active_bid_round"] if runtime else 0,
@@ -1340,6 +1476,11 @@ class MissionStore:
             "stop_state": {"stop_reason": runtime["stop_reason"] if runtime else None},
             "bidding_state": bidding_state,
             "civic_audit_summary": summary.get("audit_summary", {}),
+            "civic_connection": json.loads(runtime["civic_connection_json"]) if runtime and runtime["civic_connection_json"] else {},
+            "civic_capabilities": json.loads(runtime["civic_capabilities_json"]) if runtime and runtime["civic_capabilities_json"] else [],
+            "available_skills": json.loads(runtime["available_skills_json"]) if runtime and runtime["available_skills_json"] else [],
+            "skill_health": json.loads(runtime["skill_health_json"]) if runtime and runtime["skill_health_json"] else {},
+            "skill_outputs": json.loads(runtime["skill_outputs_json"]) if runtime and runtime["skill_outputs_json"] else {},
             "mission_meta": mission_meta,
             "history_metrics": history_metrics,
             "repo_insights": self._repo_insights(mission, summary, latest_state_checkpoint, validation_report),
@@ -1352,15 +1493,16 @@ class MissionStore:
             "accepted_checkpoints": accepted_checkpoints,
             "mission_state_checkpoints": mission_state_checkpoints,
             "repo_state_checkpoints": repo_state_checkpoints,
+            "governed_bid_envelopes": governed_bid_envelopes,
+            "recent_civic_actions": recent_civic_actions,
             "mission_output": mission_output,
             "execution_steps": self._execution_steps_for_view(mission_id),
             "recent_trace": recent_trace,
         }
-        self.connection.execute(
+        self._execute(
             "INSERT INTO mission_view_cache (mission_id, payload_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(mission_id) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
             (mission_id, _dump(payload), utc_now().isoformat()),
         )
-        self.connection.commit()
         return payload
 
     def get_mission_view(self, mission_id: str) -> dict[str, Any]:

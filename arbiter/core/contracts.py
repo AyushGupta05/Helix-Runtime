@@ -168,6 +168,7 @@ class MissionSpec(BaseModel):
     benchmark_requirement: str | None = None
     protected_paths: list[str] = Field(default_factory=list)
     public_api_surface: list[str] = Field(default_factory=list)
+    requested_skills: list[str] = Field(default_factory=list)
     stop_policy: StopPolicy = Field(default_factory=StopPolicy)
     risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
     approval_policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
@@ -232,7 +233,13 @@ class RepoSnapshot(BaseModel):
     repo_path: str
     branch: str | None = None
     head_commit: str | None = None
+    tracking_branch: str | None = None
     dirty: bool = False
+    remotes: dict[str, str] = Field(default_factory=dict)
+    default_remote: str | None = None
+    remote_provider: str | None = None
+    remote_slug: str | None = None
+    objective_hints: dict[str, Any] = Field(default_factory=dict)
     changed_files: list[str] = Field(default_factory=list)
     untracked_files: list[str] = Field(default_factory=list)
     tree_summary: list[str] = Field(default_factory=list)
@@ -316,6 +323,14 @@ class Bid(BaseModel):
     mutation_kind: str | None = None
     policy_feasibility: PolicyDecision = Field(default_factory=lambda: PolicyDecision(allowed=True))
     civic_permission_footprint: list[str] = Field(default_factory=list)
+    required_skills: list[str] = Field(default_factory=list)
+    optional_skills: list[str] = Field(default_factory=list)
+    governed_action_plan: list[str] = Field(default_factory=list)
+    external_evidence_plan: list[str] = Field(default_factory=list)
+    capability_reliance_score: float = 0.0
+    policy_friction_score: float = 0.0
+    revocation_risk_score: float = 0.0
+    active_envelope_id: str | None = None
     score: float | None = None
     search_score: float | None = None
     search_reward: float | None = None
@@ -353,6 +368,12 @@ class SimulationSummary(BaseModel):
     validator_stability: float = 0.0
     rollback_safety: float = 0.0
     policy_confidence: float = 0.0
+    capability_availability: float = 1.0
+    policy_friction: float = 0.0
+    revocation_risk: float = 0.0
+    evidence_quality: float = 0.0
+    freshness_score: float = 1.0
+    guardrail_narrowing: float = 0.0
     summary: str = ""
 
 
@@ -381,6 +402,90 @@ class ActionOutcome(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     audit: CivicAuditRecord
     command_result: CommandResult | None = None
+
+
+class CivicConnectionStatus(BaseModel):
+    configured: bool = False
+    connected: bool = False
+    available: bool = False
+    required: bool = False
+    status: Literal["unconfigured", "connected", "degraded", "unavailable"] = "unconfigured"
+    base_url: str | None = None
+    toolkit_id: str | None = None
+    required_tools: list[str] = Field(default_factory=list)
+    missing_tools: list[str] = Field(default_factory=list)
+    discovered_tool_count: int = 0
+    last_checked_at: datetime | None = None
+    message: str | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
+class CivicCapability(BaseModel):
+    capability_id: str
+    display_name: str
+    available: bool = True
+    read_only: bool = True
+    tools: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SkillHealth(BaseModel):
+    skill_id: str
+    status: Literal["inactive", "available", "degraded", "blocked"] = "inactive"
+    available: bool = False
+    required_tools: list[str] = Field(default_factory=list)
+    available_tools: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    last_checked_at: datetime | None = None
+
+
+class GovernedBidEnvelope(BaseModel):
+    envelope_id: str
+    mission_id: str
+    task_id: str
+    bid_id: str
+    status: Literal["approved", "blocked", "revoked", "expired"] = "approved"
+    allowed_skills: list[str] = Field(default_factory=list)
+    allowed_actions: list[str] = Field(default_factory=list)
+    toolkit_id: str | None = None
+    profile_id: str | None = None
+    read_only: bool = True
+    read_write_scope: str = "read_only"
+    runtime_budget_seconds: float | None = None
+    token_budget: int | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    policy_state: PolicyState = PolicyState.CLEAR
+    policy_decision: str = "allow"
+    reasoning: list[str] = Field(default_factory=list)
+    audit_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class GovernedActionRecord(BaseModel):
+    action_id: str
+    mission_id: str
+    task_id: str | None = None
+    bid_id: str | None = None
+    envelope_id: str | None = None
+    skill_id: str | None = None
+    action_type: str
+    tool_name: str | None = None
+    status: Literal[
+        "preflight_allowed",
+        "preflight_blocked",
+        "executed",
+        "failed",
+        "revoked",
+        "unavailable",
+    ] = "preflight_allowed"
+    allowed: bool = True
+    audit_id: str | None = None
+    policy_state: PolicyState = PolicyState.CLEAR
+    reasoning: list[str] = Field(default_factory=list)
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    output_payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class ExecutionStep(BaseModel):
@@ -568,6 +673,13 @@ class ArbiterState(BaseModel):
     winner_bid_id: str | None = None
     standby_bid_id: str | None = None
     repo_snapshot: RepoSnapshot | None = None
+    civic_connection: CivicConnectionStatus = Field(default_factory=CivicConnectionStatus)
+    civic_capabilities: list[CivicCapability] = Field(default_factory=list)
+    available_skills: list[str] = Field(default_factory=list)
+    skill_health: dict[str, SkillHealth] = Field(default_factory=dict)
+    skill_outputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    governed_bid_envelopes: dict[str, GovernedBidEnvelope] = Field(default_factory=dict)
+    recent_civic_actions: list[GovernedActionRecord] = Field(default_factory=list)
     tasks: list[TaskNode] = Field(default_factory=list)
     active_task_id: str | None = None
     current_bid: Bid | None = None

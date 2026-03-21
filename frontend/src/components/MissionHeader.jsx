@@ -21,11 +21,32 @@ function repoLabel(repoPath) {
   return segments[segments.length - 1] ?? repoPath ?? "repo";
 }
 
+function summarizeConnection(connection) {
+  if (!connection) {
+    return { value: "Not checked", detail: "Civic state has not been surfaced yet" };
+  }
+  const status = String(connection.status ?? connection.state ?? "unknown").replace(/[_-]/g, " ");
+  const toolkit = connection.toolkit_id ?? connection.toolkit ?? "default toolkit";
+  const lastChecked = connection.checked_at ? ` | ${new Date(connection.checked_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+  return {
+    value: status,
+    detail: `${toolkit}${lastChecked}`
+  };
+}
+
 function statusSummary(mission, usageSummary) {
   const missionUsage = usageSummary?.mission ?? { total_cost: 0 };
   const latestCheckpoint = mission.accepted_checkpoints?.at(-1) ?? null;
   const validation = mission.validation_report;
   const civicCount = Object.keys(mission.civic_audit_summary ?? {}).length;
+  const civicConnection = summarizeConnection(mission.civic_connection);
+  const activeSkills = Array.isArray(mission.available_skills) ? mission.available_skills.length : 0;
+  const degraded = Boolean(
+    mission.civic_connection?.degraded ||
+      mission.civic_connection?.blocked ||
+      mission.civic_connection?.status === "blocked" ||
+      mission.civic_connection?.status === "degraded"
+  );
   const leader =
     mission.bids?.find((bid) => bid.bid_id === mission.winner_bid_id) ??
     mission.bids?.find((bid) => bid.selected) ??
@@ -45,8 +66,8 @@ function statusSummary(mission, usageSummary) {
     },
     {
       label: "Civic status",
-      value: civicCount ? `${civicCount} audit${civicCount === 1 ? "" : "s"}` : "Idle",
-      detail: civicCount ? "Governance evidence captured" : "No audit activity yet"
+      value: civicConnection.value,
+      detail: `${civicConnection.detail} | ${activeSkills} active skill${activeSkills === 1 ? "" : "s"}${degraded ? " | degraded" : ""}${civicCount ? ` | ${civicCount} audit${civicCount === 1 ? "" : "s"}` : ""}`
     },
     {
       label: "Validator status",
@@ -156,7 +177,7 @@ export default function MissionHeader({
           </div>
         </div>
 
-        <div className="mission-status-cluster">
+          <div className="mission-status-cluster">
           {statusCards.map((card) => (
             <article key={card.label} className="mission-status-card">
               <span>{card.label}</span>
@@ -177,6 +198,9 @@ export default function MissionHeader({
           </span>
           <span>
             Total spend <strong>{formatCurrency(missionUsage.total_cost)}</strong>
+          </span>
+          <span>
+            Civic skills <strong>{Array.isArray(mission.available_skills) ? mission.available_skills.length : 0}</strong>
           </span>
         </div>
 

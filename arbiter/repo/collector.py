@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -110,14 +111,36 @@ def _find_matching_file(repo: Path, pattern: str) -> bool:
     return False
 
 
+_GITHUB_REMOTE_PATTERNS = (
+    re.compile(r"^git@github\.com:(?P<slug>[^/]+/[^/]+?)(?:\.git)?$"),
+    re.compile(r"^https://github\.com/(?P<slug>[^/]+/[^/]+?)(?:\.git)?$"),
+)
+
+
+def _parse_github_slug(remote_url: str | None) -> str | None:
+    if not remote_url:
+        return None
+    normalized = remote_url.strip()
+    for pattern in _GITHUB_REMOTE_PATTERNS:
+        match = pattern.match(normalized)
+        if match:
+            return match.group("slug")
+    return None
+
+
 class RepoStateCollector:
     def __init__(self, repo_path: str) -> None:
         self.repo = Path(repo_path).resolve()
 
-    def collect(self, run_commands: bool = True) -> RepoSnapshot:
+    def collect(self, run_commands: bool = True, objective: str | None = None) -> RepoSnapshot:
         capabilities = self._detect_capabilities()
         branch = self._git(["branch", "--show-current"]).stdout.strip() or None
         head = self._git(["rev-parse", "HEAD"]).stdout.strip() or None
+        tracking_branch = self._git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).stdout.strip() or None
+        remotes = self._git_remotes()
+        default_remote = "origin" if "origin" in remotes else next(iter(remotes), None)
+        remote_slug = _parse_github_slug(remotes.get(default_remote or "", ""))
+        remote_provider = "github" if remote_slug else None
         status = self._git(["status", "--porcelain"]).stdout.splitlines()
         changed_files = [line[3:] for line in status if line and not line.startswith("??")]
         untracked = [line[3:] for line in status if line.startswith("??")]
@@ -125,7 +148,13 @@ class RepoStateCollector:
             repo_path=str(self.repo),
             branch=branch,
             head_commit=head,
+            tracking_branch=tracking_branch,
             dirty=bool(status),
+            remotes=remotes,
+            default_remote=default_remote,
+            remote_provider=remote_provider,
+            remote_slug=remote_slug,
+            objective_hints=self._objective_hints(objective),
             changed_files=changed_files,
             untracked_files=untracked,
             tree_summary=self._tree_summary(),
@@ -141,6 +170,39 @@ class RepoStateCollector:
 
     def _git(self, args: list[str]) -> CommandResult:
         return _run(["git", *args], cwd=str(self.repo))
+
+    def _git_remotes(self) -> dict[str, str]:
+        remotes: dict[str, str] = {}
+        output = self._git(["remote", "-v"]).stdout.splitlines()
+        for line in output:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] not in remotes:
+                remotes[parts[0]] = parts[1]
+        return remotes
+
+    def _objective_hints(self, objective: str | None) -> dict[str, object]:
+        text = objective or ""
+        pr_numbers = {
+            int(match)
+            for match in re.findall(r"(?:pull request|pr|pull)[^\d#]*(?:#)?(\d+)", text, flags=re.IGNORECASE)
+        }
+        pr_numbers.update(int(match) for match in re.findall(r"github\.com/[^/]+/[^/]+/pull/(\d+)", text, flags=re.IGNORECASE))
+        issue_numbers = {
+            int(match)
+            for match in re.findall(r"(?:issue|bug|ticket)[^\d#]*(?:#)?(\d+)", text, flags=re.IGNORECASE)
+        }
+        issue_numbers.update(int(match) for match in re.findall(r"github\.com/[^/]+/[^/]+/issues/(\d+)", text, flags=re.IGNORECASE))
+        discussion_numbers = {
+            int(match)
+            for match in re.findall(r"(?:discussion)[^\d#]*(?:#)?(\d+)", text, flags=re.IGNORECASE)
+        }
+        discussion_numbers.update(int(match) for match in re.findall(r"github\.com/[^/]+/[^/]+/discussions/(\d+)", text, flags=re.IGNORECASE))
+        return {
+            "has_github_reference": bool(pr_numbers or issue_numbers or discussion_numbers),
+            "pr_numbers": sorted(pr_numbers),
+            "issue_numbers": sorted(issue_numbers),
+            "discussion_numbers": sorted(discussion_numbers),
+        }
 
     def _dependency_files(self) -> list[str]:
         candidates = ["pyproject.toml", "requirements.txt", "setup.py", "package.json", "package-lock.json", "pnpm-lock.yaml"]

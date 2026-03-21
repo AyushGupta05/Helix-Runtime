@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import time
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -114,6 +115,16 @@ _ANTHROPIC_PRICE_CARDS: tuple[tuple[str, ModelPriceCard], ...] = (
         ),
     ),
     (
+        "claude-haiku-4-5",
+        ModelPriceCard(
+            input_per_mtok=1.0,
+            cached_input_per_mtok=0.1,
+            output_per_mtok=5.0,
+            cache_write_5m_per_mtok=1.25,
+            cache_write_1h_per_mtok=2.0,
+        ),
+    ),
+    (
         "claude-3-5-haiku",
         ModelPriceCard(
             input_per_mtok=0.8,
@@ -123,6 +134,32 @@ _ANTHROPIC_PRICE_CARDS: tuple[tuple[str, ModelPriceCard], ...] = (
             cache_write_1h_per_mtok=1.6,
         ),
     ),
+)
+
+_MAX_PROVIDER_ATTEMPTS = 2
+_NON_RETRYABLE_PROVIDER_ERROR_MARKERS = (
+    "not_found_error",
+    "error code: 404",
+    "unknown model",
+    "invalid model",
+)
+_RETRYABLE_PROVIDER_ERROR_MARKERS = (
+    "error return without exception set",
+    "cannot commit - no transaction is active",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "connection reset",
+    "connection aborted",
+    "connection closed",
+    "rate limit",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "internal server error",
+    "server error",
 )
 
 
@@ -347,6 +384,15 @@ def _usage_reason(token_usage: dict[str, int] | None, cost_usage: dict[str, floa
     return "; ".join(reasons) or None
 
 
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if not message:
+        return False
+    if any(marker in message for marker in _NON_RETRYABLE_PROVIDER_ERROR_MARKERS):
+        return False
+    return any(marker in message for marker in _RETRYABLE_PROVIDER_ERROR_MARKERS)
+
+
 class ProviderModelRouter:
     def __init__(self, config: RuntimeConfig, replay: ReplayManager) -> None:
         self.config = config
@@ -364,7 +410,7 @@ class ProviderModelRouter:
             return base_lane, provider
         return lane, self.config.default_provider
 
-    def _get_model(self, lane: str, request_timeout_seconds: float | None = None):
+    def _lane_settings(self, lane: str, request_timeout_seconds: float | None = None):
         base_lane, provider = self._resolve_lane(lane)
         lane_key = f"{base_lane}.{provider}"
         lane_config = self.config.model_lanes.get(lane_key) or self.config.model_lanes[base_lane]
@@ -373,6 +419,10 @@ class ProviderModelRouter:
             if request_timeout_seconds is not None
             else float(self.config.provider_request_timeout_seconds)
         )
+        return lane_key, lane_config, timeout_seconds
+
+    def _get_model(self, lane: str, request_timeout_seconds: float | None = None):
+        lane_key, lane_config, timeout_seconds = self._lane_settings(lane, request_timeout_seconds)
         cache_key = f"{lane_key}@{timeout_seconds}"
         if cache_key not in self._models:
             if lane_config.provider == "openai":
@@ -416,47 +466,57 @@ class ProviderModelRouter:
                 return ModelInvocationResult.model_validate({**recorded, "generation_mode": BidGenerationMode.REPLAY})
             raise RuntimeError("Replay mode is active but no recorded response exists for this prompt.")
         started_at = utc_now().isoformat()
-        model, lane_config = self._get_model(lane, request_timeout_seconds=request_timeout_seconds)
         messages = [
             ("system", prompt["system"]),
             ("human", prompt["user"]),
         ]
-        response = model.invoke(messages)
-        content = response.content if isinstance(response.content, str) else json.dumps(response.content)
-        raw_usage = getattr(response, "usage_metadata", {}) or {}
-        response_metadata = getattr(response, "response_metadata", {}) or {}
-        if response_metadata:
-            raw_usage = {
-                "usage_metadata": raw_usage,
-                "response_metadata": response_metadata,
-            }
-        token_usage = _normalize_usage_metadata(raw_usage) or None
-        cost_usage = _extract_cost_usage(raw_usage) or None
-        if cost_usage is None:
-            cost_usage = _estimate_cost_usage(
-                raw_usage=raw_usage,
-                token_usage=token_usage,
-                provider=lane_config.provider,
-                model_id=lane_config.model_id,
-            )
-        result = ModelInvocationResult(
-            content=content,
-            provider=lane_config.provider,
-            model_id=lane_config.model_id,
-            lane=lane,
-            generation_mode=BidGenerationMode.PROVIDER_MODEL,
-            raw_usage=raw_usage,
-            token_usage=token_usage,
-            cost_usage=cost_usage,
-            usage_unavailable_reason=_usage_reason(token_usage, cost_usage, BidGenerationMode.PROVIDER_MODEL),
-            prompt_preview=_preview_text(prompt["user"]),
-            response_preview=_preview_text(content),
-            started_at=started_at,
-            completed_at=utc_now().isoformat(),
-        )
-        if self.replay.mode in {"record", "off"}:
-            self.replay.record(lane=lane, prompt=prompt, response=result.model_dump(mode="json"))
-        return result
+        lane_key, _, timeout_seconds = self._lane_settings(lane, request_timeout_seconds)
+        cache_key = f"{lane_key}@{timeout_seconds}"
+        for attempt in range(1, _MAX_PROVIDER_ATTEMPTS + 1):
+            model, lane_config = self._get_model(lane, request_timeout_seconds=request_timeout_seconds)
+            try:
+                response = model.invoke(messages)
+                content = response.content if isinstance(response.content, str) else json.dumps(response.content)
+                raw_usage = getattr(response, "usage_metadata", {}) or {}
+                response_metadata = getattr(response, "response_metadata", {}) or {}
+                if response_metadata:
+                    raw_usage = {
+                        "usage_metadata": raw_usage,
+                        "response_metadata": response_metadata,
+                    }
+                token_usage = _normalize_usage_metadata(raw_usage) or None
+                cost_usage = _extract_cost_usage(raw_usage) or None
+                if cost_usage is None:
+                    cost_usage = _estimate_cost_usage(
+                        raw_usage=raw_usage,
+                        token_usage=token_usage,
+                        provider=lane_config.provider,
+                        model_id=lane_config.model_id,
+                    )
+                result = ModelInvocationResult(
+                    content=content,
+                    provider=lane_config.provider,
+                    model_id=lane_config.model_id,
+                    lane=lane,
+                    generation_mode=BidGenerationMode.PROVIDER_MODEL,
+                    raw_usage=raw_usage,
+                    token_usage=token_usage,
+                    cost_usage=cost_usage,
+                    usage_unavailable_reason=_usage_reason(token_usage, cost_usage, BidGenerationMode.PROVIDER_MODEL),
+                    prompt_preview=_preview_text(prompt["user"]),
+                    response_preview=_preview_text(content),
+                    started_at=started_at,
+                    completed_at=utc_now().isoformat(),
+                )
+                if self.replay.mode in {"record", "off"}:
+                    self.replay.record(lane=lane, prompt=prompt, response=result.model_dump(mode="json"))
+                return result
+            except Exception as exc:
+                if attempt >= _MAX_PROVIDER_ATTEMPTS or not _is_retryable_provider_error(exc):
+                    raise
+                self._models.pop(cache_key, None)
+                time.sleep(0.25 * attempt)
+        raise RuntimeError(f"Provider invocation for lane {lane} exhausted retries without returning a result.")
 
 
 class DefaultStrategyBackend:

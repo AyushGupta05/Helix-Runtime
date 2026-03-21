@@ -15,12 +15,12 @@ def test_bedrock_model_provider_is_rejected(monkeypatch) -> None:
 
 
 def test_anthropic_defaults_limit_sonnet_4_to_deep_strategy_lane() -> None:
-    assert RuntimeConfig.model_fields["anthropic_model_triage"].default == "claude-3-5-haiku-20241022"
-    assert RuntimeConfig.model_fields["anthropic_model_bid_fast"].default == "claude-3-5-haiku-20241022"
+    assert RuntimeConfig.model_fields["anthropic_model_triage"].default == "claude-haiku-4-5-20251001"
+    assert RuntimeConfig.model_fields["anthropic_model_bid_fast"].default == "claude-haiku-4-5-20251001"
     assert RuntimeConfig.model_fields["anthropic_model_bid_deep"].default == "claude-sonnet-4-20250514"
-    assert RuntimeConfig.model_fields["anthropic_model_proposal_gen"].default == "claude-3-5-haiku-20241022"
-    assert RuntimeConfig.model_fields["anthropic_model_test_gen"].default == "claude-3-5-haiku-20241022"
-    assert RuntimeConfig.model_fields["anthropic_model_perf_reason"].default == "claude-3-5-haiku-20241022"
+    assert RuntimeConfig.model_fields["anthropic_model_proposal_gen"].default == "claude-haiku-4-5-20251001"
+    assert RuntimeConfig.model_fields["anthropic_model_test_gen"].default == "claude-haiku-4-5-20251001"
+    assert RuntimeConfig.model_fields["anthropic_model_perf_reason"].default == "claude-haiku-4-5-20251001"
 
 
 def test_provider_timeout_has_a_default_guardrail() -> None:
@@ -56,3 +56,14 @@ def test_single_provider_market_lanes_cover_the_full_market(monkeypatch) -> None
     )
 
     assert config.market_lanes_for("anthropic") == ["triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"]
+
+
+def test_civic_runtime_defaults_are_safe() -> None:
+    assert RuntimeConfig.model_fields["civic_required"].default is False
+    assert RuntimeConfig.model_fields["civic_connection_timeout_seconds"].default == 10.0
+    assert RuntimeConfig.model_fields["run_live_civic_tests"].default is False
+
+
+def test_civic_required_tools_default_to_github_read_actions() -> None:
+    config = RuntimeConfig()
+    assert config.civic_required_tools == ["fetch_ci_status", "open_pr_metadata"]

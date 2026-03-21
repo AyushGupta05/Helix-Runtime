@@ -11,6 +11,7 @@ class MissionCreateRequest(BaseModel):
     objective: str
     constraints: list[str] = Field(default_factory=list)
     preferences: list[str] = Field(default_factory=list)
+    requested_skills: list[str] = Field(default_factory=list)
     max_runtime: int = 10
     benchmark_requirement: str | None = None
     protected_paths: list[str] = Field(default_factory=list)
@@ -57,6 +58,14 @@ class BidView(BaseModel):
     rollout_level: str | None = None
     search_summary: str | None = None
     policy_state: str | None = None
+    required_skills: list[str] = Field(default_factory=list)
+    optional_skills: list[str] = Field(default_factory=list)
+    governed_action_plan: list[str] = Field(default_factory=list)
+    external_evidence_plan: list[str] = Field(default_factory=list)
+    capability_reliance_score: float = 0.0
+    policy_friction_score: float = 0.0
+    revocation_risk_score: float = 0.0
+    active_envelope_id: str | None = None
     token_usage: dict[str, int] | None = None
     cost_usage: dict[str, float] | None = None
     usage_unavailable_reason: str | None = None
@@ -108,6 +117,11 @@ class MissionView(BaseModel):
     stop_state: dict[str, Any] = Field(default_factory=dict)
     bidding_state: dict[str, Any] = Field(default_factory=dict)
     civic_audit_summary: dict[str, Any] = Field(default_factory=dict)
+    civic_connection: dict[str, Any] = Field(default_factory=dict)
+    civic_capabilities: list[dict[str, Any]] = Field(default_factory=list)
+    available_skills: list[str] = Field(default_factory=list)
+    skill_health: dict[str, Any] = Field(default_factory=dict)
+    skill_outputs: dict[str, Any] = Field(default_factory=dict)
     mission_meta: dict[str, Any] = Field(default_factory=dict)
     history_metrics: dict[str, Any] = Field(default_factory=dict)
     repo_insights: dict[str, Any] = Field(default_factory=dict)
@@ -120,6 +134,8 @@ class MissionView(BaseModel):
     accepted_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
     mission_state_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
     repo_state_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+    governed_bid_envelopes: list[dict[str, Any]] = Field(default_factory=list)
+    recent_civic_actions: list[dict[str, Any]] = Field(default_factory=list)
     mission_output: dict[str, Any] = Field(default_factory=dict)
     execution_steps: list[dict[str, Any]] = Field(default_factory=list)
     recent_trace: list[dict[str, Any]] = Field(default_factory=list)

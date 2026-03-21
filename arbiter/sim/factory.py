@@ -135,6 +135,15 @@ def _text_value(value: object, fallback: str) -> str:
     return str(value)
 
 
+def _list_value(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    return []
+
+
 @dataclass
 class BidGenerationBatch:
     bids: list[Bid] = field(default_factory=list)
@@ -273,7 +282,7 @@ class SimulationFactory:
         return BidGenerationBatch(
             bids=provider_bids,
             generation_mode=backend_mode,
-            degraded_reason="; ".join(provider_errors) if provider_errors else None,
+            degraded_reason=None,
             provider_errors=provider_errors,
             provider_invocation_ids=provider_invocation_ids,
         )
@@ -426,6 +435,7 @@ class SimulationFactory:
             f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute the "
             f"{variant['name']} {task.task_type.value.replace('_', ' ')} plan."
         )
+        skill_plan = self._derive_skill_plan(role.role, task, payload)
         bid = Bid(
             bid_id=uuid4().hex,
             task_id=task.task_id,
@@ -462,6 +472,13 @@ class SimulationFactory:
             mutation_kind=str(variant["name"]),
             policy_feasibility=PolicyDecision(allowed=True),
             civic_permission_footprint=list(task.allowed_tools),
+            required_skills=skill_plan["required_skills"],
+            optional_skills=skill_plan["optional_skills"],
+            governed_action_plan=skill_plan["governed_action_plan"],
+            external_evidence_plan=skill_plan["external_evidence_plan"],
+            capability_reliance_score=skill_plan["capability_reliance_score"],
+            policy_friction_score=skill_plan["policy_friction_score"],
+            revocation_risk_score=skill_plan["revocation_risk_score"],
             promotion_hints=["validation_failure", "policy_block", "regression"],
             token_usage=result.token_usage,
             cost_usage=result.cost_usage,
@@ -530,6 +547,7 @@ class SimulationFactory:
                 f"Round {strategy_round}: {family_summary.rstrip('.')} — "
                 f"{'building on ' + str(len(completed)) + ' completed moves' if completed else 'opening the mission'}."
             )
+            skill_plan = self._derive_skill_plan(role.role, task, {})
             bids.append(
                 Bid(
                     bid_id=uuid4().hex,
@@ -561,6 +579,13 @@ class SimulationFactory:
                     mutation_kind=str(variant["name"]),
                     policy_feasibility=PolicyDecision(allowed=True, risk_score=risk),
                     civic_permission_footprint=list(task.allowed_tools),
+                    required_skills=skill_plan["required_skills"],
+                    optional_skills=skill_plan["optional_skills"],
+                    governed_action_plan=skill_plan["governed_action_plan"],
+                    external_evidence_plan=skill_plan["external_evidence_plan"],
+                    capability_reliance_score=skill_plan["capability_reliance_score"],
+                    policy_friction_score=skill_plan["policy_friction_score"],
+                    revocation_risk_score=skill_plan["revocation_risk_score"],
                     promotion_hints=["validation_failure", "policy_block", "regression"],
                     token_usage=None,
                     cost_usage=None,
@@ -579,6 +604,48 @@ class SimulationFactory:
             self.market_token_usage[key] = self.market_token_usage.get(key, 0) + int(value)
         for key, value in (cost_usage or {}).items():
             self.market_cost_usage[key] = self.market_cost_usage.get(key, 0.0) + float(value)
+
+    def _derive_skill_plan(self, role_name: str, task: TaskNode, payload: dict[str, object]) -> dict[str, object]:
+        mission_context = self._current_mission_context or {}
+        available_skills = set(mission_context.get("available_skills", []))
+        requested_skills = set(mission_context.get("requested_skills", []))
+        skill_outputs = mission_context.get("skill_outputs", {})
+
+        required_skills = _list_value(payload.get("required_skills"))
+        optional_skills = _list_value(payload.get("optional_skills"))
+        governed_action_plan = _list_value(payload.get("governed_action_plan"))
+        external_evidence_plan = _list_value(payload.get("external_evidence_plan"))
+
+        if "github_context" in available_skills:
+            github_actions = ["fetch_ci_status"]
+            github_output = skill_outputs.get("github_context", {})
+            if github_output.get("pr"):
+                github_actions.append("open_pr_metadata")
+            if github_output.get("issues"):
+                github_actions.append("open_issue_metadata")
+            if github_output.get("discussion"):
+                github_actions.append("fetch_discussion_context")
+            if "github_context" in requested_skills or role_name in {"Test"} or task.task_type.value in {"localize", "validate"}:
+                required_skills = list(dict.fromkeys([*required_skills, "github_context"]))
+            else:
+                optional_skills = list(dict.fromkeys([*optional_skills, "github_context"]))
+            governed_action_plan = list(dict.fromkeys([*governed_action_plan, *github_actions]))
+            external_evidence_plan = list(dict.fromkeys([*external_evidence_plan, *github_actions]))
+
+        required_skills = [skill for skill in required_skills if skill in available_skills or skill in requested_skills]
+        optional_skills = [skill for skill in optional_skills if skill in available_skills and skill not in required_skills]
+        capability_reliance_score = 0.65 if required_skills else 0.28 if optional_skills else 0.0
+        policy_friction_score = round(0.12 * len(governed_action_plan) + 0.18 * len(required_skills), 4)
+        revocation_risk_score = round(0.08 + capability_reliance_score * 0.35, 4) if governed_action_plan else 0.0
+        return {
+            "required_skills": required_skills,
+            "optional_skills": optional_skills,
+            "governed_action_plan": governed_action_plan,
+            "external_evidence_plan": external_evidence_plan,
+            "capability_reliance_score": round(capability_reliance_score, 4),
+            "policy_friction_score": policy_friction_score,
+            "revocation_risk_score": revocation_risk_score,
+        }
 
     @staticmethod
     def _runtime_pressure(task: TaskNode, bid: Bid) -> float:
@@ -663,8 +730,10 @@ class SimulationFactory:
         *,
         rollout_evidence: list[str],
         failure_count: int = 0,
+        capability_context: dict[str, float] | None = None,
     ) -> dict[str, float | int]:
         priors = self._search_priors(task, bid, rollout_evidence, failure_count)
+        capability_context = capability_context or {}
         sample_count = max(task.monte_carlo_samples, 16 + task.search_depth * 8 + failure_count * 4)
         rng = random.Random(
             _stable_seed(
@@ -694,6 +763,12 @@ class SimulationFactory:
                 - 0.42 * drift
                 - 0.35 * bid.risk * rollback
                 - 0.08 * priors["scope_pressure"] * drift
+                + 0.08 * float(capability_context.get("capability_availability_probability", 1.0))
+                - 0.12 * float(capability_context.get("policy_friction_cost", 0.0))
+                - 0.08 * float(capability_context.get("revocation_likelihood", 0.0))
+                + 0.08 * float(capability_context.get("evidence_quality_impact", 0.0))
+                + 0.05 * float(capability_context.get("freshness_decay", 1.0))
+                - 0.07 * float(capability_context.get("guardrail_narrowing_effect", 0.0))
             )
             if success and not rollback:
                 score += 0.12
@@ -738,6 +813,12 @@ class SimulationFactory:
             "validator_alignment": round(priors["validator_alignment"], 4),
             "provider_reliability": round(priors["provider_reliability"], 4),
             "runtime_pressure": round(priors["runtime_pressure"], 4),
+            "capability_availability_probability": round(float(capability_context.get("capability_availability_probability", 1.0)), 4),
+            "policy_friction_cost": round(float(capability_context.get("policy_friction_cost", 0.0)), 4),
+            "revocation_likelihood": round(float(capability_context.get("revocation_likelihood", 0.0)), 4),
+            "evidence_quality_impact": round(float(capability_context.get("evidence_quality_impact", 0.0)), 4),
+            "freshness_decay": round(float(capability_context.get("freshness_decay", 1.0)), 4),
+            "guardrail_narrowing_effect": round(float(capability_context.get("guardrail_narrowing_effect", 0.0)), 4),
             "search_score": round(search_score, 4),
             "search_reward": round(search_reward, 4),
         }
@@ -793,6 +874,24 @@ class SimulationFactory:
         rollback_safety = max(
             [1.0 - float(bid.search_diagnostics.get("rollback_rate", bid.risk)) for bid in bids] or [0.0]
         )
+        capability_availability = max(
+            [float(bid.search_diagnostics.get("capability_availability_probability", 1.0)) for bid in bids] or [1.0]
+        )
+        policy_friction = max(
+            [float(bid.search_diagnostics.get("policy_friction_cost", bid.policy_friction_score)) for bid in bids] or [0.0]
+        )
+        revocation_risk = max(
+            [float(bid.search_diagnostics.get("revocation_likelihood", bid.revocation_risk_score)) for bid in bids] or [0.0]
+        )
+        evidence_quality = max(
+            [float(bid.search_diagnostics.get("evidence_quality_impact", 0.0)) for bid in bids] or [0.0]
+        )
+        freshness_score = max(
+            [float(bid.search_diagnostics.get("freshness_decay", 1.0)) for bid in bids] or [1.0]
+        )
+        guardrail_narrowing = max(
+            [float(bid.search_diagnostics.get("guardrail_narrowing_effect", 0.0)) for bid in bids] or [0.0]
+        )
         return SimulationSummary(
             task_id=task.task_id,
             search_mode="bounded_monte_carlo",
@@ -809,9 +908,16 @@ class SimulationFactory:
             validator_stability=round(validator_stability, 4),
             rollback_safety=round(rollback_safety, 4),
             policy_confidence=max((1.0 - len(bid.policy_feasibility.reasons) * 0.2 for bid in bids), default=0.0),
+            capability_availability=round(capability_availability, 4),
+            policy_friction=round(policy_friction, 4),
+            revocation_risk=round(revocation_risk, 4),
+            evidence_quality=round(evidence_quality, 4),
+            freshness_score=round(freshness_score, 4),
+            guardrail_narrowing=round(guardrail_narrowing, 4),
             summary=(
                 f"Evaluated {len(bids)} bids ({provider_backed} provider-backed, {fallback} fallback) "
                 f"with bounded Monte Carlo search over {monte_carlo_samples or task.monte_carlo_samples} samples per bid "
-                f"and rollout budget {int(plan['budget'])}; frontier gap {frontier_gap:.3f}."
+                f"and rollout budget {int(plan['budget'])}; frontier gap {frontier_gap:.3f}; "
+                f"capability availability {capability_availability:.2f}, policy friction {policy_friction:.2f}."
             ),
         )

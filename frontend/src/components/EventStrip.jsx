@@ -49,7 +49,15 @@ const HIGH_SIGNAL_EVENTS = new Set([
   "checkpoint.accepted",
   "checkpoint.reverted",
   "bidding.degraded_mode_entered",
-  "bidding.architecture_violation"
+  "bidding.architecture_violation",
+  "civic.connection.checked",
+  "civic.capabilities.refreshed",
+  "civic.skills.derived",
+  "civic.bid.preflighted",
+  "civic.action.executed",
+  "civic.action.blocked",
+  "civic.action.revoked",
+  "civic.skill.executed"
 ]);
 
 function isHighSignalEvent(entry) {
@@ -102,6 +110,18 @@ function contextText(entry) {
   }
   if (payload.commit_sha) {
     segments.push(shortCommit(payload.commit_sha));
+  }
+  if (payload.skill) {
+    segments.push(`skill ${payload.skill}`);
+  }
+  if (payload.tool || payload.tool_name) {
+    segments.push(String(payload.tool ?? payload.tool_name));
+  }
+  if (payload.audit_id) {
+    segments.push(`audit ${String(payload.audit_id).slice(0, 8)}`);
+  }
+  if (payload.envelope_id) {
+    segments.push(`envelope ${String(payload.envelope_id).slice(0, 8)}`);
   }
   if (payload.outcome) {
     segments.push(String(payload.outcome).replace(/_/g, " "));
