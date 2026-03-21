@@ -12,6 +12,7 @@ from arbiter.core.contracts import (
     ActivePhase,
     ArbiterState,
     MissionControlState,
+    MissionOutcome,
     MissionStateCheckpoint,
     MissionSummary,
     PolicyState,
@@ -851,6 +852,11 @@ class MissionStore:
             raise ValueError(f"Mission {mission_id} not found.")
         summary = json.loads(mission["summary_json"])
         control = self.fetch_control_state(mission_id)
+        status = mission["status"]
+        outcome = mission["outcome"]
+        if control and control["run_state"] == RunState.FINALIZED.value:
+            status = RunState.FINALIZED.value
+            outcome = outcome or summary.get("outcome") or MissionOutcome.FAILED_SAFE_STOP.value
         validation = self.fetch_latest_validation(mission_id)
         failure = self.fetch_latest_failure(mission_id)
         checkpoint = self.fetch_latest_checkpoint(mission_id)
@@ -871,8 +877,8 @@ class MissionStore:
             "mission_id": mission["id"],
             "repo_path": mission["repo_path"],
             "objective": mission["objective"],
-            "status": mission["status"],
-            "outcome": mission["outcome"],
+            "status": status,
+            "outcome": outcome,
             "run_state": control["run_state"] if control else RunState.IDLE.value,
             "active_phase": runtime["active_phase"] if runtime else ActivePhase.IDLE.value,
             "active_task_id": runtime["active_task_id"] if runtime else None,

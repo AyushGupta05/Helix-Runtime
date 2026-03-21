@@ -103,8 +103,11 @@ class GoalDecomposer:
             "You are Arbiter's mission planner. Return only valid JSON with fields: summary and tasks. "
             "Each task must contain title, task_type, requirement_level, dependencies, candidate_files, "
             "validator_requirements, strategy_families, acceptance_criteria, risk_level, runtime_class, "
-            "search_depth, and monte_carlo_samples. Keep the plan bounded: Arbiter will choose the task graph, "
-            "models will later execute only bounded work units."
+            "search_depth, and monte_carlo_samples. Allowed task_type values are: localize, bugfix, test, "
+            "refactor, perf_diagnosis, perf_optimize, validate. Allowed requirement_level values are: required, "
+            "optional. Allowed runtime_class values are: small, medium, large. risk_level must be numeric between "
+            "0 and 1. Keep the plan bounded: at most 5 tasks, terse task descriptions, and no markdown fences. "
+            "Arbiter will choose the task graph, models will later execute only bounded work units."
         )
         snapshot_summary = "\n".join(snapshot.tree_summary[:20])
         user_prompt = (
@@ -152,6 +155,27 @@ class GoalDecomposer:
                     objective=objective,
                 )
                 if not tasks:
+                    if on_invocation:
+                        on_invocation(
+                            {
+                                "invocation_id": invocation_id,
+                                "provider": result.provider or provider,
+                                "lane": result.lane or lane,
+                                "model_id": result.model_id or lane_config.model_id,
+                                "invocation_kind": "mission_planning",
+                                "generation_mode": result.generation_mode,
+                                "status": "failed",
+                                "started_at": result.started_at or started_at,
+                                "completed_at": result.completed_at or utc_now().isoformat(),
+                                "prompt_preview": result.prompt_preview,
+                                "response_preview": result.response_preview,
+                                "raw_usage": result.raw_usage,
+                                "token_usage": result.token_usage,
+                                "cost_usage": result.cost_usage,
+                                "usage_unavailable_reason": result.usage_unavailable_reason,
+                                "error": "Provider returned no usable task graph.",
+                            }
+                        )
                     return None
                 if on_invocation:
                     on_invocation(
@@ -636,8 +660,34 @@ class GoalDecomposer:
 
     @staticmethod
     def _parse_task_type(value: Any) -> TaskType | None:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "analysis": TaskType.LOCALIZE,
+            "analyze": TaskType.LOCALIZE,
+            "diagnose": TaskType.LOCALIZE,
+            "investigate": TaskType.LOCALIZE,
+            "localization": TaskType.LOCALIZE,
+            "implementation": TaskType.BUGFIX,
+            "implement": TaskType.BUGFIX,
+            "patch": TaskType.BUGFIX,
+            "fix": TaskType.BUGFIX,
+            "testing": TaskType.TEST,
+            "regression": TaskType.TEST,
+            "coverage": TaskType.TEST,
+            "design": TaskType.REFACTOR,
+            "cleanup": TaskType.REFACTOR,
+            "maintainability": TaskType.REFACTOR,
+            "restructure": TaskType.REFACTOR,
+            "performance": TaskType.PERF_DIAGNOSIS,
+            "optimize": TaskType.PERF_OPTIMIZE,
+            "optimization": TaskType.PERF_OPTIMIZE,
+            "verification": TaskType.VALIDATE,
+            "verify": TaskType.VALIDATE,
+        }
+        if normalized in aliases:
+            return aliases[normalized]
         try:
-            return TaskType(str(value))
+            return TaskType(normalized)
         except Exception:
             return None
 
@@ -650,7 +700,18 @@ class GoalDecomposer:
 
     @staticmethod
     def _parse_runtime_class(value: Any) -> str:
-        runtime_class = str(value or "small")
+        runtime_class = str(value or "small").strip().lower()
+        aliases = {
+            "bounded": "small",
+            "focused": "small",
+            "compact": "small",
+            "moderate": "medium",
+            "balanced": "medium",
+            "extended": "large",
+            "broad": "large",
+            "comprehensive": "large",
+        }
+        runtime_class = aliases.get(runtime_class, runtime_class)
         return runtime_class if runtime_class in {"small", "medium", "large"} else "small"
 
     @staticmethod
@@ -661,6 +722,14 @@ class GoalDecomposer:
 
     @staticmethod
     def _clamp_float(value: Any, *, default: float) -> float:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"low", "small"}:
+                return 0.2
+            if normalized in {"medium", "moderate"}:
+                return 0.45
+            if normalized in {"high", "large"}:
+                return 0.7
         try:
             return max(0.05, min(0.95, float(value)))
         except Exception:

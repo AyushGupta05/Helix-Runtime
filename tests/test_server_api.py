@@ -271,5 +271,7 @@ def test_list_history_refreshes_stale_cached_run_state(python_bug_repo: Path) ->
     stale_entry = next(item for item in history if item.mission_id == mission_id)
 
     assert stale_entry.run_state == RunState.FINALIZED.value
+    assert stale_entry.status == RunState.FINALIZED.value
+    assert stale_entry.outcome == "failed_safe_stop"
     assert stale_entry.created_at == created_at
     assert stale_entry.updated_at == finalized_updated_at

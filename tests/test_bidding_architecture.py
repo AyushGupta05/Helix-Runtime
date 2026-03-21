@@ -403,3 +403,51 @@ class TestProviderMissionPlanning:
         assert decomposer.last_plan_source == "provider_plan"
         assert any(task.search_depth >= 3 for task in tasks)
         assert any(task.monte_carlo_samples >= 32 for task in tasks)
+
+    def test_provider_planner_normalizes_common_task_aliases(self):
+        decomposer = GoalDecomposer()
+        tasks, summary = decomposer._parse_provider_plan(
+            json.dumps(
+                {
+                    "summary": "Provider plan",
+                    "tasks": [
+                        {
+                            "title": "Analyze the failing path",
+                            "task_type": "analysis",
+                            "requirement_level": "required",
+                            "dependencies": [],
+                            "candidate_files": ["calc.py"],
+                            "validator_requirements": [],
+                            "strategy_families": ["Safe"],
+                            "acceptance_criteria": ["candidate files identified"],
+                            "risk_level": "low",
+                            "runtime_class": "bounded",
+                            "search_depth": 2,
+                            "monte_carlo_samples": 20,
+                        },
+                        {
+                            "title": "Design the minimal patch",
+                            "task_type": "design",
+                            "requirement_level": "required",
+                            "dependencies": ["Analyze the failing path"],
+                            "candidate_files": ["calc.py"],
+                            "validator_requirements": ["tests"],
+                            "strategy_families": ["Quality"],
+                            "acceptance_criteria": ["tests pass"],
+                            "risk_level": "medium",
+                            "runtime_class": "balanced",
+                            "search_depth": 3,
+                            "monte_carlo_samples": 32,
+                        },
+                    ],
+                }
+            ),
+            snapshot=_make_snapshot(),
+            objective="Fix failing tests and improve reliability",
+        )
+
+        assert summary == "Provider plan"
+        assert [task.task_type for task in tasks[:2]] == [TaskType.LOCALIZE, TaskType.REFACTOR]
+        assert tasks[0].risk_level == 0.2
+        assert tasks[0].runtime_class == "small"
+        assert tasks[1].runtime_class == "medium"

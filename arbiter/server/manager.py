@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from arbiter.core.contracts import MissionSummary, RunState, utc_now
+from arbiter.core.contracts import MissionOutcome, MissionSpec, MissionSummary, RunState, utc_now
 from arbiter.mission.runner import build_mission_spec, resume_mission, start_mission
 from arbiter.runtime.migrate import migrate_legacy_mission
 from arbiter.runtime.paths import build_mission_paths, resolve_repo_path
@@ -258,6 +259,24 @@ class MissionService:
                 RunState.CANCELLING.value,
             }:
                 return
+            mission = store.fetch_mission(mission_id)
+            if mission is not None:
+                summary = MissionSummary.model_validate(json.loads(mission["summary_json"]))
+                if summary.outcome is None:
+                    summary.outcome = MissionOutcome.FAILED_SAFE_STOP
+                summary.stop_reason = reason
+                spec = MissionSpec.model_validate(json.loads(mission["spec_json"]))
+                store.upsert_mission(
+                    mission_id=mission_id,
+                    status=RunState.FINALIZED.value,
+                    repo_path=mission["repo_path"],
+                    objective=mission["objective"],
+                    branch_name=mission["branch_name"],
+                    outcome=summary.outcome.value if summary.outcome else None,
+                    spec=spec,
+                    summary=summary,
+                    created_at=mission["created_at"],
+                )
             store.upsert_control_state(
                 mission_id=mission_id,
                 run_state=RunState.FINALIZED.value,

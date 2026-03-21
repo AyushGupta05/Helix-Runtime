@@ -35,16 +35,20 @@ export default function MissionComposer({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-    await onSubmit({
-      repo: repo.trim(),
-      objective: objective.trim(),
-      constraints: parseList(constraints),
-      preferences: parseList(preferences),
-      protected_paths: parseList(protectedPaths),
-      public_api_surface: parseList(publicApiSurface),
-      benchmark_requirement: benchmarkRequirement.trim() || null,
-      max_runtime: Number(maxRuntime) || 10
-    });
+    try {
+      await onSubmit({
+        repo: repo.trim(),
+        objective: objective.trim(),
+        constraints: parseList(constraints),
+        preferences: parseList(preferences),
+        protected_paths: parseList(protectedPaths),
+        public_api_surface: parseList(publicApiSurface),
+        benchmark_requirement: benchmarkRequirement.trim() || null,
+        max_runtime: Number(maxRuntime) || 10
+      });
+    } catch {
+      // The launcher surfaces mutation failures through the shared error prop.
+    }
   };
 
   return (
@@ -151,7 +155,12 @@ export default function MissionComposer({
             ) : null}
           </div>
         ) : null}
-        {error ? <p className="form-note error-note">{error}</p> : null}
+        {error ? (
+          <div className="form-note error-note launch-error" role="alert" aria-live="polite">
+            <strong>Mission launch failed</strong>
+            <p>{error}</p>
+          </div>
+        ) : null}
         <button type="submit" className="primary-button" disabled={disabled}>
           {busy ? "Starting mission..." : "Launch mission"}
         </button>

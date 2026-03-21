@@ -267,7 +267,7 @@ function Shell() {
                 loading={missionsQuery.isLoading}
                 busy={createMutation.isPending}
                 error={createMutation.error?.message}
-                onSubmit={(payload) => createMutation.mutate(payload)}
+                onSubmit={(payload) => createMutation.mutateAsync(payload)}
                 onOpenActiveMission={openMission}
                 onSelectHistory={openMission}
               />
