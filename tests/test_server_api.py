@@ -252,6 +252,18 @@ def test_api_reports_civic_health(tmp_path: Path, monkeypatch) -> None:
     assert "skill_health" in body
 
 
+def test_api_list_missions_requires_explicit_repo(python_bug_repo: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ARBITER_CONTROL_ROOT", str(tmp_path / "control"))
+    with TestClient(create_app(strategy_backend_factory=scripted_factory(0.2))) as client:
+        response = client.post("/api/missions", json=payload(python_bug_repo))
+        assert response.status_code == 200
+
+        history = client.get("/api/missions")
+
+    assert history.status_code == 200
+    assert history.json() == []
+
+
 def test_list_history_refreshes_stale_cached_run_state(python_bug_repo: Path) -> None:
     repo_path = str(python_bug_repo.resolve())
     mission_id = "stale-view-cache"

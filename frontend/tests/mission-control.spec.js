@@ -209,8 +209,10 @@ test("stays on the launcher until a user submits a mission prompt", async ({ pag
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByText(/Nothing starts until you submit this form\./i)).toBeVisible();
   await expect(page.getByRole("heading", { name: /New Mission/i })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Open Live Workspace/i })).toBeVisible();
-  await expect(page.getByText(/Current Mission/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Open Live Workspace/i })).toHaveCount(0);
+  await expect(page.getByText(/Existing mission detected/i)).toHaveCount(0);
+  await expect(page.getByText(/Current Mission/i)).toHaveCount(0);
+  await expect(page.getByText(/Mission Queue/i)).toBeVisible();
   await expect(page.getByText(/Live Prompt/i)).toHaveCount(0);
 });
 

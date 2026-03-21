@@ -311,18 +311,13 @@ function MissionRoute() {
 function Shell() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [repoScope, setRepoScope] = useState(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem("arbiter:recent-repos") ?? "[]")[0] ?? "";
-    } catch {
-      return "";
-    }
-  });
+  const [repoScope, setRepoScope] = useState("");
 
   const missionsQuery = useQuery({
     queryKey: ["missions", repoScope],
     queryFn: () => getMissions(repoScope),
-    refetchInterval: 3000
+    enabled: Boolean(repoScope),
+    refetchInterval: repoScope ? 3000 : false
   });
 
   const activeMission = useMemo(() => {

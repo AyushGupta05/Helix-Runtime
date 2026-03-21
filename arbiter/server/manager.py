@@ -172,9 +172,7 @@ class MissionService:
 
     def list_history(self, repo_path: str | None) -> list[MissionHistoryEntry]:
         if repo_path is None:
-            repo_path = self._active.repo_path if self._active else next(iter(self._known_repos.values()), None)
-            if repo_path is None:
-                return []
+            return []
         entries: list[MissionHistoryEntry] = []
         for mission_root in _mission_roots(repo_path):
             mission_id = mission_root.name
