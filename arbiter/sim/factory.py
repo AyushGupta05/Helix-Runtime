@@ -60,33 +60,40 @@ VARIANTS = [
 ROLE_FAMILIES = {
     "Speed": (
         "speed-localized",
-        "Prefer the smallest high-confidence path to a validated change.",
+        "Advance the mission via the smallest high-confidence move that produces a validated result.",
     ),
     "Safe": (
         "checkpoint-first",
-        "Bias toward minimal scope, rollback safety, and guarded validation.",
+        "Advance the mission through minimal-scope moves with rollback safety and guarded validation at every step.",
     ),
     "Quality": (
         "quality-coverage",
-        "Improve implementation quality while strengthening coverage.",
+        "Advance the mission by improving implementation quality and strengthening coverage across the objective.",
     ),
     "Test": (
         "coverage-first",
-        "Lead with evidence and test reinforcement before wider edits.",
+        "Advance the mission by leading with evidence and test reinforcement before committing to wider changes.",
     ),
     "Performance": (
         "measure-then-optimize",
-        "Treat benchmark evidence as the primary optimization signal.",
+        "Advance the mission by treating benchmark evidence as the primary signal for optimization decisions.",
     ),
 }
 
 _ARCHETYPE_SYSTEM_PROMPT = (
-    "You are an autonomous AI strategy bidder operating as the {role} archetype.\n"
-    "Your strategic identity: {family_summary}\n\n"
+    "You are a competing strategy in an autonomous market-driven coding runtime.\n"
+    "You are the {role} archetype. Your strategic identity: {family_summary}\n\n"
+    "You are competing against other strategies to propose the best next move\n"
+    "for the overall mission. The mission is governed by continuous strategic\n"
+    "competition — there is no fixed plan. You must argue why your proposed\n"
+    "move is the right one for the mission right now.\n\n"
     "Return only valid JSON with fields:\n"
+    '  "mission_rationale" (why this move is the best next step for the mission),\n'
     '  "strategy_summary" (short description of your approach),\n'
     '  "exact_action" (specific tactical steps),\n'
-    '  "utility" (0.0-1.0 float, expected benefit),\n'
+    '  "proposed_task_title" (short title for the work you propose),\n'
+    '  "proposed_task_type" (one of: localize, bugfix, test, refactor, perf_diagnosis, perf_optimize, validate),\n'
+    '  "utility" (0.0-1.0 float, expected benefit to mission),\n'
     '  "risk" (0.0-1.0 float),\n'
     '  "confidence" (0.0-1.0 float),\n'
     '  "estimated_runtime_seconds" (int),\n'
@@ -139,6 +146,7 @@ class SimulationFactory:
         self.on_invocation = on_invocation
         self.market_token_usage: dict[str, int] = {}
         self.market_cost_usage: dict[str, float] = {}
+        self._current_mission_context: dict | None = None
 
     def _backend_mode(self) -> BidGenerationMode:
         if self.backend and hasattr(self.backend, "market_generation_mode"):
@@ -151,9 +159,11 @@ class SimulationFactory:
         snapshot: RepoSnapshot,
         *,
         allow_fallback: bool = False,
+        mission_context: dict | None = None,
     ) -> BidGenerationBatch:
         self.market_token_usage.clear()
         self.market_cost_usage.clear()
+        self._current_mission_context = mission_context
         backend_mode = self._backend_mode()
 
         if backend_mode == BidGenerationMode.MOCK:
@@ -162,13 +172,14 @@ class SimulationFactory:
                     task,
                     snapshot,
                     generation_mode=BidGenerationMode.MOCK,
-                    reason="Mock bidding mode is active; no provider calls were made.",
+                    reason="Mock strategy mode is active; no provider calls were made.",
                     provider="scripted",
                     lane="scripted",
                     model_id="scripted",
+                    mission_context=mission_context,
                 ),
                 generation_mode=BidGenerationMode.MOCK,
-                degraded_reason="Mock bidding mode is active.",
+                degraded_reason="Mock strategy mode is active.",
             )
 
         provider_capable = bool(
@@ -179,7 +190,7 @@ class SimulationFactory:
         )
 
         if not provider_capable:
-            reason = "No provider-backed bid lanes are configured for the market."
+            reason = "No provider-backed strategy lanes are configured for the market."
             if allow_fallback:
                 return BidGenerationBatch(
                     bids=self._build_non_provider_role_variants(
@@ -187,6 +198,7 @@ class SimulationFactory:
                         snapshot,
                         generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
                         reason=reason,
+                        mission_context=mission_context,
                     ),
                     generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
                     degraded_reason=reason,
@@ -207,19 +219,20 @@ class SimulationFactory:
                     task,
                     snapshot,
                     generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
-                    reason="Provider bid generation failed for part of the market.",
+                    reason="Provider strategy generation failed for part of the market.",
                     failed_specs=failed_specs,
+                    mission_context=mission_context,
                 )
             )
             return BidGenerationBatch(
                 bids=provider_bids,
                 generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
-                degraded_reason="Provider failures forced deterministic fallback for part of the market.",
+                degraded_reason="Provider failures forced deterministic fallback for part of the strategy market.",
                 provider_errors=provider_errors,
                 provider_invocation_ids=provider_invocation_ids,
             )
         if not provider_bids:
-            reason = "Provider bid generation produced no provider-backed bids."
+            reason = "Provider strategy generation produced no provider-backed strategies."
             if provider_errors:
                 reason = f"{reason} Errors: {'; '.join(provider_errors)}"
             if allow_fallback:
@@ -229,6 +242,7 @@ class SimulationFactory:
                         snapshot,
                         generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
                         reason=reason,
+                        mission_context=mission_context,
                     ),
                     generation_mode=BidGenerationMode.DETERMINISTIC_FALLBACK,
                     degraded_reason=reason,
@@ -311,15 +325,30 @@ class SimulationFactory:
             diff_bias=role.diff_bias,
             validator_bias=role.validator_bias,
         )
+        mc = self._current_mission_context or {}
+        mission_section = ""
+        if mc:
+            completed = mc.get("completed_moves", [])
+            failed = mc.get("failed_moves", [])
+            landscape = mc.get("mission_landscape", [])
+            mission_section = (
+                f"Mission objective: {mc.get('objective', task.title)}\n"
+                f"Strategy round: {mc.get('strategy_round', 1)}\n"
+                f"Completed moves: {', '.join(completed) if completed else 'none yet'}\n"
+                f"Failed moves: {', '.join(failed) if failed else 'none'}\n"
+                f"Mission landscape: {'; '.join(landscape[:4]) if landscape else 'not yet mapped'}\n"
+                f"Constraints: {', '.join(mc.get('constraints', [])) or 'none'}\n"
+            )
         user_prompt = (
-            f"Task: {task.title}\n"
-            f"Type: {task.task_type.value}\n"
+            f"{mission_section}"
+            f"Current move type: {task.task_type.value}\n"
             f"Risk level: {task.risk_level}\n"
             f"Variant: {variant['name']}\n"
             f"Variant directive: {variant['directive']}\n"
             f"Candidate files: {', '.join(candidate_files) or 'none identified'}\n"
             f"Validators required: {', '.join(task.validator_requirements or ['tests'])}\n"
-            f"Generate a competitive bid strategy as the {role.role} archetype.\n"
+            f"Propose your next best move for this mission as the {role.role} archetype.\n"
+            "Explain why this move is the right strategic choice now.\n"
             "Return JSON only."
         )
         if self.on_invocation:
@@ -369,6 +398,11 @@ class SimulationFactory:
         scope_limit = variant["scope_limit"]
         scoped_files = touched_files if scope_limit is None else touched_files[: int(scope_limit)]
         required_validators = list(dict.fromkeys(task.validator_requirements or ["tests"]))
+        mission_rationale = str(
+            payload.get("mission_rationale")
+            or payload.get("rationale")
+            or f"As the {role.role} archetype, this move advances the mission by applying {family_summary.lower()}"
+        )
         bid = Bid(
             bid_id=uuid4().hex,
             task_id=task.task_id,
@@ -384,6 +418,9 @@ class SimulationFactory:
                 payload.get("exact_action")
                 or f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute the {variant['name']} {task.task_type.value.replace('_', ' ')} plan."
             ),
+            mission_rationale=mission_rationale,
+            proposed_task_title=str(payload.get("proposed_task_title") or task.title),
+            proposed_task_type=str(payload.get("proposed_task_type") or task.task_type.value),
             expected_benefit=_clamp(float(payload.get("utility", 0.62 + role.validator_bias * 0.08)) + float(variant["utility_delta"])),
             utility=_clamp(float(payload.get("utility", 0.62 + role.validator_bias * 0.08)) + float(variant["utility_delta"])),
             confidence=_clamp(float(payload.get("confidence", 0.55 + role.rollback_bias * 0.05)) + float(variant["confidence_delta"])),
@@ -459,15 +496,23 @@ class SimulationFactory:
         lane: str | None = None,
         model_id: str | None = None,
         failed_specs: list[tuple[ArchetypeDefinition, dict[str, object]]] | None = None,
+        mission_context: dict | None = None,
     ) -> list[Bid]:
         bids: list[Bid] = []
         specs = failed_specs or [(role, variant) for role in ARCHETYPES for variant in VARIANTS]
+        mc = mission_context or self._current_mission_context or {}
+        strategy_round = mc.get("strategy_round", 1)
+        completed = mc.get("completed_moves", [])
         for role, variant in specs:
             family_name, family_summary = ROLE_FAMILIES[role.role]
             candidate_files = task.candidate_files or snapshot.complexity_hotspots[:3]
             scope_limit = variant["scope_limit"]
             scoped_files = candidate_files if scope_limit is None else candidate_files[: int(scope_limit)]
             risk = _clamp(task.risk_level + float(variant["risk_delta"]) + (0.2 - role.risk_bias * 0.15))
+            rationale = (
+                f"Round {strategy_round}: {family_summary.rstrip('.')} — "
+                f"{'building on ' + str(len(completed)) + ' completed moves' if completed else 'opening the mission'}."
+            )
             bids.append(
                 Bid(
                     bid_id=uuid4().hex,
@@ -480,7 +525,10 @@ class SimulationFactory:
                     variant_id=f"{role.role.lower()}-{variant['name']}",
                     strategy_family=family_name,
                     strategy_summary=f"{family_summary} Variant: {variant['name']}.",
-                    exact_action=f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute a {variant['name']} {task.task_type.value.replace('_', ' ')} plan.",
+                    exact_action=f"Inspect {', '.join(scoped_files) or 'the highest-signal files'} and execute a {variant['name']} {task.task_type.value.replace('_', ' ')} strategy.",
+                    mission_rationale=rationale,
+                    proposed_task_title=task.title,
+                    proposed_task_type=task.task_type.value,
                     expected_benefit=_clamp(0.62 + role.validator_bias * 0.08 + float(variant["utility_delta"])),
                     utility=_clamp(0.62 + role.validator_bias * 0.08 + float(variant["utility_delta"])),
                     confidence=_clamp(0.55 + role.rollback_bias * 0.05 + float(variant["confidence_delta"])),
@@ -489,7 +537,7 @@ class SimulationFactory:
                     estimated_runtime_seconds=55 * float(variant["runtime_multiplier"]),
                     touched_files=scoped_files,
                     validator_plan=list(dict.fromkeys(task.validator_requirements or ["tests"])),
-                    rollback_plan="Revert to the latest accepted checkpoint, retain failure evidence, and reopen bidding with tighter scope.",
+                    rollback_plan="Revert to the latest accepted checkpoint, retain failure evidence, and reopen strategy market with tighter scope.",
                     dependency_impact="localized" if len(scoped_files) <= 2 else "shared",
                     rollout_level=variant["rollout_level"],
                     mutation_parent_id=None,

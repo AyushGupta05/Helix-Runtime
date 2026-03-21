@@ -347,6 +347,7 @@ class ProviderModelRouter:
                     temperature=lane_config.temperature,
                     api_key=self.config.openai_api_key,
                     max_tokens=lane_config.max_tokens,
+                    timeout=self.config.provider_request_timeout_seconds,
                 )
             elif lane_config.provider == "anthropic":
                 if not self.config.anthropic_api_key:
@@ -358,6 +359,7 @@ class ProviderModelRouter:
                     temperature=lane_config.temperature,
                     api_key=self.config.anthropic_api_key,
                     max_tokens=lane_config.max_tokens,
+                    timeout=self.config.provider_request_timeout_seconds,
                 )
             else:
                 raise ValueError(f"Unsupported provider: {lane_config.provider}")

@@ -30,15 +30,17 @@ class RunState(str, Enum):
 class ActivePhase(str, Enum):
     IDLE = "idle"
     COLLECT = "collect"
-    DECOMPOSE = "decompose"
-    SELECT_TASK = "select_task"
-    MARKET = "market"
+    STRATEGIZE = "strategize"
     SIMULATE = "simulate"
     SELECT = "select"
     EXECUTE = "execute"
     VALIDATE = "validate"
     RECOVER = "recover"
     FINALIZE = "finalize"
+    # Legacy phases kept for state-resume compatibility.
+    DECOMPOSE = "decompose"
+    SELECT_TASK = "select_task"
+    MARKET = "market"
 
 
 class TaskRequirementLevel(str, Enum):
@@ -324,6 +326,9 @@ class Bid(BaseModel):
     usage_unavailable_reason: str | None = None
     prompt_preview: str | None = None
     response_preview: str | None = None
+    mission_rationale: str = ""
+    proposed_task_title: str = ""
+    proposed_task_type: str = ""
     selection_reason: str | None = None
     rejection_reason: str | None = None
     can_be_standby: bool = True
@@ -567,6 +572,8 @@ class ArbiterState(BaseModel):
     active_task_id: str | None = None
     current_bid: Bid | None = None
     standby_bid: Bid | None = None
+    mission_landscape: list[str] = Field(default_factory=list)
+    strategy_round: int = 0
     failure_context: FailureContext | None = None
     validation_report: ValidationReport | None = None
     accepted_checkpoint: AcceptedCheckpoint | None = None

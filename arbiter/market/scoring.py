@@ -23,4 +23,6 @@ def score_bid(bid: Bid) -> float:
     base = 0.40 * bid.utility + 0.25 * bid.confidence - 0.20 * bid.risk - 0.15 * bid.cost
     search = 0.10 * (bid.search_reward or bid.search_score or 0.0) if (bid.search_reward is not None or bid.search_score is not None) else 0.0
     policy = -0.30 if not bid.policy_feasibility.allowed else 0.0
-    return round(base + search + policy, 4)
+    # Reward strategies that articulate a mission-level rationale
+    rationale_bonus = 0.04 if bid.mission_rationale and len(bid.mission_rationale) > 20 else 0.0
+    return round(base + search + policy + rationale_bonus, 4)

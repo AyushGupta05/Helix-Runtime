@@ -17,3 +17,7 @@ def test_bedrock_model_provider_is_rejected(monkeypatch) -> None:
 def test_anthropic_defaults_use_supported_sonnet_models() -> None:
     assert RuntimeConfig.model_fields["anthropic_model_triage"].default == "claude-sonnet-4-20250514"
     assert RuntimeConfig.model_fields["anthropic_model_bid_fast"].default == "claude-sonnet-4-20250514"
+
+
+def test_provider_timeout_has_a_default_guardrail() -> None:
+    assert RuntimeConfig.model_fields["provider_request_timeout_seconds"].default == 45.0

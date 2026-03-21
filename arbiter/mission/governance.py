@@ -121,10 +121,33 @@ class GovernanceEngine:
         risk = min(task.risk_level + (0.2 if reasons else 0.0), 1.0)
         return PolicyDecision(allowed=not reasons, state=PolicyState.CLEAR if not reasons else PolicyState.BLOCKED, reasons=reasons, risk_score=risk)
 
+    def evaluate_mission_progress(self, state: ArbiterState) -> dict:
+        """Assess current mission progress for the strategy market."""
+        completed = [t for t in state.tasks if t.status == TaskStatus.COMPLETED]
+        failed = [t for t in state.tasks if t.status == TaskStatus.FAILED]
+        total_rounds = state.strategy_round
+        return {
+            "completed_count": len(completed),
+            "failed_count": len(failed),
+            "total_rounds": total_rounds,
+            "risk_score": state.governance.current_risk_score,
+            "runtime_seconds": state.runtime_seconds,
+            "budget_remaining_pct": max(0, 1.0 - state.runtime_seconds / max(1, state.mission.max_runtime_minutes * 60)),
+            "recovery_rounds_used": state.recovery_round,
+            "policy_collisions": state.policy_collisions,
+        }
+
     def evaluate_stop(self, state: ArbiterState) -> StopDecision:
-        required_tasks = [task for task in state.tasks if task.required]
-        if required_tasks and all(task.status == TaskStatus.COMPLETED for task in required_tasks):
-            return StopDecision(True, "required_tasks_complete", MissionOutcome.SUCCESS)
+        completed = [task for task in state.tasks if task.status == TaskStatus.COMPLETED]
+        # In the market-driven model, the strategy market decides when to stop.
+        # A mission with completed work and no more strategy rounds needed is successful.
+        if state.strategy_round > 1 and completed and not any(
+            task.status in {TaskStatus.READY, TaskStatus.RUNNING} for task in state.tasks
+        ):
+            # Check if the objective appears satisfied by completed moves
+            required_tasks = [task for task in state.tasks if task.required]
+            if required_tasks and all(task.status == TaskStatus.COMPLETED for task in required_tasks):
+                return StopDecision(True, "mission_objective_met", MissionOutcome.SUCCESS)
         if state.governance.current_risk_score > state.mission.risk_policy.max_risk_score:
             return StopDecision(True, "risk_threshold_exceeded", MissionOutcome.FAILED_SAFE_STOP)
         if state.runtime_seconds >= state.mission.max_runtime_minutes * 60:

@@ -10,13 +10,18 @@ class WorkflowState(TypedDict, total=False):
     runtime_state: dict[str, Any]
 
 
+_LEGACY_PHASE_MAP = {
+    "decompose": "strategize",
+    "select_task": "strategize",
+    "market": "strategize",
+}
+
+
 def build_workflow(runtime, *, checkpointer=None):
     graph = StateGraph(WorkflowState)
     graph.add_node("bootstrap", runtime.workflow_bootstrap)
     graph.add_node("collect", runtime.workflow_collect)
-    graph.add_node("decompose", runtime.workflow_decompose)
-    graph.add_node("select_task", runtime.workflow_select_task)
-    graph.add_node("market", runtime.workflow_market)
+    graph.add_node("strategize", runtime.workflow_strategize)
     graph.add_node("simulate", runtime.workflow_simulate)
     graph.add_node("select", runtime.workflow_select)
     graph.add_node("execute", runtime.workflow_execute)
@@ -27,12 +32,10 @@ def build_workflow(runtime, *, checkpointer=None):
     graph.add_edge(START, "bootstrap")
     graph.add_conditional_edges(
         "bootstrap",
-        lambda state: state["status"],
+        lambda state: _LEGACY_PHASE_MAP.get(state["status"], state["status"]),
         {
             "collect": "collect",
-            "decompose": "decompose",
-            "select_task": "select_task",
-            "market": "market",
+            "strategize": "strategize",
             "simulate": "simulate",
             "select": "select",
             "execute": "execute",
@@ -44,16 +47,10 @@ def build_workflow(runtime, *, checkpointer=None):
     graph.add_conditional_edges(
         "collect",
         lambda state: state["status"],
-        {"decompose": "decompose", "finalize": "finalize"},
-    )
-    graph.add_edge("decompose", "select_task")
-    graph.add_conditional_edges(
-        "select_task",
-        lambda state: state["status"],
-        {"market": "market", "finalize": "finalize"},
+        {"strategize": "strategize", "finalize": "finalize"},
     )
     graph.add_conditional_edges(
-        "market",
+        "strategize",
         lambda state: state["status"],
         {"simulate": "simulate", "recover": "recover", "finalize": "finalize"},
     )
@@ -67,16 +64,15 @@ def build_workflow(runtime, *, checkpointer=None):
     graph.add_conditional_edges(
         "validate",
         lambda state: state["status"],
-        {"select_task": "select_task", "recover": "recover", "finalize": "finalize"},
+        {"strategize": "strategize", "recover": "recover", "finalize": "finalize"},
     )
     graph.add_conditional_edges(
         "recover",
         lambda state: state["status"],
         {
             "execute": "execute",
-            "market": "market",
+            "strategize": "strategize",
             "finalize": "finalize",
-            "select_task": "select_task",
         },
     )
     graph.add_edge("finalize", END)
