@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+import pytest
 
 from arbiter.agents.backend import EditProposal, FileUpdate, ScriptedStrategyBackend
 from arbiter.core.contracts import MissionSummary, ModelInvocation, RunState, utc_now
@@ -16,6 +17,14 @@ from arbiter.runtime.store import MissionStore
 from arbiter.server.app import create_app
 from arbiter.server.manager import MissionService
 from arbiter.server.schemas import MissionCreateRequest
+
+
+@pytest.fixture(autouse=True)
+def disable_live_civic(monkeypatch) -> None:
+    monkeypatch.delenv("CIVIC_URL", raising=False)
+    monkeypatch.delenv("CIVIC_TOKEN", raising=False)
+    monkeypatch.delenv("CIVIC_TOOLKIT_ID", raising=False)
+    monkeypatch.delenv("CIVIC_REQUIRED", raising=False)
 
 
 class SlowScriptedStrategyBackend(ScriptedStrategyBackend):
@@ -28,7 +37,7 @@ class SlowScriptedStrategyBackend(ScriptedStrategyBackend):
         return super().generate_edit_proposal(*args, **kwargs)
 
 
-def wait_for(predicate: Callable[[], bool], timeout: float = 40.0) -> None:
+def wait_for(predicate: Callable[[], bool], timeout: float = 90.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():

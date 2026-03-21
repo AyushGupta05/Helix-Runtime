@@ -64,8 +64,22 @@ _CANONICAL_ACTION_ALIASES = {
         "issue_read",
     ],
     "knowledge_retrieval": [
+        "firecrawl-firecrawl_search",
+        "firecrawl-firecrawl_scrape",
+        "firecrawl-firecrawl_extract",
+        "firecrawl-firecrawl_crawl",
+        "firecrawl-firecrawl_map",
+        "tavily-tavily_research",
+        "tavily-tavily_search",
+        "apify-search-apify-docs",
+        "linear-search_documentation",
         "knowledge",
+        "research",
         "retrieve",
+        "search",
+        "scrape",
+        "crawl",
+        "extract",
     ],
 }
 
@@ -91,8 +105,22 @@ _ACTION_TOOL_PREFERENCES = {
         "issue_read",
     ],
     "knowledge_retrieval": [
+        "firecrawl-firecrawl_search",
+        "tavily-tavily_research",
+        "tavily-tavily_search",
+        "firecrawl-firecrawl_scrape",
+        "firecrawl-firecrawl_extract",
+        "firecrawl-firecrawl_crawl",
+        "firecrawl-firecrawl_map",
+        "apify-search-apify-docs",
+        "linear-search_documentation",
         "knowledge",
+        "research",
         "retrieve",
+        "search",
+        "scrape",
+        "crawl",
+        "extract",
     ],
 }
 
@@ -253,7 +281,15 @@ class CivicRuntime:
     @staticmethod
     def _tool_is_knowledge(tool_name: str) -> bool:
         lowered = tool_name.lower()
-        return "knowledge" in lowered or "retrieve" in lowered
+        if CivicRuntime._tool_is_github(lowered):
+            return False
+        if lowered.startswith(("firecrawl-", "tavily-")):
+            return any(marker in lowered for marker in ("search", "research", "scrape", "crawl", "extract", "map"))
+        if lowered.startswith("apify-"):
+            return "search-apify-docs" in lowered or "documentation" in lowered
+        if lowered.startswith("linear-"):
+            return "documentation" in lowered
+        return any(marker in lowered for marker in ("knowledge", "retrieve", "research"))
 
     @staticmethod
     def _split_repo_slug(repo_slug: str | None) -> tuple[str | None, str | None]:
@@ -752,6 +788,7 @@ class CivicRuntime:
     def _normalize_tool_payload(self, tool_name: str | None, action_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not tool_name:
             return payload
+        lowered = tool_name.lower()
         owner, repo = self._split_repo_slug(payload.get("repo"))
         if "pull_request_read" in tool_name:
             pull_number = payload.get("pr_number") or payload.get("pullNumber")
@@ -773,6 +810,31 @@ class CivicRuntime:
             sha = payload.get("sha") or payload.get("tracking_branch") or payload.get("branch")
             if sha:
                 return {"owner": owner, "repo": repo, "sha": sha, "include_diff": False}
+        if action_type == "knowledge_retrieval":
+            query = str(payload.get("query") or payload.get("objective") or "").strip()
+            max_results = payload.get("max_results") or 5
+            if lowered.startswith("firecrawl-") and "search" in lowered:
+                normalized = {
+                    "query": query,
+                    "limit": max_results,
+                    "sources": [{"type": "web"}],
+                }
+                if payload.get("country"):
+                    normalized["location"] = payload["country"]
+                return normalized
+            if lowered.startswith("firecrawl-") and "scrape" in lowered and payload.get("url"):
+                return {"url": payload["url"], "formats": ["markdown"], "maxAge": 86_400_000}
+            if lowered.startswith("tavily-") and "research" in lowered:
+                return {"input": query, "model": "auto"}
+            if lowered.startswith("tavily-") and "search" in lowered:
+                return {
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": "advanced",
+                    "include_raw_content": True,
+                }
+            if lowered.startswith("apify-") or lowered.startswith("linear-"):
+                return {"query": query}
         return payload
 
     def execute_governed_action(

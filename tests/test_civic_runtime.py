@@ -81,6 +81,36 @@ def test_discover_capabilities_filters_non_github_issue_tools() -> None:
     assert "linear-list_issues" not in github.tools
 
 
+def test_discover_capabilities_treats_firecrawl_and_tavily_as_knowledge_tools() -> None:
+    runtime = CivicRuntime(
+        RuntimeConfig(
+            civic_url="https://civic.example",
+            civic_token="token",
+        )
+    )
+    runtime.check_connection = lambda force=False: CivicConnectionStatus(  # type: ignore[method-assign]
+        configured=True,
+        connected=True,
+        available=True,
+        required=False,
+        status="connected",
+        base_url="https://civic.example",
+        toolkit_id="toolkit-demo",
+    )
+    runtime._discover_tools = lambda force=False: {  # type: ignore[method-assign]
+        "firecrawl-firecrawl_search": object(),
+        "tavily-tavily_research": object(),
+        "github-remote-search_issues": object(),
+    }
+
+    capabilities = runtime.discover_capabilities(force=True)
+
+    knowledge = next(capability for capability in capabilities if capability.capability_id == "knowledge_read")
+    assert "firecrawl-firecrawl_search" in knowledge.tools
+    assert "tavily-tavily_research" in knowledge.tools
+    assert "github-remote-search_issues" not in knowledge.tools
+
+
 def test_invoke_tool_uses_commit_reader_for_branch_ci_status() -> None:
     runtime = CivicRuntime(
         RuntimeConfig(
@@ -108,6 +138,31 @@ def test_invoke_tool_uses_commit_reader_for_branch_ci_status() -> None:
         "include_diff": False,
     }
     assert pr_tool.last_payload is None
+
+
+def test_invoke_tool_uses_firecrawl_search_payload_for_knowledge_retrieval() -> None:
+    runtime = CivicRuntime(
+        RuntimeConfig(
+            civic_url="https://civic.example",
+            civic_token="token",
+        )
+    )
+    firecrawl_tool = DummyAsyncTool({"summary": "fresh docs", "results": []})
+    runtime._tool_cache = {
+        "firecrawl-firecrawl_search": firecrawl_tool,
+    }
+
+    result = runtime._invoke_tool(
+        "knowledge_retrieval",
+        {"query": "langgraph checkpoint saver", "max_results": 3},
+    )
+
+    assert result == {"summary": "fresh docs", "results": []}
+    assert firecrawl_tool.last_payload == {
+        "query": "langgraph checkpoint saver",
+        "limit": 3,
+        "sources": [{"type": "web"}],
+    }
 
 
 def test_invoke_tool_uses_pr_status_when_pr_number_is_available() -> None:
@@ -205,6 +260,28 @@ def test_derive_skills_requires_all_github_actions() -> None:
 
     assert "github_context" not in available_skills
     assert skill_health["github_context"].available is False
+
+
+def test_derive_skills_marks_knowledge_context_available_for_firecrawl_capability() -> None:
+    runtime = CivicRuntime(
+        RuntimeConfig(
+            civic_url="https://civic.example",
+            civic_token="token",
+        )
+    )
+    capabilities = [
+        CivicCapability(
+            capability_id="knowledge_read",
+            display_name="Knowledge Retrieval",
+            tools=["firecrawl-firecrawl_search", "tavily-tavily_research"],
+        )
+    ]
+
+    available_skills, skill_health = runtime.derive_skills(capabilities=capabilities)
+
+    assert "knowledge_context" in available_skills
+    assert skill_health["knowledge_context"].available is True
+    assert "firecrawl-firecrawl_search" in skill_health["knowledge_context"].available_tools
 
 
 def test_execute_governed_action_returns_authorization_metadata() -> None:
