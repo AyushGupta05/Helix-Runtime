@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -107,6 +106,13 @@ class GoalDecomposer:
         ]
         if not providers:
             return []
+        ordered_providers: list[str] = []
+        default_provider = getattr(strategy_backend.router.config, "default_provider", None)
+        if default_provider in providers:
+            ordered_providers.append(default_provider)
+        for provider in providers:
+            if provider not in ordered_providers:
+                ordered_providers.append(provider)
         system_prompt = (
             "You are Arbiter's mission planner. Return only valid JSON with fields: summary and tasks. "
             "Each task must contain title, task_type, requirement_level, dependencies, candidate_files, "
@@ -236,10 +242,11 @@ class GoalDecomposer:
                     )
                 return None
 
-        worker_count = max(1, min(len(providers), 4))
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(run_provider, provider) for provider in providers]
-        return [candidate for candidate in (future.result() for future in futures) if candidate is not None]
+        for provider in ordered_providers:
+            candidate = run_provider(provider)
+            if candidate is not None:
+                return [candidate]
+        return []
 
     def _heuristic_decompose(self, objective: str, snapshot: RepoSnapshot) -> list[TaskNode]:
         objective_lower = objective.lower()

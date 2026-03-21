@@ -134,6 +134,72 @@ def test_python_bugfix_mission_accepts_operation_only_execution_proposals(python
     assert "return a + b" in calc_branch.stdout
 
 
+def test_python_bugfix_mission_recovers_from_missing_edit_operation_target(python_bug_repo: Path) -> None:
+    backend = ScriptedStrategyBackend(
+        [
+            EditProposal(
+                summary="Attempt a stale compact patch first.",
+                operations=[
+                    EditOperation(
+                        type="replace",
+                        path="calc.py",
+                        target="return does not exist",
+                        content="return a + b",
+                    )
+                ],
+            ),
+            EditProposal(
+                summary="Apply the calculator fix after recovery.",
+                operations=[
+                    EditOperation(
+                        type="replace",
+                        path="calc.py",
+                        target="return a - b",
+                        content="return a + b",
+                    )
+                ],
+            ),
+            EditProposal(
+                summary="Add regression coverage after the recovered fix.",
+                files=[
+                    FileUpdate(
+                        path="tests/test_calc.py",
+                        content="from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n\n\ndef test_zero():\n    assert add(0, 0) == 0\n",
+                    )
+                ],
+            ),
+        ]
+    )
+
+    state = start_mission(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests with the safest bounded change",
+        strategy_backend=backend,
+    )
+
+    assert state.outcome is not None
+    assert state.outcome.value == "success"
+    assert state.summary.failed_attempt_history
+
+    mission_root = python_bug_repo / ".arbiter" / "missions" / state.mission.mission_id
+    db_path = mission_root / "state.db"
+    connection = sqlite3.connect(db_path)
+    latest_failure = connection.execute(
+        "SELECT payload_json FROM failure_contexts ORDER BY timestamp DESC, id DESC LIMIT 1"
+    ).fetchone()[0]
+    connection.close()
+
+    assert json.loads(latest_failure)["failure_type"] == "execution_failure"
+    calc_branch = subprocess.run(
+        ["git", "show", f"{state.summary.branch_name}:calc.py"],
+        cwd=str(python_bug_repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "return a + b" in calc_branch.stdout
+
+
 def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
     repo = tmp_path / "no_commit_repo"
     repo.mkdir()
