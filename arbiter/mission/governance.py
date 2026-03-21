@@ -26,6 +26,16 @@ class StopDecision:
 
 
 class GovernanceEngine:
+    TASK_PRIORITY = {
+        "localize": 6.0,
+        "bugfix": 5.0,
+        "test": 4.5,
+        "perf_diagnosis": 4.0,
+        "perf_optimize": 3.5,
+        "refactor": 2.5,
+        "validate": 1.0,
+    }
+
     def evaluate_repo(self, snapshot: RepoSnapshot, spec: MissionSpec) -> PolicyDecision:
         if snapshot.capabilities.runtime == "unsupported":
             return PolicyDecision(
@@ -54,6 +64,15 @@ class GovernanceEngine:
             risk_score=min(risk, 1.0),
             validators_required=validators,
         )
+
+    def task_priority(self, task: TaskNode, all_tasks: list[TaskNode]) -> float:
+        dependents = sum(1 for item in all_tasks if task.task_id in item.dependencies)
+        required_bonus = 4.0 if task.required else 0.0
+        type_bonus = self.TASK_PRIORITY.get(task.task_type.value, 0.0)
+        validator_bonus = min(1.5, len(task.validator_requirements) * 0.3)
+        dependency_bonus = dependents * 0.55
+        risk_penalty = task.risk_level * 0.75
+        return round(required_bonus + type_bonus + validator_bonus + dependency_bonus - risk_penalty, 4)
 
     def evaluate_bid(self, task: TaskNode, bid: Bid, spec: MissionSpec, failed_families: set[str]) -> PolicyDecision:
         reasons: list[str] = []

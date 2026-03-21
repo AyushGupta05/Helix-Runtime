@@ -111,6 +111,14 @@ class LocalToolset:
     def diff_patch(self) -> str:
         return self._run_tool(["git", "diff", "--", "."]).stdout
 
+    def commit_diff(self, commit_sha: str) -> str:
+        return self._run_tool(
+            ["git", "show", "--format=medium", "--stat", "--patch", "--no-ext-diff", commit_sha]
+        ).stdout
+
+    def commit_diff_stat(self, commit_sha: str) -> str:
+        return self._run_tool(["git", "show", "--stat", "--format=oneline", "--no-patch", commit_sha]).stdout
+
     def worktree_state(self) -> dict[str, object]:
         changed = self.changed_files()
         diff_stat = self.diff()

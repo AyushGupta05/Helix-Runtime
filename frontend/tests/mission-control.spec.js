@@ -10,14 +10,37 @@ const missionPayload = {
   run_state: "running",
   active_phase: "market",
   active_bid_round: 1,
+  simulation_round: 0,
+  recovery_round: 0,
   latest_event_id: 0,
   branch_name: "codex/arbiter-mission-1",
-  head_commit: null,
+  head_commit: "abc123def4567890",
   latest_diff_summary: "",
   winner_bid_id: null,
   standby_bid_id: null,
   decision_history: [],
   failed_attempt_history: [],
+  accepted_checkpoints: [
+    {
+      checkpoint_id: "chk-1",
+      label: "T2_bugfix",
+      commit_sha: "abc123def4567890",
+      created_at: "2026-03-20T10:00:00Z",
+      diff_summary: "1 file changed",
+      rollback_pointer: "chk-0",
+      affected_files: ["calc.py"]
+    }
+  ],
+  worktree_state: {
+    worktree_path: "C:\\repo\\.arbiter\\worktrees\\mission-1\\primary",
+    changed_files: [],
+    diff_stat: "",
+    diff_patch: "",
+    has_changes: false,
+    accepted_commit: "abc123def4567890",
+    accepted_checkpoint_id: "chk-1",
+    reason: "Changes accepted on the Arbiter-managed branch."
+  },
   tasks: [
     {
       task_id: "T1_localize",
@@ -127,8 +150,20 @@ test("launches a mission and renders live event updates", async ({ page }) => {
 
   await expect(page.getByText("Live Bidding Arena")).toBeVisible();
   await expect(page.getByText("Current Decision")).toBeVisible();
-  await expect(page.getByText("Live Event Strip")).toBeVisible();
-  await page.waitForTimeout(150);
+  await expect(page.getByText("Mission Timeline")).toBeVisible();
+  await expect(page.getByText(/Accepted checkpoint T2_bugfix/i)).toBeVisible();
+  await expect(page.getByText(/validated branch/i)).toBeVisible();
+  await page.evaluate(() =>
+    window.__emitMissionEvent(
+      "repo.scan.completed",
+      {
+        created_at: "2026-03-20T10:00:01Z",
+        message: "Repository scan completed.",
+        payload: { runtime: "python", risky_paths: ["calc.py"] }
+      },
+      9
+    )
+  );
   await page.evaluate(() =>
     window.__emitMissionEvent(
       "standby.promoted",
@@ -140,7 +175,22 @@ test("launches a mission and renders live event updates", async ({ page }) => {
       11
     )
   );
+  await page.evaluate(() =>
+    window.__emitMissionEvent(
+      "recovery.round_opened",
+      {
+        created_at: "2026-03-20T10:00:05Z",
+        message: "Rebidding with prior evidence.",
+        payload: { task_id: "T2_bugfix", round: 2 }
+      },
+      12
+    )
+  );
+  await expect(page.getByText(/Repository Scan Completed/i)).toBeVisible();
   await expect(page.getByText(/Standby promoted after failure/i)).toBeVisible();
+  await expect(page.getByText(/Rebidding with prior evidence/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /live governance feed/i })).toBeVisible();
+  await expect(page.locator(".timeline-stage.is-active")).toContainText(/Recover/i);
 });
 
 test("keeps an active mission secondary until explicitly opened", async ({ page }) => {
@@ -173,4 +223,5 @@ test("keeps the simplified control room after reload", async ({ page }) => {
   await page.reload();
   await expect(page.getByText("Current Decision")).toBeVisible();
   await expect(page.getByText("Repo State")).toBeVisible();
+  await expect(page.getByText("Mission Timeline")).toBeVisible();
 });

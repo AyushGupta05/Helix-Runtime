@@ -190,6 +190,7 @@ function MissionRoute() {
             activePhase={mission.active_phase}
             activeBidRound={mission.active_bid_round}
             simulationRound={mission.simulation_round}
+            biddingState={mission.bidding_state}
             usageSummary={usageSummary}
           />
         </section>
@@ -207,7 +208,7 @@ function MissionRoute() {
       </div>
 
       <section className="panel panel-event-strip">
-        <EventStrip events={mission.events} />
+        <EventStrip mission={mission} events={mission.events} trace={trace} />
       </section>
     </div>
   );

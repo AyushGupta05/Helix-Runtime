@@ -32,7 +32,6 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 langchain==1.2.13
 langchain-anthropic==1.4.0
-langchain-aws==1.4.1
 langchain-core==1.2.20
 langchain-mcp-adapters==0.2.2
 langchain-openai==1.1.11

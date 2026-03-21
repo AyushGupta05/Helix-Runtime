@@ -38,9 +38,12 @@ class BidView(BaseModel):
     bid_id: str
     task_id: str
     role: str
-    provider: str = "system"
+    provider: str | None = None
     lane: str | None = None
     model_id: str | None = None
+    invocation_id: str | None = None
+    invocation_kind: str | None = None
+    generation_mode: str = "deterministic_fallback"
     strategy_family: str
     strategy_summary: str
     score: float | None = None
@@ -54,8 +57,9 @@ class BidView(BaseModel):
     rollout_level: str | None = None
     search_summary: str | None = None
     policy_state: str | None = None
-    token_usage: dict[str, int] = Field(default_factory=dict)
-    cost_usage: dict[str, float] = Field(default_factory=dict)
+    token_usage: dict[str, int] | None = None
+    cost_usage: dict[str, float] | None = None
+    usage_unavailable_reason: str | None = None
     rejection_reason: str | None = None
     selected: bool = False
     standby: bool = False
@@ -99,11 +103,15 @@ class MissionView(BaseModel):
     guardrail_state: dict[str, Any] = Field(default_factory=dict)
     recovery_state: dict[str, Any] = Field(default_factory=dict)
     stop_state: dict[str, Any] = Field(default_factory=dict)
+    bidding_state: dict[str, Any] = Field(default_factory=dict)
     civic_audit_summary: dict[str, Any] = Field(default_factory=dict)
     provider_market_summary: dict[str, Any] = Field(default_factory=dict)
     usage_summary: dict[str, Any] = Field(default_factory=dict)
     worktree_state: dict[str, Any] = Field(default_factory=dict)
     accepted_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+    mission_state_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+    repo_state_checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+    mission_output: dict[str, Any] = Field(default_factory=dict)
     execution_steps: list[dict[str, Any]] = Field(default_factory=list)
     recent_trace: list[dict[str, Any]] = Field(default_factory=list)
 

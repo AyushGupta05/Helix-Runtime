@@ -1,5 +1,5 @@
 import StatusBadge from "./StatusBadge";
-import { formatCurrency, formatInteger } from "../lib/format";
+import { MISSION_STAGE_ORDER, formatCurrency, formatInteger, humanizeMissionStage, shortCommit } from "../lib/format";
 
 function repoLabel(repoPath) {
   const segments = String(repoPath || "")
@@ -33,6 +33,8 @@ export default function MissionHeader({
 
   const missionUsage = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
   const activeTask = mission.active_task?.task_id ?? mission.active_task_id ?? "Waiting";
+  const acceptedCheckpoint = mission.accepted_checkpoints?.at(-1) ?? null;
+  const activeStageIndex = Math.max(MISSION_STAGE_ORDER.indexOf(mission.active_phase), 0);
 
   return (
     <header className="mission-ribbon panel">
@@ -49,6 +51,7 @@ export default function MissionHeader({
               Repo: {repoLabel(mission.repo_path)}
             </span>
             <span className="mission-bar-meta-item">Task: {activeTask}</span>
+            <span className="mission-bar-meta-item">Phase: {humanizeMissionStage(mission.active_phase)}</span>
             <span className="mission-bar-meta-item">
               Tokens: {formatInteger(missionUsage.total_tokens)}
             </span>
@@ -68,6 +71,30 @@ export default function MissionHeader({
               {control.label}
             </button>
           ))}
+        </div>
+      </div>
+      <div className="mission-stage-rail" aria-label="Mission stage progression">
+        {MISSION_STAGE_ORDER.map((stage, index) => (
+          <span
+            key={stage}
+            className={`mission-stage-pill ${index === activeStageIndex ? "is-active" : ""} ${index < activeStageIndex ? "is-complete" : ""}`}
+          >
+            {humanizeMissionStage(stage)}
+          </span>
+        ))}
+      </div>
+      <div className="mission-ribbon-summary">
+        <div className="mission-summary-card">
+          <span>Branch</span>
+          <strong>{mission.branch_name ?? "branch pending"}</strong>
+        </div>
+        <div className="mission-summary-card">
+          <span>Head commit</span>
+          <strong>{shortCommit(mission.head_commit ?? acceptedCheckpoint?.commit_sha)}</strong>
+        </div>
+        <div className="mission-summary-card">
+          <span>Checkpoint</span>
+          <strong>{acceptedCheckpoint ? acceptedCheckpoint.label : "Awaiting acceptance"}</strong>
         </div>
       </div>
     </header>

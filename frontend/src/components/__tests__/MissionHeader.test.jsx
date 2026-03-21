@@ -15,13 +15,14 @@ describe("MissionHeader", () => {
           outcome: null,
           active_task: { task_id: "T2_bugfix" },
           bids: [],
+          accepted_checkpoints: [
+            { checkpoint_id: "chk-1", label: "T2_bugfix", commit_sha: "1234567890abcdef" }
+          ],
           validation_report: { task_id: "T1_localize", passed: true },
           branch_name: "codex/arbiter-abc123",
-          head_commit: null
+          head_commit: "1234567890abcdef"
         }}
         usageSummary={{ mission: { total_tokens: 456, total_cost: 0.1234 } }}
-        latestProposalTrace={{ provider: "openai" }}
-        latestCheckpoint={{ commit_sha: "1234567890abcdef" }}
         busy={false}
         onPause={vi.fn()}
         onResume={vi.fn()}
@@ -35,6 +36,9 @@ describe("MissionHeader", () => {
     expect(screen.getByText(/Fix tests/i)).toBeInTheDocument();
     expect(screen.getByText(/Repo: repo/i)).toBeInTheDocument();
     expect(screen.getByText(/Task: T2_bugfix/i)).toBeInTheDocument();
+    expect(screen.getByText(/Phase: Market/i)).toBeInTheDocument();
     expect(screen.getByText(/Tokens: 456/i)).toBeInTheDocument();
+    expect(screen.getByText(/Branch/i)).toBeInTheDocument();
+    expect(screen.getByText(/Checkpoint/i)).toBeInTheDocument();
   });
 });

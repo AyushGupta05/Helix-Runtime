@@ -1,9 +1,8 @@
-from arbiter.agents.backend import BedrockModelRouter, DefaultStrategyBackend, EditProposal, FileUpdate
+from arbiter.agents.backend import DefaultStrategyBackend, EditProposal, FileUpdate, ProviderModelRouter
 
 __all__ = [
-    "BedrockModelRouter",
+    "ProviderModelRouter",
     "DefaultStrategyBackend",
     "EditProposal",
     "FileUpdate",
 ]
-

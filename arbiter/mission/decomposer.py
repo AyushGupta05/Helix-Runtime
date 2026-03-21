@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from arbiter.core.contracts import RepoSnapshot, SuccessCriteria, TaskNode, TaskRequirementLevel, TaskStatus, TaskType
 
 
@@ -11,8 +14,7 @@ class GoalDecomposer:
         wants_refactor = any(word in objective_lower for word in ("refactor", "cleanup", "maintain", "structure", "architecture"))
         wants_perf = any(word in objective_lower for word in ("perf", "performance", "slow", "latency", "speed"))
 
-        candidate_files = snapshot.complexity_hotspots[:3] or snapshot.changed_files[:3]
-        candidate_files = list(dict.fromkeys(candidate_files + snapshot.capabilities.risky_paths[:2]))
+        candidate_files = self._candidate_files(snapshot)
 
         if is_bugfix or wants_perf:
             tasks.append(
@@ -170,3 +172,46 @@ class GoalDecomposer:
             )
         )
         return tasks
+
+    def _candidate_files(self, snapshot: RepoSnapshot) -> list[str]:
+        evidence_files = self._failure_evidence_files(snapshot)
+        candidate_files = evidence_files + snapshot.changed_files[:3] + snapshot.complexity_hotspots[:3]
+        candidate_files = list(dict.fromkeys(candidate_files + snapshot.capabilities.risky_paths[:2]))
+        return candidate_files
+
+    @staticmethod
+    def _failure_evidence_files(snapshot: RepoSnapshot) -> list[str]:
+        candidates: list[str] = []
+        file_pattern = re.compile(r"([A-Za-z0-9_./\\-]+\.(?:py|js|jsx|ts|tsx))")
+        repo = Path(snapshot.repo_path)
+        baseline_results = [
+            *snapshot.initial_test_results,
+            *snapshot.initial_lint_results,
+            *snapshot.initial_static_results,
+        ]
+        for result in baseline_results:
+            text = f"{result.stdout}\n{result.stderr}"
+            for match in file_pattern.findall(text):
+                normalized = GoalDecomposer._normalize_candidate_path(repo, match)
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+        for failure_signal in snapshot.failure_signals:
+            for match in file_pattern.findall(failure_signal):
+                normalized = GoalDecomposer._normalize_candidate_path(repo, match)
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+        return candidates[:8]
+
+    @staticmethod
+    def _normalize_candidate_path(repo: Path, raw_path: str) -> str | None:
+        candidate = Path(raw_path.replace("\\", "/"))
+        if candidate.is_absolute():
+            try:
+                return candidate.resolve().relative_to(repo.resolve()).as_posix()
+            except ValueError:
+                return None
+        normalized = candidate.as_posix().lstrip("./")
+        repo_candidate = (repo / normalized).resolve()
+        if repo_candidate.exists() and repo_candidate.is_file():
+            return repo_candidate.relative_to(repo.resolve()).as_posix()
+        return None

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ -v --co)",
+      "Bash(ls tests/test_bidding*.py)",
+      "Bash(git apply:*)",
+      "Bash(python -m pytest tests/test_bidding_architecture.py tests/test_bidding_provenance.py -v)",
+      "Bash(git stash:*)",
+      "Bash(python -m pytest tests/test_server_api.py::test_api_pause_and_resume_mission -v)",
+      "Bash(python -m pytest tests/test_server_api.py::test_api_pause_and_resume_mission -v -s)"
+    ]
+  }
+}

@@ -165,6 +165,7 @@ def create_app(strategy_backend_factory=None) -> FastAPI:
                 "head_commit": view.get("head_commit"),
                 "worktree_state": view.get("worktree_state", {}),
                 "accepted_checkpoint": view.get("accepted_checkpoints", [])[-1] if view.get("accepted_checkpoints") else None,
+                "mission_output": view.get("mission_output", {}),
             }
         finally:
             store.close()

@@ -243,7 +243,6 @@ class MissionService:
             control = store.fetch_control_state(mission_id)
             if not control or control["run_state"] not in {
                 RunState.RUNNING.value,
-                RunState.PAUSED.value,
                 RunState.CANCELLING.value,
             }:
                 return

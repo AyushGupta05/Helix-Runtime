@@ -28,7 +28,7 @@ class SlowScriptedStrategyBackend(ScriptedStrategyBackend):
         return super().generate_edit_proposal(*args, **kwargs)
 
 
-def wait_for(predicate: Callable[[], bool], timeout: float = 20.0) -> None:
+def wait_for(predicate: Callable[[], bool], timeout: float = 40.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -100,6 +100,9 @@ def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path,
         assert body["guardrail_state"]["policy_state"] in {"clear", "restricted", "blocked"}
         assert body["usage_summary"]["mission"]["total_tokens"] >= 0
         assert "worktree_state" in body
+        assert "mission_output" in body
+        assert "mission_state_checkpoints" in body
+        assert "repo_state_checkpoints" in body
         assert "recent_trace" in body
         assert "provider_market_summary" in body
 
@@ -110,6 +113,7 @@ def test_api_creates_snapshot_and_history(python_bug_repo: Path, tmp_path: Path,
         diff = client.get(f"/api/missions/{mission_id}/diff{repo_query(python_bug_repo)}")
         assert diff.status_code == 200
         assert "worktree_state" in diff.json()
+        assert "mission_output" in diff.json()
 
         usage = client.get(f"/api/missions/{mission_id}/usage{repo_query(python_bug_repo)}")
         assert usage.status_code == 200

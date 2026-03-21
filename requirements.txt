@@ -3,7 +3,6 @@ langgraph
 langgraph-checkpoint-sqlite
 langchain
 langchain-anthropic
-langchain-aws
 langchain-mcp-adapters
 langchain-openai
 openai

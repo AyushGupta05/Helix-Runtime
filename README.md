@@ -8,7 +8,7 @@ Arbiter is a local-first, resumable autonomous mission runner for Python repos a
 - local mission-control API with history, snapshot materialization, controls, and SSE streaming
 - React + Vite operator dashboard for live bidding, execution, validation, and recovery
 - SQLite mission state + JSONL event stream + separate repo checkpoints
-- Bedrock-first model lanes with OpenAI support retained in the runtime
+- explicit OpenAI + Anthropic model lanes with durable invocation provenance
 - Civic integration path for privileged external tools
 
 ## Run the operator UI
@@ -50,7 +50,7 @@ Copy `.env.example` to `.env` and fill in only the providers you want to use. `.
 
 Each mission creates a runtime folder under the target repo's `.arbiter/` directory containing:
 
-- `mission.db`
+- `state.db`
 - `events.jsonl`
 - `metadata.json`
 - cached reports
@@ -58,4 +58,4 @@ Each mission creates a runtime folder under the target repo's `.arbiter/` direct
 - mission-state checkpoints
 - repo-state checkpoints
 
-Successful missions create validated commits on Arbiter-managed `codex/` branches in isolated worktrees.
+Successful missions create validated commits on Arbiter-managed `codex/` branches in isolated worktrees, with checkpointed diff evidence available through the API and operator UI.

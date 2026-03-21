@@ -55,9 +55,86 @@ export function humanizeToken(value) {
   return value.replace(/[._]/g, " ");
 }
 
+export const MISSION_STAGE_ORDER = [
+  "collect",
+  "decompose",
+  "select_task",
+  "market",
+  "simulate",
+  "select",
+  "execute",
+  "validate",
+  "recover",
+  "finalize"
+];
+
+export function humanizeMissionStage(stage) {
+  if (!stage) {
+    return "Idle";
+  }
+  return String(stage)
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+export function humanizeEventType(eventType) {
+  if (!eventType) {
+    return "Event";
+  }
+  return String(eventType)
+    .replace(/\./g, " ")
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+export function shortCommit(commitSha, length = 8) {
+  if (!commitSha) {
+    return "n/a";
+  }
+  return String(commitSha).slice(0, length);
+}
+
 export function summarizeProvider(provider) {
   if (!provider) {
-    return "system";
+    return "Unknown";
   }
   return provider.replace(/(^\w)|-(\w)/g, (match) => match.replace("-", "").toUpperCase());
+}
+
+export function humanizeGenerationMode(mode) {
+  if (!mode) {
+    return "Unknown";
+  }
+  return String(mode)
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+export function isDeterministicFallbackBid(bid) {
+  return bid?.generation_mode === "deterministic_fallback";
+}
+
+export function summarizeBidOrigin(bid) {
+  if (!bid) {
+    return "Unknown origin";
+  }
+  const role = bid.role ? String(bid.role) : "Unknown role";
+  const providerLabel = isDeterministicFallbackBid(bid)
+    ? "System"
+    : bid.provider
+      ? summarizeProvider(bid.provider)
+      : "Unknown";
+  const modelLabel = bid.model_id ? String(bid.model_id) : "model unavailable";
+  const modeLabel = humanizeGenerationMode(bid.generation_mode);
+  return `${role} | ${providerLabel} | ${modelLabel} | ${modeLabel}`;
+}
+
+export function summarizeInvocationMode(invocation) {
+  if (!invocation) {
+    return "Unknown";
+  }
+  if (invocation.generation_mode) {
+    return humanizeGenerationMode(invocation.generation_mode);
+  }
+  return invocation.status ? humanizeGenerationMode(invocation.status) : "Unknown";
 }

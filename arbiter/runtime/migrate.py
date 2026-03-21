@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from arbiter.core.contracts import ActivePhase, PolicyState
+from arbiter.core.contracts import ActivePhase, MissionStateCheckpoint, PolicyState, RepoStateCheckpoint, RunState
 from arbiter.runtime.store import MissionStore
 
 
@@ -81,10 +81,30 @@ def migrate_legacy_mission(paths, mission_id: str) -> None:
             policy_state=PolicyState.CLEAR.value,
             current_risk_score=summary.get("current_risk_score", 0.0),
             simulation_summary=None,
+            worktree_state={},
+            bidding_state=summary.get("bidding_state", {}),
             latest_validation_task_id=validation.get("task_id"),
             latest_failure_task_id=failure.get("task_id"),
             accepted_checkpoint_id=None,
         )
+        if checkpoint:
+            store.save_mission_state_checkpoint(
+                MissionStateCheckpoint(
+                    checkpoint_id=f"{mission_id}-legacy-mission",
+                    mission_id=mission_id,
+                    label="legacy-import",
+                    active_phase=ActivePhase(state.get("active_phase", ActivePhase.IDLE.value)),
+                    active_task_id=state.get("active_task_id"),
+                    active_bid_round=state.get("active_bid_round", 0),
+                    recovery_round=state.get("recovery_round", 0),
+                    winner_bid_id=state.get("winner_bid_id"),
+                    standby_bid_id=state.get("standby_bid_id"),
+                    accepted_checkpoint_id=state.get("accepted_checkpoint", {}).get("checkpoint_id") if isinstance(state.get("accepted_checkpoint"), dict) else None,
+                    run_state=RunState.RUNNING,
+                    policy_state=PolicyState(state.get("governance", {}).get("policy_state", PolicyState.CLEAR.value)),
+                    state=state,
+                )
+            )
 
         for row in legacy.execute("SELECT * FROM tasks").fetchall():
             payload = json.loads(row["payload_json"])
@@ -163,6 +183,22 @@ def migrate_legacy_mission(paths, mission_id: str) -> None:
             store.save_accepted_checkpoint(
                 mission_id,
                 type("CheckpointProxy", (), {"checkpoint_id": payload["checkpoint_id"], "label": payload["label"], "commit_sha": payload["commit_sha"], "diff_summary": payload.get("summary", ""), "created_at": type("Ts", (), {"isoformat": lambda self, value=payload.get("created_at", spec.get("created_at", "")): value})(), "model_dump_json": lambda self, payload=checkpoint_payload: json.dumps(payload)})(),
+            )
+            store.save_repo_state_checkpoint(
+                RepoStateCheckpoint(
+                    checkpoint_id=f"{payload['checkpoint_id']}-legacy-repo",
+                    mission_id=mission_id,
+                    label=payload["label"],
+                    checkpoint_kind="accepted",
+                    branch_name=mission["branch_name"],
+                    commit_sha=payload["commit_sha"],
+                    accepted=True,
+                    diff_summary=payload.get("summary", ""),
+                    diff_patch=payload.get("diff_patch", ""),
+                    affected_files=payload.get("affected_files", []),
+                    worktree_state={},
+                    rollback_pointer=payload.get("rollback_pointer"),
+                )
             )
 
         for row in legacy.execute("SELECT * FROM events ORDER BY id ASC").fetchall():

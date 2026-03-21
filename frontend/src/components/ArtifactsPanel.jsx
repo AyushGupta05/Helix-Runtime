@@ -1,4 +1,4 @@
-import { formatCurrency, formatInteger, formatNumber, summarizeProvider } from "../lib/format";
+import { formatCurrency, formatInteger, formatNumber, shortCommit, summarizeProvider } from "../lib/format";
 
 function humanizeStrategy(value) {
   return String(value || "pending")
@@ -57,6 +57,16 @@ function validationItems(report) {
   ];
 }
 
+function branchSummary(mission, acceptedCheckpoint) {
+  const branchName = mission.branch_name ?? "branch pending";
+  const headCommit = acceptedCheckpoint?.commit_sha ?? mission.head_commit ?? mission.worktree_state?.accepted_commit ?? null;
+  return {
+    branchName,
+    headCommit,
+    checkpoint: acceptedCheckpoint
+  };
+}
+
 export default function ArtifactsPanel({
   mission,
   diffState,
@@ -67,6 +77,8 @@ export default function ArtifactsPanel({
 }) {
   const worktree = diffState?.worktree_state ?? mission.worktree_state ?? {};
   const failureContext = mission.failure_context ?? null;
+  const acceptedCheckpoint = latestCheckpoint ?? mission.accepted_checkpoints?.at(-1) ?? null;
+  const repoLineage = branchSummary(mission, acceptedCheckpoint);
   const providerTotals = Object.values(usageSummary?.by_provider ?? {}).sort(
     (left, right) => right.total_tokens - left.total_tokens
   );
@@ -79,10 +91,11 @@ export default function ArtifactsPanel({
     mission.bids.find((bid) => bid.bid_id === mission.standby_bid_id) ??
     mission.bids.find((bid) => bid.standby) ??
     null;
+  const branchIsClean = !changedFiles.length && Boolean(repoLineage.headCommit);
 
   return (
     <div className="artifact-stack">
-      <section className="artifact-card">
+      <section className="artifact-card artifact-card-focus">
         <div className="artifact-card-head">
           <h3>Current Decision</h3>
           <span>{mission.active_task?.task_id ?? mission.active_task_id ?? "waiting"}</span>
@@ -150,15 +163,41 @@ export default function ArtifactsPanel({
       <section className="artifact-card">
         <div className="artifact-card-head">
           <h3>Repo State</h3>
-          <span>{changedFiles.length ? `${changedFiles.length} files` : "No changes"}</span>
+          <span>{branchIsClean ? "Validated branch" : `${changedFiles.length} live changes`}</span>
         </div>
-        <div className={`repo-state-banner ${changedFiles.length ? "is-changed" : "is-clean"}`}>
-          <strong>{changedFiles.length ? "Repo Changed" : "No repo changes yet"}</strong>
+        <div className={`repo-state-banner ${branchIsClean ? "is-accepted" : changedFiles.length ? "is-changed" : "is-clean"}`}>
+          <strong>
+            {acceptedCheckpoint
+              ? `Accepted checkpoint ${acceptedCheckpoint.label}`
+              : "No checkpoint accepted yet"}
+          </strong>
           <p>
-            {changedFiles.length
-              ? `${changedFiles.length} files modified`
-              : "No patch has been accepted."}
+            {acceptedCheckpoint
+              ? `${repoLineage.branchName} is anchored at ${shortCommit(repoLineage.headCommit)}`
+              : "The managed branch will show up here once the first validator gate passes."}
           </p>
+        </div>
+        <div className="repo-lineage-grid">
+          <div className="repo-lineage-card">
+            <span>Branch</span>
+            <strong>{repoLineage.branchName}</strong>
+          </div>
+          <div className="repo-lineage-card">
+            <span>Head commit</span>
+            <strong>{shortCommit(repoLineage.headCommit)}</strong>
+          </div>
+          <div className="repo-lineage-card">
+            <span>Rollback anchor</span>
+            <strong>
+              {acceptedCheckpoint?.rollback_pointer
+                ? shortCommit(acceptedCheckpoint.rollback_pointer)
+                : "Latest checkpoint"}
+            </strong>
+          </div>
+          <div className="repo-lineage-card">
+            <span>Diff summary</span>
+            <strong>{truncate(acceptedCheckpoint?.diff_summary ?? mission.latest_diff_summary ?? worktree.diff_stat ?? "No diff yet.", 90)}</strong>
+          </div>
         </div>
         {changedFiles.length ? (
           <ul className="repo-state-list">
@@ -166,7 +205,13 @@ export default function ArtifactsPanel({
               <li key={file}>{file}</li>
             ))}
           </ul>
-        ) : null}
+        ) : (
+          <p className="repo-clean-note">
+            {branchIsClean
+              ? "The live worktree is clean because the latest accepted changes are already committed on the managed branch."
+              : "No patch has been accepted yet."}
+          </p>
+        )}
         <div className="repo-validation">
           <span>Validation</span>
           <div className="validation-list">
@@ -182,8 +227,8 @@ export default function ArtifactsPanel({
           </div>
           <p>
             Checkpoint:{" "}
-            {latestCheckpoint
-              ? `${latestCheckpoint.label} accepted (${latestCheckpoint.commit_sha?.slice(0, 8)})`
+            {acceptedCheckpoint
+              ? `${acceptedCheckpoint.label} accepted (${shortCommit(acceptedCheckpoint.commit_sha)})`
               : "No checkpoint accepted yet"}
           </p>
         </div>

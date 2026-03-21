@@ -48,6 +48,7 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     events = (mission_root / "events.jsonl").read_text(encoding="utf-8")
     assert "standby.promoted" in events
     assert "checkpoint.accepted" in events
+    assert "phase.changed" in events
 
     status = mission_status(state.mission.mission_id, str(python_bug_repo))
     assert status["outcome"] == "success"
@@ -59,15 +60,25 @@ def test_python_bugfix_mission_recovers_via_standby(python_bug_repo: Path) -> No
     connection = sqlite3.connect(db_path)
     task_count = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     checkpoint_count = connection.execute("SELECT COUNT(*) FROM accepted_checkpoints").fetchone()[0]
+    mission_checkpoint_count = connection.execute("SELECT COUNT(*) FROM mission_state_checkpoints").fetchone()[0]
+    repo_checkpoint_count = connection.execute("SELECT COUNT(*) FROM repo_state_checkpoints").fetchone()[0]
     view_count = connection.execute("SELECT COUNT(*) FROM mission_view_cache").fetchone()[0]
     invocation_count = connection.execute("SELECT COUNT(*) FROM model_invocations").fetchone()[0]
     trace_count = connection.execute("SELECT COUNT(*) FROM trace_entries").fetchone()[0]
+    latest_failure = connection.execute(
+        "SELECT payload_json FROM failure_contexts ORDER BY timestamp DESC, id DESC LIMIT 1"
+    ).fetchone()[0]
     assert task_count >= 1
     assert checkpoint_count >= 1
+    assert mission_checkpoint_count >= 1
+    assert repo_checkpoint_count >= 1
     assert view_count == 1
     assert invocation_count >= 1
     assert trace_count >= 1
+    latest_checkpoint = connection.execute("SELECT payload_json FROM accepted_checkpoints ORDER BY created_at DESC LIMIT 1").fetchone()[0]
     connection.close()
+    assert "diff_patch" in json.loads(latest_checkpoint)
+    assert json.loads(latest_failure)["rollback_result"] == "rollback_succeeded"
 
 
 def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
