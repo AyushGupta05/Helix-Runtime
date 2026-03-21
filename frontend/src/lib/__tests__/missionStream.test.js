@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mergeMissionEvent, normalizeIncomingBid } from "../missionStream";
+import { mergeMissionEvent, normalizeIncomingBid, reconcileMissionSnapshot } from "../missionStream";
 
 describe("normalizeIncomingBid", () => {
   it("preserves provider-backed provenance when the stream payload includes it", () => {
@@ -82,5 +82,49 @@ describe("normalizeIncomingBid", () => {
     expect(afterCheckpoint.accepted_checkpoints).toHaveLength(1);
     expect(afterCheckpoint.worktree_state.has_changes).toBe(false);
     expect(afterCheckpoint.worktree_state.accepted_commit).toBe("abc123def456");
+  });
+
+  it("does not let a stale snapshot poll overwrite newer live mission state", () => {
+    const current = {
+      mission_id: "mission-1",
+      run_state: "running",
+      active_phase: "recover",
+      latest_event_id: 12,
+      events: [
+        {
+          id: 12,
+          event_type: "recovery.round_opened",
+          created_at: "2026-03-21T10:00:12Z",
+          message: "Rebidding with prior evidence.",
+          payload: { task_id: "T2_bugfix", round: 2 }
+        }
+      ],
+      recent_trace: [],
+      tasks: [],
+      bids: [],
+      accepted_checkpoints: [],
+      worktree_state: {},
+      latest_diff_summary: ""
+    };
+
+    const incoming = {
+      mission_id: "mission-1",
+      run_state: "running",
+      active_phase: "market",
+      latest_event_id: 0,
+      events: [],
+      recent_trace: [],
+      tasks: [],
+      bids: [],
+      accepted_checkpoints: [],
+      worktree_state: {}
+    };
+
+    const reconciled = reconcileMissionSnapshot(current, incoming);
+
+    expect(reconciled.latest_event_id).toBe(12);
+    expect(reconciled.active_phase).toBe("recover");
+    expect(reconciled.events).toHaveLength(1);
+    expect(reconciled.events[0].event_type).toBe("recovery.round_opened");
   });
 });

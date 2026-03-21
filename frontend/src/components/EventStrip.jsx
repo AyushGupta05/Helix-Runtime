@@ -21,10 +21,52 @@ function formatTimestamp(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+const HIGH_SIGNAL_EVENTS = new Set([
+  "mission.started",
+  "mission.paused",
+  "mission.resumed",
+  "mission.cancelled",
+  "mission.finalized",
+  "repo.scan.completed",
+  "task.created",
+  "task.ready",
+  "task.selected",
+  "task.completed",
+  "task.failed",
+  "market.opened",
+  "bid.won",
+  "standby.selected",
+  "standby.promoted",
+  "simulation.completed",
+  "proposal.selected",
+  "validation.started",
+  "validation.completed",
+  "validation.passed",
+  "validation.failed",
+  "recovery.started",
+  "recovery.round_opened",
+  "recovery.completed",
+  "checkpoint.accepted",
+  "checkpoint.reverted",
+  "bidding.degraded_mode_entered",
+  "bidding.architecture_violation"
+]);
+
+function isHighSignalEvent(entry) {
+  const eventType = entry?.event_type ?? "";
+  if (eventType === "phase.changed") {
+    return Boolean(entry?.payload?.phase);
+  }
+  if (eventType.startsWith("model.invocation.")) {
+    return eventType.endsWith(".failed");
+  }
+  return HIGH_SIGNAL_EVENTS.has(eventType);
+}
+
 function normalize(events) {
-  return [...(events ?? [])]
-    .sort((left, right) => Number(left.id ?? 0) - Number(right.id ?? 0))
-    .slice(-18);
+  const ordered = [...(events ?? [])].sort((left, right) => Number(left.id ?? 0) - Number(right.id ?? 0));
+  const filtered = ordered.filter(isHighSignalEvent);
+  return (filtered.length ? filtered : ordered).slice(-18);
 }
 
 function toneForEvent(eventType) {
@@ -75,6 +117,7 @@ export default function EventStrip({ mission, events = [], trace = [] }) {
   const entries = normalize(events);
   const latestTrace = useMemo(() => [...(trace ?? [])].reverse()[0] ?? null, [trace]);
   const scrollerRef = useRef(null);
+  const totalEvents = events?.length ?? 0;
 
   useEffect(() => {
     if (scrollerRef.current) {
@@ -117,7 +160,9 @@ export default function EventStrip({ mission, events = [], trace = [] }) {
       </div>
 
       <div className="timeline-meta">
-        <span className="timeline-meta-pill">Events: {formatInteger(entries.length)}</span>
+        <span className="timeline-meta-pill">
+          Key events: {formatInteger(entries.length)} / {formatInteger(totalEvents)}
+        </span>
         <span className="timeline-meta-pill">
           Latest event: {entries[entries.length - 1]?.event_type ? humanizeEventType(entries[entries.length - 1].event_type) : "Waiting"}
         </span>

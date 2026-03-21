@@ -508,6 +508,33 @@ export function mergeMissionEvent(snapshot, event) {
   }
 }
 
+export function reconcileMissionSnapshot(current, incoming) {
+  if (!current) {
+    return incoming;
+  }
+  if (!incoming) {
+    return current;
+  }
+
+  const currentEventId = Number(current.latest_event_id ?? 0);
+  const incomingEventId = Number(incoming.latest_event_id ?? 0);
+  if (incomingEventId >= currentEventId) {
+    return incoming;
+  }
+
+  return {
+    ...incoming,
+    ...current,
+    mission_state_checkpoints: incoming.mission_state_checkpoints ?? current.mission_state_checkpoints ?? [],
+    repo_state_checkpoints: incoming.repo_state_checkpoints ?? current.repo_state_checkpoints ?? [],
+    mission_output: incoming.mission_output ?? current.mission_output ?? {},
+    usage_summary: incoming.usage_summary ?? current.usage_summary ?? {},
+    validation_report: incoming.validation_report ?? current.validation_report ?? null,
+    failure_context: incoming.failure_context ?? current.failure_context ?? null,
+    worktree_state: incoming.worktree_state ?? current.worktree_state ?? {}
+  };
+}
+
 export function useMissionStream(missionId, repo) {
   const queryClient = useQueryClient();
   const reconnectRef = useRef(null);
@@ -516,7 +543,11 @@ export function useMissionStream(missionId, repo) {
 
   const missionQuery = useQuery({
     queryKey: ["mission", repo, missionId],
-    queryFn: () => getMission(missionId, repo),
+    queryFn: async () =>
+      reconcileMissionSnapshot(
+        queryClient.getQueryData(["mission", repo, missionId]),
+        await getMission(missionId, repo)
+      ),
     enabled: Boolean(missionId && repo),
     refetchInterval: (query) =>
       ["running", "paused", "cancelling"].includes(query.state.data?.run_state)
