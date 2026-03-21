@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -102,6 +103,8 @@ class MissionService:
                 strategy_backend=self.strategy_backend_factory(),
                 mission_id=mission_id,
             )
+        except Exception as exc:
+            self._record_thread_failure(str(resolve_repo_path(request.repo)), mission_id, exc)
         finally:
             with self._lock:
                 self._active = None
@@ -137,6 +140,8 @@ class MissionService:
     def _run_resume(self, repo_path: str, mission_id: str) -> None:
         try:
             resume_mission(mission_id, repo_path, strategy_backend=self.strategy_backend_factory())
+        except Exception as exc:
+            self._record_thread_failure(repo_path, mission_id, exc)
         finally:
             with self._lock:
                 self._active = None
@@ -284,5 +289,46 @@ class MissionService:
                 reason=reason,
                 updated_at=utc_now().isoformat(),
             )
+        finally:
+            store.close()
+
+    def _record_thread_failure(self, repo_path: str, mission_id: str, exc: Exception) -> None:
+        paths = build_mission_paths(repo_path, mission_id)
+        error_text = traceback.format_exc()
+        Path(paths.root_dir, "thread-error.log").write_text(error_text, encoding="utf-8")
+        store = MissionStore(paths.db_path)
+        stop_reason = f"mission_thread_crashed: {exc}"
+        now = utc_now().isoformat()
+        try:
+            mission = store.fetch_mission(mission_id)
+            if mission is not None:
+                summary = MissionSummary.model_validate(json.loads(mission["summary_json"]))
+                summary.outcome = MissionOutcome.FAILED_EXECUTION
+                summary.stop_reason = stop_reason
+                spec = MissionSpec.model_validate(json.loads(mission["spec_json"]))
+                store.upsert_mission(
+                    mission_id=mission_id,
+                    status=RunState.FINALIZED.value,
+                    repo_path=mission["repo_path"],
+                    objective=mission["objective"],
+                    branch_name=mission["branch_name"],
+                    outcome=MissionOutcome.FAILED_EXECUTION.value,
+                    spec=spec,
+                    summary=summary,
+                    created_at=mission["created_at"],
+                )
+            store.connection.execute(
+                "UPDATE mission_runtime SET active_phase = ?, stop_reason = ?, updated_at = ? WHERE mission_id = ?",
+                ("finalize", stop_reason, now, mission_id),
+            )
+            store.connection.commit()
+            store.upsert_control_state(
+                mission_id=mission_id,
+                run_state=RunState.FINALIZED.value,
+                requested_action=None,
+                reason=stop_reason,
+                updated_at=now,
+            )
+            store.refresh_mission_view(mission_id)
         finally:
             store.close()
