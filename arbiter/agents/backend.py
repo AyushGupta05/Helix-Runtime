@@ -430,11 +430,11 @@ class DefaultStrategyBackend:
 
     @staticmethod
     def lane_for_task(task: TaskNode) -> str:
-        if task.task_type.value == "test":
+        if task.task_type.value == "validate":
             return "test_gen"
-        if "perf" in task.task_type.value:
+        if task.task_type.value == "perf_diagnosis":
             return "perf_reason"
-        return "bid_deep"
+        return "proposal_gen"
 
     def generate_edit_proposals(
         self,

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from arbiter.agents.backend import DefaultStrategyBackend, ModelInvocationResult
 from arbiter.core.contracts import BidGenerationMode, utc_now
 
-_LANES = ("triage", "bid_fast", "bid_deep", "test_gen", "perf_reason")
+_LANES = ("triage", "bid_fast", "bid_deep", "proposal_gen", "test_gen", "perf_reason")
 _CALC_FIX = "def add(a, b):\n    return a + b\n"
 _TEST_FIX = (
     "from calc import add\n\n\n"

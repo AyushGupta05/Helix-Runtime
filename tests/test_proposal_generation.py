@@ -65,7 +65,7 @@ def test_generate_edit_proposal_uses_the_bid_provider_for_preview() -> None:
 
     assert proposal.files
     assert invocation.provider == "anthropic"
-    assert invocation.lane == "bid_deep.anthropic"
+    assert invocation.lane == "proposal_gen.anthropic"
 
 
 def test_generate_edit_proposal_returns_safe_empty_result_when_provider_generation_fails() -> None:
@@ -117,7 +117,7 @@ def test_generate_edit_proposals_rejects_analysis_only_output_for_edit_tasks() -
             self.config = SimpleNamespace(
                 enabled_providers=["openai"],
                 default_provider="openai",
-                model_lanes={"bid_deep": lane_config, "bid_deep.openai": lane_config},
+                model_lanes={"proposal_gen": lane_config, "proposal_gen.openai": lane_config},
             )
 
         def invoke(self, lane: str, prompt: dict[str, str]):

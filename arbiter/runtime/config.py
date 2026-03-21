@@ -45,17 +45,20 @@ class RuntimeConfig(BaseSettings):
     openai_model_triage: str = Field(default="gpt-5-mini", alias="OPENAI_MODEL_TRIAGE")
     openai_model_bid_fast: str = Field(default="gpt-5-mini", alias="OPENAI_MODEL_BID_FAST")
     openai_model_bid_deep: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_BID_DEEP")
+    openai_model_proposal_gen: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_PROPOSAL_GEN")
     openai_model_test_gen: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_TEST_GEN")
     openai_model_perf_reason: str = Field(default="gpt-5.1-codex-mini", alias="OPENAI_MODEL_PERF_REASON")
     anthropic_model_triage: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_TRIAGE")
     anthropic_model_bid_fast: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_BID_FAST")
     anthropic_model_bid_deep: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_BID_DEEP")
+    anthropic_model_proposal_gen: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_PROPOSAL_GEN")
     anthropic_model_test_gen: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_TEST_GEN")
     anthropic_model_perf_reason: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL_PERF_REASON")
 
     max_parallel_bidders: int = Field(default=8, alias="ARBITER_MAX_PARALLEL_BIDDERS")
     max_parallel_validators: int = Field(default=4, alias="ARBITER_MAX_PARALLEL_VALIDATORS")
     provider_request_timeout_seconds: float = Field(default=45.0, alias="ARBITER_PROVIDER_REQUEST_TIMEOUT_SECONDS")
+    proposal_generation_max_tokens: int = Field(default=8192, alias="ARBITER_PROPOSAL_GENERATION_MAX_TOKENS")
     max_runtime_minutes: int = Field(default=10, alias="ARBITER_MAX_RUNTIME_MINUTES")
     max_file_churn: int = Field(default=8, alias="ARBITER_MAX_FILE_CHURN")
     max_recovery_rounds: int = Field(default=3, alias="ARBITER_MAX_RECOVERY_ROUNDS")
@@ -88,11 +91,22 @@ class RuntimeConfig(BaseSettings):
     @cached_property
     def model_lanes(self) -> dict[str, ModelLaneConfig]:
         lanes: dict[str, ModelLaneConfig] = {}
-        for lane in ("triage", "bid_fast", "bid_deep", "test_gen", "perf_reason"):
-            lanes[lane] = ModelLaneConfig(name=lane, provider=self.default_provider, model_id=self._lane_model(self.default_provider, lane))
+        for lane in ("triage", "bid_fast", "bid_deep", "proposal_gen", "test_gen", "perf_reason"):
+            max_tokens = self.proposal_generation_max_tokens if lane == "proposal_gen" else 2048
+            lanes[lane] = ModelLaneConfig(
+                name=lane,
+                provider=self.default_provider,
+                model_id=self._lane_model(self.default_provider, lane),
+                max_tokens=max_tokens,
+            )
             for provider in self.enabled_providers:
                 key = f"{lane}.{provider}"
-                lanes[key] = ModelLaneConfig(name=key, provider=provider, model_id=self._lane_model(provider, lane))
+                lanes[key] = ModelLaneConfig(
+                    name=key,
+                    provider=provider,
+                    model_id=self._lane_model(provider, lane),
+                    max_tokens=max_tokens,
+                )
         return lanes
 
 
