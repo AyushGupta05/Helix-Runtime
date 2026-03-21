@@ -55,6 +55,7 @@ class RuntimeConfig(BaseSettings):
 
     max_parallel_bidders: int = Field(default=8, alias="ARBITER_MAX_PARALLEL_BIDDERS")
     max_parallel_validators: int = Field(default=4, alias="ARBITER_MAX_PARALLEL_VALIDATORS")
+    provider_request_timeout_seconds: float = Field(default=45.0, alias="ARBITER_PROVIDER_REQUEST_TIMEOUT_SECONDS")
     max_runtime_minutes: int = Field(default=10, alias="ARBITER_MAX_RUNTIME_MINUTES")
     max_file_churn: int = Field(default=8, alias="ARBITER_MAX_FILE_CHURN")
     max_recovery_rounds: int = Field(default=3, alias="ARBITER_MAX_RECOVERY_ROUNDS")

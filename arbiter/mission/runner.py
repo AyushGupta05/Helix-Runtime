@@ -25,8 +25,11 @@ from arbiter.core.contracts import (
     PolicyDecision,
     PolicyState,
     RunState,
+    SuccessCriteria,
+    TaskNode,
     TaskRequirementLevel,
     TaskStatus,
+    TaskType,
     ValidationReport,
     utc_now,
 )
@@ -190,6 +193,9 @@ class MissionRuntime:
     def _restore_runtime_context(self) -> None:
         if self.state.repo_snapshot is None and self.state.active_phase not in {ActivePhase.IDLE, ActivePhase.COLLECT}:
             self.state.repo_snapshot = self.collector.collect(run_commands=True)
+        # Map legacy phases to strategize
+        if self.state.active_phase in {ActivePhase.DECOMPOSE, ActivePhase.SELECT_TASK, ActivePhase.MARKET}:
+            self.state.active_phase = ActivePhase.STRATEGIZE
         if self.state.current_bid is None and self.state.winner_bid_id:
             self.state.current_bid = next((bid for bid in self.state.active_bids if bid.bid_id == self.state.winner_bid_id), None)
         if self.state.standby_bid is None and self.state.standby_bid_id:
@@ -409,8 +415,14 @@ class MissionRuntime:
             self._save_checkpoint(checkpoint)
         self._refresh_worktree_state("Mission starting from the latest accepted checkpoint.")
         if not self.store.fetch_all("events", self.spec.mission_id):
-            self.emit("mission.started", "Mission runtime created.", repo_path=self.spec.repo_path, branch_name=self.branch_name)
-        return self.state.active_phase.value if self.state.active_phase != ActivePhase.IDLE else ActivePhase.COLLECT.value
+            self.emit("mission.started", "Mission runtime created. Strategy market will govern execution.", repo_path=self.spec.repo_path, branch_name=self.branch_name)
+        phase = self.state.active_phase
+        if phase == ActivePhase.IDLE:
+            return ActivePhase.COLLECT.value
+        # Map legacy phases to strategize for resumed missions
+        if phase in {ActivePhase.DECOMPOSE, ActivePhase.SELECT_TASK, ActivePhase.MARKET}:
+            return ActivePhase.STRATEGIZE.value
+        return phase.value
 
     def _emit_phase_change(self, previous_phase: ActivePhase | None, next_phase: ActivePhase) -> None:
         if previous_phase == next_phase:
@@ -487,14 +499,8 @@ class MissionRuntime:
     def workflow_collect(self, workflow_state: dict) -> dict:
         return self._run_workflow_node(workflow_state, ActivePhase.COLLECT, "node_collect")
 
-    def workflow_decompose(self, workflow_state: dict) -> dict:
-        return self._run_workflow_node(workflow_state, ActivePhase.DECOMPOSE, "node_decompose")
-
-    def workflow_select_task(self, workflow_state: dict) -> dict:
-        return self._run_workflow_node(workflow_state, ActivePhase.SELECT_TASK, "node_select_task")
-
-    def workflow_market(self, workflow_state: dict) -> dict:
-        return self._run_workflow_node(workflow_state, ActivePhase.MARKET, "node_market")
+    def workflow_strategize(self, workflow_state: dict) -> dict:
+        return self._run_workflow_node(workflow_state, ActivePhase.STRATEGIZE, "node_strategize")
 
     def workflow_simulate(self, workflow_state: dict) -> dict:
         return self._run_workflow_node(workflow_state, ActivePhase.SIMULATE, "node_simulate")
@@ -554,105 +560,191 @@ class MissionRuntime:
             baseline_lint=len(self.state.repo_snapshot.initial_lint_results),
             baseline_static=len(self.state.repo_snapshot.initial_static_results),
         )
-        return {"status": ActivePhase.DECOMPOSE.value}
+        return {"status": ActivePhase.STRATEGIZE.value}
 
-    def node_decompose(self) -> dict:
+    def _build_mission_context(self) -> dict:
+        """Gather full mission context for the strategy market."""
+        completed = [t for t in self.state.tasks if t.status == TaskStatus.COMPLETED]
+        failed = [t for t in self.state.tasks if t.status == TaskStatus.FAILED]
+        return {
+            "objective": self.spec.objective,
+            "constraints": self.spec.constraints,
+            "preferences": self.spec.preferences,
+            "completed_moves": [f"{t.task_id}: {t.title}" for t in completed],
+            "failed_moves": [f"{t.task_id}: {t.title}" for t in failed],
+            "strategy_round": self.state.strategy_round,
+            "mission_landscape": self.state.mission_landscape,
+            "failure_context": self.state.failure_context.details if self.state.failure_context else None,
+            "failed_families": {tid: sorted(fams) for tid, fams in self.failed_families.items()},
+            "decision_history": self.state.decision_history[-8:],
+        }
+
+    def _assess_mission_progress(self) -> str | None:
+        """Return a finalize reason if the mission objective is met, or None to continue."""
+        required = [t for t in self.state.tasks if t.required]
+        if required and all(t.status == TaskStatus.COMPLETED for t in required):
+            return "all_required_tasks_completed"
+        stop = self.governance.evaluate_stop(self.state)
+        if stop.should_stop:
+            self.state.governance.stop_reason = stop.reason
+            self.state.outcome = stop.outcome or self.state.outcome
+            return stop.reason
+        return None
+
+    def _generate_landscape(self) -> None:
+        """Run decomposition as advisory context for the strategy market (first round only)."""
         assert self.state.repo_snapshot is not None
-        self.state.tasks = self.decomposer.decompose(
+        advisory_tasks = self.decomposer.decompose(
             self.spec.objective,
             self.state.repo_snapshot,
             spec=self.spec,
             strategy_backend=self.strategy_backend,
             on_invocation=self._record_model_invocation,
         )
+        self.state.mission_landscape = [
+            f"{t.task_type.value}: {t.title} (risk={t.risk_level:.2f}, files={','.join(t.candidate_files[:3])})"
+            for t in advisory_tasks
+        ]
         source = self.decomposer.last_plan_source
         candidate_scores = self.decomposer.last_candidate_scores
-        if source == "provider_plan":
-            winning_candidate = next(
-                (item for item in candidate_scores if item["source"] == source),
-                candidate_scores[0] if candidate_scores else None,
-            )
-            self.emit(
-                "mission.plan.selected",
-                "Provider-backed mission plan selected.",
-                source=source,
-                provider=winning_candidate["provider"] if winning_candidate else None,
-                lane=winning_candidate["lane"] if winning_candidate else None,
-                score=winning_candidate["score"] if winning_candidate else None,
-                candidate_scores=candidate_scores,
-                refresh_view=True,
-            )
-            self.trace(
-                "mission.plan.selected",
-                "Mission plan selected",
-                "Arbiter selected a provider-backed task graph.",
-                status="success",
-                provider=winning_candidate["provider"] if winning_candidate else None,
-                lane=winning_candidate["lane"] if winning_candidate else None,
-                candidate_scores=candidate_scores,
-                refresh_view=True,
-            )
-        else:
-            self.trace(
-                "mission.plan.selected",
-                "Mission plan selected",
-                "Arbiter retained the deterministic heuristic task graph.",
-                status="info",
-                candidate_scores=candidate_scores,
-            )
-        for task in self.state.tasks:
-            self._save_task(task)
-            self.emit("task.created", f"Task {task.task_id} created.", task_id=task.task_id, task_type=task.task_type.value)
-        return {"status": ActivePhase.SELECT_TASK.value}
-
-    def node_select_task(self) -> dict:
-        for task in self.state.tasks:
-            if task.status == TaskStatus.PENDING and all(self._task(dep).status == TaskStatus.COMPLETED for dep in task.dependencies):
-                task.status = TaskStatus.READY
-                self._save_task(task)
-                self.emit("task.ready", f"Task {task.task_id} is ready.", task_id=task.task_id)
-        ready = [task for task in self.state.tasks if task.status == TaskStatus.READY]
-        if not ready:
-            return {"status": ActivePhase.FINALIZE.value}
-        ranked_ready = sorted(
-            ready,
-            key=lambda item: (
-                self.governance.task_priority(item, self.state.tasks),
-                -len(item.dependencies),
-                item.task_id,
-            ),
-            reverse=True,
-        )
-        selected_task = ranked_ready[0]
-        self.state.active_task_id = selected_task.task_id
-        priority = self.governance.task_priority(selected_task, self.state.tasks)
-        self.emit("task.selected", f"Task {selected_task.task_id} selected.", task_id=selected_task.task_id, priority=priority, refresh_view=True)
         self.trace(
-            "task.selected",
-            "Task selected",
-            f"{selected_task.task_id} selected for market formation.",
-            task_id=selected_task.task_id,
+            "strategy.landscape_generated",
+            "Mission landscape generated",
+            f"Advisory landscape with {len(advisory_tasks)} potential moves ({source}).",
             status="info",
-            priority=priority,
-            ready_candidates=[{"task_id": task.task_id, "priority": self.governance.task_priority(task, self.state.tasks)} for task in ranked_ready[:6]],
+            source=source,
+            candidate_scores=candidate_scores,
+            landscape=self.state.mission_landscape,
+            refresh_view=True,
         )
-        return {"status": ActivePhase.MARKET.value}
 
-    def node_market(self) -> dict:
-        task = self._active_task()
+    def _synthesize_task_for_round(self, task_type_hint: str | None = None) -> TaskNode:
+        """Create a task node for this strategy round. The market drives what it becomes."""
+        round_num = self.state.strategy_round
+        objective_lower = self.spec.objective.lower()
+
+        # Infer task type from mission context if no hint
+        if task_type_hint:
+            try:
+                task_type = TaskType(task_type_hint)
+            except ValueError:
+                task_type = TaskType.BUGFIX
+        elif not self.state.tasks:
+            # First round: start with localization/investigation
+            if any(w in objective_lower for w in ("bug", "fail", "error", "fix", "test")):
+                task_type = TaskType.BUGFIX
+            elif any(w in objective_lower for w in ("perf", "slow", "latency", "speed")):
+                task_type = TaskType.PERF_OPTIMIZE
+            elif any(w in objective_lower for w in ("refactor", "clean", "structure")):
+                task_type = TaskType.REFACTOR
+            else:
+                task_type = TaskType.BUGFIX
+        else:
+            completed_types = {t.task_type for t in self.state.tasks if t.status == TaskStatus.COMPLETED}
+            if TaskType.VALIDATE not in completed_types and len(completed_types) >= 2:
+                task_type = TaskType.VALIDATE
+            elif TaskType.TEST not in completed_types and any(t.task_type == TaskType.BUGFIX and t.status == TaskStatus.COMPLETED for t in self.state.tasks):
+                task_type = TaskType.TEST
+            else:
+                task_type = TaskType.BUGFIX
+
+        candidate_files = []
+        if self.state.repo_snapshot:
+            candidate_files = (
+                self.state.repo_snapshot.changed_files[:4]
+                + self.state.repo_snapshot.complexity_hotspots[:3]
+                + self.state.repo_snapshot.capabilities.risky_paths[:2]
+            )
+            candidate_files = list(dict.fromkeys(candidate_files))[:8]
+
+        task_id = f"S{round_num}_{task_type.value}"
+        task = TaskNode(
+            task_id=task_id,
+            title=f"Strategy round {round_num}: {self.spec.objective[:80]}",
+            task_type=task_type,
+            requirement_level=TaskRequirementLevel.REQUIRED,
+            dependencies=[],
+            success_criteria=SuccessCriteria(
+                description=f"Market-driven move toward: {self.spec.objective[:120]}",
+                required_validators=["tests"] if task_type.value not in {"localize", "perf_diagnosis", "validate"} else [],
+            ),
+            allowed_tools=["read_file", "search_code", "edit_file", "run_tests", "run_lint", "revert_to_checkpoint"],
+            validator_requirements=["tests"] if task_type.value not in {"localize", "perf_diagnosis"} else [],
+            risk_level=0.35,
+            runtime_class="medium",
+            search_depth=3,
+            monte_carlo_samples=28,
+            candidate_files=candidate_files,
+            strategy_families=["Speed", "Safe", "Quality", "Test", "Performance"],
+            status=TaskStatus.READY,
+        )
+        return task
+
+    def node_strategize(self) -> dict:
         assert self.state.repo_snapshot is not None
+        self.state.strategy_round += 1
+
+        # --- 1. Generate advisory landscape on first round ---
+        if self.state.strategy_round == 1 and not self.state.mission_landscape:
+            self._generate_landscape()
+
+        # --- 2. Assess mission progress ---
+        stop_reason = self._assess_mission_progress()
+        if stop_reason:
+            self.trace(
+                "strategy.objective_met",
+                "Mission objective assessed",
+                f"Strategy market closing: {stop_reason}",
+                status="success",
+                refresh_view=True,
+            )
+            return {"status": ActivePhase.FINALIZE.value}
+
+        # --- 3. Open strategy market ---
+        self.emit(
+            "strategy.market_opened",
+            f"Strategy market opened for round {self.state.strategy_round}.",
+            round=self.state.strategy_round,
+            refresh_view=True,
+        )
+        mission_context = self._build_mission_context()
+        self.trace(
+            "strategy.market_opened",
+            "Strategy market opened",
+            f"Competing strategies will propose the next best move for round {self.state.strategy_round}.",
+            status="info",
+            round=self.state.strategy_round,
+            completed_moves=mission_context["completed_moves"],
+            failed_moves=mission_context["failed_moves"],
+            landscape=self.state.mission_landscape[:5],
+            providers=self.config.enabled_providers,
+        )
+
+        # --- 4. Synthesize round task and generate bids ---
+        task = self._synthesize_task_for_round()
+        self.state.tasks.append(task)
+        self._save_task(task)
+        self.state.active_task_id = task.task_id
+        self.emit("task.created", f"Strategy move {task.task_id} opened for competitive bidding.", task_id=task.task_id, task_type=task.task_type.value)
+
         self.state.active_bid_round += 1
         failed = self.failed_families.setdefault(task.task_id, set())
-        self.trace("market.opened", "Market opened", f"Competitive market opened for {task.task_id}.", task_id=task.task_id, status="info", round=self.state.active_bid_round, providers=self.config.enabled_providers)
-        batch = self.simulation.generate(task, self.state.repo_snapshot, allow_fallback=self.spec.bidding_policy.allow_degraded_fallback)
+
+        batch = self.simulation.generate(
+            task,
+            self.state.repo_snapshot,
+            allow_fallback=self.spec.bidding_policy.allow_degraded_fallback,
+            mission_context=mission_context,
+        )
         bids = batch.bids
         self._merge_usage(self.simulation.market_token_usage, self.simulation.market_cost_usage)
         self._update_bidding_state(generation_mode=batch.generation_mode, warning=batch.degraded_reason)
         self._set_bidding_metrics([], provider_invocation_ids=batch.provider_invocation_ids)
+
         if batch.generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK:
             self.emit(
                 "bidding.degraded_mode_entered",
-                "Bidding entered explicit degraded fallback mode.",
+                "Strategy market entered degraded fallback mode.",
                 task_id=task.task_id,
                 reason=batch.degraded_reason,
                 provider_errors=batch.provider_errors,
@@ -661,8 +753,8 @@ class MissionRuntime:
             )
             self.trace(
                 "bidding.degraded_mode_entered",
-                "Degraded bidding mode",
-                batch.degraded_reason or "Bidding entered deterministic fallback mode.",
+                "Degraded strategy mode",
+                batch.degraded_reason or "Strategy market entered deterministic fallback mode.",
                 task_id=task.task_id,
                 status="warning",
                 generation_mode=batch.generation_mode.value,
@@ -671,13 +763,14 @@ class MissionRuntime:
             )
         if self.spec.bidding_policy.require_provider_backed_bids and batch.generation_mode != BidGenerationMode.PROVIDER_MODEL:
             if not (batch.generation_mode == BidGenerationMode.DETERMINISTIC_FALLBACK and self.spec.bidding_policy.allow_degraded_fallback and bids):
-                reason = batch.degraded_reason or f"Expected provider-backed bidding, but market ran in {batch.generation_mode.value} mode."
+                reason = batch.degraded_reason or f"Expected provider-backed strategies, but market ran in {batch.generation_mode.value} mode."
                 return self._fail_bidding_round(task.task_id, reason)
 
+        # --- 5. Policy filter, score, cluster ---
         valid: list = []
         for bid in bids:
             if bid.generation_mode == BidGenerationMode.PROVIDER_MODEL and not bid.invocation_id:
-                return self._fail_bidding_round(task.task_id, f"Provider-backed bid {bid.bid_id} is missing an invocation reference.")
+                return self._fail_bidding_round(task.task_id, f"Provider-backed strategy {bid.bid_id} is missing an invocation reference.")
             decision = self.governance.evaluate_bid(task, bid, self.spec, failed)
             bid.policy_feasibility = decision
             if not decision.allowed:
@@ -686,7 +779,7 @@ class MissionRuntime:
                 self._save_bid(bid, self.state.active_bid_round)
                 self.emit(
                     "bid.rejected",
-                    f"Bid {bid.bid_id} rejected.",
+                    f"Strategy {bid.bid_id} rejected.",
                     bid_id=bid.bid_id,
                     task_id=task.task_id,
                     reason=bid.rejection_reason,
@@ -700,22 +793,24 @@ class MissionRuntime:
                     cost_usage=bid.cost_usage,
                     usage_unavailable_reason=bid.usage_unavailable_reason,
                 )
-                self.trace("bid.retired", "Bid rejected", f"{bid.bid_id} was rejected before scoring.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="danger", reason=bid.rejection_reason)
+                self.trace("bid.retired", "Strategy rejected", f"{bid.bid_id} was rejected before scoring.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="danger", reason=bid.rejection_reason)
                 continue
             bid.score = score_bid(bid)
             valid.append(bid)
+
         self.state.active_bids = cluster_and_select(valid, per_family=1, max_candidates=7)
         self._set_bidding_metrics(self.state.active_bids, provider_invocation_ids=batch.provider_invocation_ids)
         for bid in self.state.active_bids:
             self._save_bid(bid, self.state.active_bid_round)
             self.emit(
                 "bid.submitted",
-                f"Bid {bid.bid_id} submitted.",
+                f"Strategy {bid.bid_id} competing.",
                 bid_id=bid.bid_id,
                 task_id=task.task_id,
                 role=bid.role,
                 score=bid.score,
                 strategy_family=bid.strategy_family,
+                mission_rationale=bid.mission_rationale,
                 provider=bid.provider,
                 lane=bid.lane,
                 model_id=bid.model_id,
@@ -735,8 +830,8 @@ class MissionRuntime:
             )
             self.trace(
                 "bid.generated",
-                "Bid generated",
-                f"{bid.bid_id} entered the active market.",
+                "Strategy entered market",
+                f"{bid.bid_id} is competing for the next mission move.",
                 task_id=task.task_id,
                 bid_id=bid.bid_id,
                 provider=bid.provider,
@@ -744,13 +839,14 @@ class MissionRuntime:
                 status="success",
                 score=bid.score,
                 strategy_family=bid.strategy_family,
+                mission_rationale=bid.mission_rationale,
                 model_id=bid.model_id,
                 invocation_id=bid.invocation_id,
                 generation_mode=bid.generation_mode.value,
                 usage_unavailable_reason=bid.usage_unavailable_reason,
             )
         if not self.state.active_bids:
-            reason = batch.degraded_reason or "Market produced no valid contenders."
+            reason = batch.degraded_reason or "Strategy market produced no valid contenders."
             if self.spec.bidding_policy.require_provider_backed_bids:
                 return self._fail_bidding_round(task.task_id, reason)
             self.state.no_valid_contenders = True
@@ -1040,10 +1136,10 @@ class MissionRuntime:
                 self._refresh_worktree_state("Changes were committed to the Arbiter-managed branch; the worktree is now clean.")
                 self.trace("checkpoint.accepted", "Checkpoint accepted", f"Accepted checkpoint committed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", commit_sha=commit_sha, checkpoint_id=checkpoint.checkpoint_id)
             self.state.decision_history.append(f"{task.task_id}: completed")
-            self.emit("task.completed", f"Task {task.task_id} completed.", task_id=task.task_id)
-            self.emit("validation.passed", "Validation passed.", task_id=task.task_id, refresh_view=True)
-            self.trace("validation.completed", "Validation passed", f"Validation passed for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", notes=report.notes, changed_files=report.changed_files, refresh_view=True)
-            return {"status": ActivePhase.SELECT_TASK.value}
+            self.emit("task.completed", f"Strategy move {task.task_id} completed.", task_id=task.task_id)
+            self.emit("validation.passed", "Validation passed. Strategy market will reopen.", task_id=task.task_id, refresh_view=True)
+            self.trace("validation.completed", "Validation passed", f"Validation passed for {task.task_id}. Returning to strategy market.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="success", notes=report.notes, changed_files=report.changed_files, refresh_view=True)
+            return {"status": ActivePhase.STRATEGIZE.value}
         self.state.failure_context = FailureContext(
             task_id=task.task_id,
             failure_type="validation_failure",
@@ -1131,9 +1227,9 @@ class MissionRuntime:
             return {"status": ActivePhase.FINALIZE.value}
         task.status = TaskStatus.READY
         self._save_task(task)
-        self.emit("recovery.round_opened", "Rebidding with prior evidence.", task_id=task.task_id, round=self.state.recovery_round, failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence)
-        self.trace("recovery.completed", "Rebid opened", f"Rebidding opened for {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence)
-        return {"status": ActivePhase.MARKET.value}
+        self.emit("recovery.round_opened", "Strategy market reopening with failure evidence.", task_id=task.task_id, round=self.state.recovery_round, failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence)
+        self.trace("recovery.completed", "Strategy market reopened", f"Strategy market reopening for recovery after {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence)
+        return {"status": ActivePhase.STRATEGIZE.value}
 
     def node_finalize(self) -> dict:
         stop = self.governance.evaluate_stop(self.state)

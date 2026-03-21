@@ -68,7 +68,7 @@ function bidModeTone(generationMode) {
 
 function bidStatusFor(bid, winnerBidId, standbyBidId, activePhase) {
   if (bid.bid_id === winnerBidId) {
-    return { label: "WINNER", tone: "winner", rank: 4 };
+    return { label: "LEADING", tone: "winner", rank: 4 };
   }
   if (bid.bid_id === standbyBidId) {
     return { label: "STANDBY", tone: "standby", rank: 3 };
@@ -76,13 +76,13 @@ function bidStatusFor(bid, winnerBidId, standbyBidId, activePhase) {
   if (bid.rejection_reason) {
     return { label: "REJECTED", tone: "rejected", rank: 0 };
   }
-  if (["market", "simulate", "select"].includes(activePhase)) {
-    return { label: "BIDDING", tone: "bidding", rank: 2 };
+  if (["strategize", "simulate", "select"].includes(activePhase)) {
+    return { label: "COMPETING", tone: "bidding", rank: 2 };
   }
-  return { label: "SHORTLISTED", tone: "shortlisted", rank: 1 };
+  return { label: "CONTENDER", tone: "shortlisted", rank: 1 };
 }
 
-function BidCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
+function StrategyCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
   const status = bidStatusFor(bid, winnerBidId, standbyBidId, activePhase);
   const totalTokens = metricTotal(bid.token_usage);
   const totalCost = metricTotal(bid.cost_usage);
@@ -100,6 +100,9 @@ function BidCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
         </div>
         <span className={`leaderboard-status leaderboard-status-${status.tone}`}>{status.label}</span>
       </div>
+      {bid.mission_rationale ? (
+        <p className="leaderboard-card-rationale">{bid.mission_rationale}</p>
+      ) : null}
       <p className="leaderboard-card-origin">{summarizeBidOrigin(bid)}</p>
       <div className="leaderboard-line">
         <span>Score {formatNumber(bid.score)}</span>
@@ -123,6 +126,21 @@ function BidCard({ bid, winnerBidId, standbyBidId, activePhase, index }) {
       ) : null}
     </article>
   );
+}
+
+function humanizePhase(phase) {
+  const labels = {
+    strategize: "Strategizing",
+    simulate: "Simulating",
+    select: "Selecting",
+    execute: "Executing",
+    validate: "Validating",
+    recover: "Recovering",
+    collect: "Scanning",
+    finalize: "Finalizing",
+    idle: "Idle",
+  };
+  return labels[phase] || humanizeToken(phase || "idle");
 }
 
 export default function BidBoard({
@@ -174,12 +192,12 @@ export default function BidBoard({
             biddingState?.architecture_violation
               ? "Architecture violation"
               : biddingMode === "deterministic_fallback" || biddingState?.degraded
-                ? "Degraded bidding mode"
-                : "Bidding notice",
+                ? "Degraded strategy mode"
+                : "Strategy notice",
           message:
             biddingState?.architecture_violation ??
             biddingState?.warning ??
-            "This round is running without normal provider-backed bidding.",
+            "This round is running without provider-backed strategy competition.",
           tone:
             biddingState?.architecture_violation
               ? "rejected"
@@ -195,25 +213,25 @@ export default function BidBoard({
     <div className="arena-shell">
       <div className="arena-topline">
         <div>
-          <p className="eyebrow">Live Bidding Arena</p>
+          <p className="eyebrow">Strategy Market</p>
           <h2>Round {Math.max(activeBidRound || 0, 1)}</h2>
           <p className="arena-topline-copy">
-            Market decisions stay pinned to the active task, while the winning and standby bids remain visible across task transitions.
+            Competing strategies propose the next best move for the mission. The market continuously governs how the objective progresses.
           </p>
         </div>
-        <span className="arena-phase">{humanizeToken(activePhase || "idle")}</span>
+        <span className="arena-phase">{humanizePhase(activePhase)}</span>
       </div>
       <div className="arena-quickstats">
         <div className="arena-stat">
-          <span>Round status</span>
-          <strong>{humanizeToken(activePhase || "idle")}</strong>
+          <span>Market phase</span>
+          <strong>{humanizePhase(activePhase)}</strong>
         </div>
         <div className="arena-stat">
-          <span>Simulation count</span>
+          <span>Simulation depth</span>
           <strong>{simulationRound ?? 0}</strong>
         </div>
         <div className="arena-stat arena-stat-spend">
-          <span>Current task spend</span>
+          <span>Round spend</span>
           <strong>{formatInteger(roundTokens)} tok</strong>
           <p>{formatCurrency(roundCost)}</p>
         </div>
@@ -231,14 +249,14 @@ export default function BidBoard({
       ) : null}
       <div className="arena-leadership">
         <div className="arena-leadership-card arena-leadership-card-winner">
-          <span>Winner</span>
-          <strong>{winner ? humanizeStrategy(winner.strategy_family) : "Waiting"}</strong>
-          <p>{winner ? summarizeBidOrigin(winner) : "No winning bid selected yet."}</p>
+          <span>Leading Strategy</span>
+          <strong>{winner ? humanizeStrategy(winner.strategy_family) : "Competing"}</strong>
+          <p>{winner ? (winner.mission_rationale || summarizeBidOrigin(winner)) : "Strategies are competing to propose the next move."}</p>
         </div>
         <div className="arena-leadership-card arena-leadership-card-standby">
-          <span>Standby</span>
+          <span>Standby Strategy</span>
           <strong>{standby ? humanizeStrategy(standby.strategy_family) : "No standby"}</strong>
-          <p>{standby ? summarizeBidOrigin(standby) : "A fallback contender will appear here once selected."}</p>
+          <p>{standby ? (standby.mission_rationale || summarizeBidOrigin(standby)) : "An alternate strategy will appear here once selected."}</p>
         </div>
       </div>
       <div className="arena-provider-strip">
@@ -251,7 +269,7 @@ export default function BidBoard({
       <div className="bid-leaderboard">
         {orderedBids.length ? (
           orderedBids.map((bid, index) => (
-            <BidCard
+            <StrategyCard
               key={bid.bid_id}
               bid={bid}
               winnerBidId={winnerBidId}
@@ -262,17 +280,17 @@ export default function BidBoard({
           ))
         ) : (
           <div className="leaderboard-empty">
-            Waiting for bids on {activeTaskId || "the active task"}.
+            Strategies are forming to compete for the next mission move.
           </div>
         )}
       </div>
       <div className="arena-pinned">
         <span className="arena-pinned-item">
-          Active task: {activeTaskId || "none"}
+          Current move: {activeTaskId || "awaiting strategy market"}
         </span>
         {winner ? (
           <span className="arena-pinned-item">
-            Winner: {summarizeBidOrigin(winner)}
+            Leading: {summarizeBidOrigin(winner)}
           </span>
         ) : null}
         {standby ? (
