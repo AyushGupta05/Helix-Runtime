@@ -31,19 +31,52 @@ IGNORED_DIRECTORIES = {
 }
 
 IGNORED_FILE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx"}
+_WINDOWS_COMMAND_ALIASES = {
+    "npm": "npm.cmd",
+    "npx": "npx.cmd",
+    "pnpm": "pnpm.cmd",
+    "yarn": "yarn.cmd",
+}
+
+
+def _platform_command(command: list[str]) -> list[str]:
+    if os.name != "nt" or not command:
+        return command
+    executable = command[0].strip().lower()
+    if executable in _WINDOWS_COMMAND_ALIASES:
+        return [_WINDOWS_COMMAND_ALIASES[executable], *command[1:]]
+    return command
 
 
 def _run(command: list[str], cwd: str, timeout: int = 120) -> CommandResult:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
+    normalized = _platform_command(command)
+    try:
+        completed = subprocess.run(
+            normalized,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(
+            command=normalized,
+            exit_code=124,
+            stdout=(exc.stdout or "")[-8000:],
+            stderr=(str(exc) or "")[-8000:],
+            duration_seconds=0.0,
+        )
+    except OSError as exc:
+        return CommandResult(
+            command=normalized,
+            exit_code=1,
+            stdout="",
+            stderr=str(exc)[-8000:],
+            duration_seconds=0.0,
+        )
     return CommandResult(
-        command=command,
+        command=normalized,
         exit_code=completed.returncode,
         stdout=completed.stdout[-8000:],
         stderr=completed.stderr[-8000:],
@@ -228,7 +261,7 @@ class RepoStateCollector:
                 unsupported_reason="TS/JS monorepos are out of scope for V1.",
             )
         scripts = package.get("scripts", {})
-        pm = "npm"
+        pm = _platform_command(["npm"])[0]
         test_commands = [[pm, "run", name] for name in ("test", "test:ci", "unit") if name in scripts][:1]
         lint_commands = [[pm, "run", name] for name in ("lint", "eslint") if name in scripts][:1]
         static_commands = [[pm, "run", name] for name in ("typecheck", "build") if name in scripts][:1]

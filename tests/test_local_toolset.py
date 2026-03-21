@@ -128,3 +128,14 @@ def test_apply_structured_edits_is_atomic_across_file_updates_and_operations(tmp
 
     assert calc.read_text(encoding="utf-8") == "def add(a, b):\n    return a - b\n"
     assert test_file.read_text(encoding="utf-8") == "def test_add():\n    assert True\n"
+
+
+def test_run_tests_returns_failure_when_command_is_missing(tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+
+    toolset = LocalToolset(str(worktree))
+    result = toolset.run_tests(["definitely-not-a-real-command-helix", "--version"])
+
+    assert result.exit_code == 1
+    assert "not found" in result.stderr.lower() or "cannot find" in result.stderr.lower()

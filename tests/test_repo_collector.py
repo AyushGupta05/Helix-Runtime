@@ -16,7 +16,8 @@ def test_detects_supported_single_package_ts_repo(ts_repo) -> None:
     snapshot = RepoStateCollector(str(ts_repo)).collect(run_commands=False)
     assert snapshot.capabilities.runtime == "tsjs"
     assert snapshot.capabilities.is_single_package_tsjs is True
-    assert snapshot.capabilities.test_commands == [["npm", "run", "test"]]
+    expected_pm = "npm.cmd" if sys.platform.startswith("win") else "npm"
+    assert snapshot.capabilities.test_commands == [[expected_pm, "run", "test"]]
 
 
 def test_skips_heavy_ignored_directories_in_scan(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from arbiter.core.contracts import CommandResult
-from arbiter.repo.collector import IGNORED_DIRECTORIES, _run
+from arbiter.repo.collector import IGNORED_DIRECTORIES, _platform_command, _run
 
 
 class LocalToolset:
@@ -134,17 +134,35 @@ class LocalToolset:
     def _run_tool_with_env(self, command: list[str], env_overrides: dict[str, str], timeout: int = 300) -> CommandResult:
         env = os.environ.copy()
         env.update(env_overrides)
-        completed = subprocess.run(
-            command,
-            cwd=str(self.worktree),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-            env=env,
-        )
+        normalized = _platform_command(command)
+        try:
+            completed = subprocess.run(
+                normalized,
+                cwd=str(self.worktree),
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return CommandResult(
+                command=normalized,
+                exit_code=124,
+                stdout=(exc.stdout or "")[-8000:],
+                stderr=(str(exc) or "")[-8000:],
+                duration_seconds=0.0,
+            )
+        except OSError as exc:
+            return CommandResult(
+                command=normalized,
+                exit_code=1,
+                stdout="",
+                stderr=str(exc)[-8000:],
+                duration_seconds=0.0,
+            )
         return CommandResult(
-            command=command,
+            command=normalized,
             exit_code=completed.returncode,
             stdout=completed.stdout[-8000:],
             stderr=completed.stderr[-8000:],
