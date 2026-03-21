@@ -5,9 +5,11 @@ import {
   formatInteger,
   formatNumber,
   formatRuntime,
+  formatUsageCost,
   humanizeEventType,
   humanizePhase,
-  relativeTime
+  relativeTime,
+  usageCostStatusDetail
 } from "../lib/format";
 import { useMissionElapsedSeconds } from "../lib/useMissionElapsed";
 import "../styles/screens.css";
@@ -160,9 +162,11 @@ export default React.memo(function StrategyBiddingScreen({
 }) {
   const elapsedSeconds = useMissionElapsedSeconds(mission);
   const rankedBids = useBidRanking(mission);
-  const missionTokens = Number(usageSummary?.mission?.total_tokens ?? 0);
+  const missionUsage = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
+  const missionTokens = Number(missionUsage.total_tokens ?? 0);
   const budgetCap =
     Number(mission?.mission_meta?.token_budget ?? 0) || Math.max(500, missionTokens + 200);
+  const spendDetail = usageCostStatusDetail(missionUsage);
   const topEvents = useMemo(
     () =>
       [...(mission?.events ?? [])]
@@ -187,12 +191,19 @@ export default React.memo(function StrategyBiddingScreen({
           <span>
             Budget: {formatInteger(missionTokens)} / {formatInteger(budgetCap)} tokens
           </span>
+          <span>Spend: {formatUsageCost(missionUsage)}</span>
+          {spendDetail ? <span>{spendDetail}</span> : null}
         </div>
-        <div className="console-topbar-controls">
-          <button type="button" className="console-control-button" disabled>
+        <div className="console-topbar-controls" aria-hidden="true">
+          <button type="button" className="console-control-button" disabled tabIndex={-1}>
             Pause
           </button>
-          <button type="button" className="console-control-button console-control-danger" disabled>
+          <button
+            type="button"
+            className="console-control-button console-control-danger"
+            disabled
+            tabIndex={-1}
+          >
             Cancel
           </button>
         </div>
@@ -257,6 +268,28 @@ export default React.memo(function StrategyBiddingScreen({
         </section>
 
         <aside className="console-side-stack">
+          <section className="console-panel-frame">
+            <div className="console-panel-header">
+              <h2>Usage Signal</h2>
+            </div>
+            <div className="console-kv-list">
+              <div className="console-kv-row">
+                <span>Mission Spend</span>
+                <strong>{formatUsageCost(missionUsage)}</strong>
+              </div>
+              <div className="console-kv-row">
+                <span>Total Tokens</span>
+                <strong>{formatInteger(missionTokens)}</strong>
+              </div>
+              {spendDetail ? (
+                <div className="console-kv-row">
+                  <span>Billing Detail</span>
+                  <strong>{spendDetail}</strong>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
           <section className="console-panel-frame">
             <div className="console-panel-header">
               <h2>Civic &amp; Policy Panel</h2>

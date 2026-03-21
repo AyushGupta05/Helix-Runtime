@@ -194,3 +194,62 @@ def test_usage_summary_prefers_total_tokens_and_usd_without_double_counting(tmp_
     assert usage_summary["by_provider"]["openai"]["total_tokens"] == 1705
     assert usage_summary["by_provider"]["openai"]["total_cost"] == pytest.approx(0.00291125)
     assert usage_summary["invocations"][0]["invocation_id"] == "inv-1"
+
+
+def test_usage_summary_marks_cost_as_unavailable_without_double_counting_flattened_token_keys(tmp_path: Path) -> None:
+    mission_id = "usage-mission-unavailable-cost"
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    store = MissionStore(str(tmp_path / "state.db"))
+    store.upsert_mission(
+        mission_id=mission_id,
+        status="running",
+        repo_path=str(repo_path),
+        objective="Test missing cost accounting",
+        branch_name=None,
+        outcome=None,
+        spec=MissionSpec(mission_id=mission_id, repo_path=str(repo_path), objective="Test missing cost accounting"),
+        summary=MissionSummary(mission_id=mission_id, repo_path=str(repo_path), objective="Test missing cost accounting"),
+    )
+
+    invocation = ModelInvocationResult(
+        content="{}",
+        provider="openai",
+        model_id="gpt-5-mini",
+        lane="bid_fast.openai",
+        token_usage={
+            "usage_metadata.input_tokens": 285,
+            "usage_metadata.output_tokens": 1420,
+            "usage_metadata.total_tokens": 1705,
+        },
+        cost_usage=None,
+        usage_unavailable_reason="cost usage unavailable",
+    )
+    store.save_model_invocation(
+        mission_id,
+        invocation,
+        invocation_id="inv-legacy",
+        task_id="task-1",
+        bid_id="bid-1",
+        provider="openai",
+        lane="bid_fast.openai",
+        model_id="gpt-5-mini",
+        invocation_kind="bid_generation",
+        status="completed",
+        raw_usage={},
+        token_usage=invocation.token_usage,
+        cost_usage=invocation.cost_usage,
+        usage_unavailable_reason=invocation.usage_unavailable_reason,
+    )
+
+    usage_summary = store._usage_summary(mission_id, "task-1")
+    store.close()
+
+    assert usage_summary["mission"]["total_tokens"] == 1705
+    assert usage_summary["mission"]["total_cost"] == 0.0
+    assert usage_summary["mission"]["cost_status"] == "unavailable"
+    assert usage_summary["mission"]["cost_unavailable_invocation_count"] == 1
+    assert usage_summary["active_task"]["cost_status"] == "unavailable"
+    assert usage_summary["by_provider"]["openai"]["total_tokens"] == 1705
+    assert usage_summary["by_provider"]["openai"]["cost_status"] == "unavailable"
+    assert usage_summary["invocations"][0]["cost_status"] == "unavailable"

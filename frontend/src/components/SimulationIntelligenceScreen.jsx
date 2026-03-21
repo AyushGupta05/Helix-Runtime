@@ -2,7 +2,13 @@ import React, { useMemo } from "react";
 
 import { useBidRanking } from "../hooks/useBidRanking";
 import MonteCarloPanel from "./MonteCarloPanel";
-import { formatInteger, formatNumber, humanizePhase } from "../lib/format";
+import {
+  formatInteger,
+  formatNumber,
+  formatUsageCost,
+  humanizePhase,
+  usageCostStatusDetail
+} from "../lib/format";
 import "../styles/screens.css";
 
 function repoLabel(repoPath) {
@@ -80,10 +86,13 @@ function winnerInsights(bids, winnerBidId) {
 export default React.memo(function SimulationIntelligenceScreen({
   mission,
   winnerBidId,
-  activePhase
+  activePhase,
+  usageSummary
 }) {
   const rankedBids = useBidRanking(mission, 4);
   const simulationSummary = mission?.simulation_summary ?? {};
+  const missionUsage = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
+  const spendDetail = usageCostStatusDetail(missionUsage);
   const totalSamples =
     Number(simulationSummary.monte_carlo_samples ?? 0) ||
     rankedBids.reduce((acc, bid) => acc + estimateSamples(bid, simulationSummary), 0);
@@ -107,6 +116,8 @@ export default React.memo(function SimulationIntelligenceScreen({
           <span>Monte Carlo Depth: {formatInteger(totalSamples)}</span>
           <span>Current Winner: {winner?.role ?? winner?.strategy_family ?? "Pending"}</span>
           <span>Current Expected Mission: {formatInteger(expectedMission)}</span>
+          <span>Spend: {formatUsageCost(missionUsage)}</span>
+          {spendDetail ? <span>{spendDetail}</span> : null}
         </div>
       </header>
 

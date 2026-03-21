@@ -33,11 +33,39 @@ def _dump(value: Any) -> str:
 def _metric_total(values: dict[str, Any] | None, *, preferred_keys: tuple[str, ...]) -> float:
     if not values:
         return 0.0
+    preferred_value = None
     for key in preferred_keys:
         value = values.get(key)
         if value is not None:
-            return float(value)
+            preferred_value = float(value)
+            break
+        dotted_matches = [
+            float(candidate)
+            for existing_key, candidate in values.items()
+            if existing_key.lower().endswith(f".{key.lower()}")
+        ]
+        if dotted_matches:
+            preferred_value = max(dotted_matches)
+            break
+    if preferred_value is not None:
+        return preferred_value
     return sum(float(value) for value in values.values())
+
+
+def _cost_status(
+    *,
+    total_tokens: float,
+    total_cost: float,
+    invocation_count: int,
+    cost_unavailable_invocation_count: int,
+) -> str:
+    if cost_unavailable_invocation_count > 0:
+        return "partial" if total_cost > 0 else "unavailable"
+    if total_cost > 0:
+        return "available"
+    if total_tokens > 0 or invocation_count > 0:
+        return "none"
+    return "none"
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -1240,6 +1268,9 @@ class MissionStore:
         mission_costs: dict[str, float] = {}
         active_tokens: dict[str, int] = {}
         active_costs: dict[str, float] = {}
+        mission_cost_unavailable_invocation_count = 0
+        active_cost_unavailable_invocation_count = 0
+        active_invocation_count = 0
         by_provider: dict[str, dict[str, Any]] = {}
         by_lane: dict[str, dict[str, Any]] = {}
         invocations: list[dict[str, Any]] = []
@@ -1247,6 +1278,10 @@ class MissionStore:
             invocation_payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
             token_usage = json.loads(row["token_usage_json"]) if row["token_usage_json"] else None
             cost_usage = json.loads(row["cost_usage_json"]) if row["cost_usage_json"] else None
+            total_tokens = int(_metric_total(token_usage, preferred_keys=("total_tokens",)))
+            total_cost = _metric_total(cost_usage, preferred_keys=("usd", "total_cost"))
+            has_token_usage = bool(token_usage) or total_tokens > 0
+            cost_unavailable = has_token_usage and not cost_usage
             for key, value in (token_usage or {}).items():
                 mission_tokens[key] = mission_tokens.get(key, 0) + int(value)
                 if row["task_id"] and row["task_id"] == active_task_id:
@@ -1255,16 +1290,46 @@ class MissionStore:
                 mission_costs[key] = mission_costs.get(key, 0.0) + float(value)
                 if row["task_id"] and row["task_id"] == active_task_id:
                     active_costs[key] = active_costs.get(key, 0.0) + float(value)
-            provider_bucket = by_provider.setdefault(row["provider"], {"provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
-            lane_bucket = by_lane.setdefault(row["lane"], {"lane": row["lane"], "provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
-            total_tokens = int(_metric_total(token_usage, preferred_keys=("total_tokens",)))
-            total_cost = _metric_total(cost_usage, preferred_keys=("usd", "total_cost"))
+            if cost_unavailable:
+                mission_cost_unavailable_invocation_count += 1
+            if row["task_id"] and row["task_id"] == active_task_id:
+                active_invocation_count += 1
+                if cost_unavailable:
+                    active_cost_unavailable_invocation_count += 1
+            provider_bucket = by_provider.setdefault(
+                row["provider"],
+                {
+                    "provider": row["provider"],
+                    "token_usage": {},
+                    "cost_usage": {},
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                    "invocation_count": 0,
+                    "cost_unavailable_invocation_count": 0,
+                },
+            )
+            lane_bucket = by_lane.setdefault(
+                row["lane"],
+                {
+                    "lane": row["lane"],
+                    "provider": row["provider"],
+                    "token_usage": {},
+                    "cost_usage": {},
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                    "invocation_count": 0,
+                    "cost_unavailable_invocation_count": 0,
+                },
+            )
             provider_bucket["total_tokens"] += total_tokens
             provider_bucket["total_cost"] += total_cost
             provider_bucket["invocation_count"] += 1
             lane_bucket["total_tokens"] += total_tokens
             lane_bucket["total_cost"] += total_cost
             lane_bucket["invocation_count"] += 1
+            if cost_unavailable:
+                provider_bucket["cost_unavailable_invocation_count"] += 1
+                lane_bucket["cost_unavailable_invocation_count"] += 1
             for bucket in (provider_bucket, lane_bucket):
                 for key, value in (token_usage or {}).items():
                     bucket["token_usage"][key] = bucket["token_usage"].get(key, 0) + int(value)
@@ -1293,21 +1358,52 @@ class MissionStore:
                     "error": row["error"],
                     "total_tokens": total_tokens,
                     "total_cost": total_cost,
+                    "cost_status": "unavailable" if cost_unavailable else "available" if cost_usage else "none",
                 }
             )
+        mission_total_tokens = int(_metric_total(mission_tokens, preferred_keys=("total_tokens",)))
+        mission_total_cost = _metric_total(mission_costs, preferred_keys=("usd", "total_cost"))
+        active_total_tokens = int(_metric_total(active_tokens, preferred_keys=("total_tokens",)))
+        active_total_cost = _metric_total(active_costs, preferred_keys=("usd", "total_cost"))
+        for bucket in (*by_provider.values(), *by_lane.values()):
+            bucket["cost_status"] = _cost_status(
+                total_tokens=float(bucket["total_tokens"]),
+                total_cost=float(bucket["total_cost"]),
+                invocation_count=int(bucket["invocation_count"]),
+                cost_unavailable_invocation_count=int(bucket["cost_unavailable_invocation_count"]),
+            )
+            bucket["cost_unavailable"] = bucket["cost_unavailable_invocation_count"] > 0
         return {
             "mission": {
                 "token_usage": mission_tokens,
                 "cost_usage": mission_costs,
-                "total_tokens": int(_metric_total(mission_tokens, preferred_keys=("total_tokens",))),
-                "total_cost": _metric_total(mission_costs, preferred_keys=("usd", "total_cost")),
+                "total_tokens": mission_total_tokens,
+                "total_cost": mission_total_cost,
+                "invocation_count": len(rows),
+                "cost_unavailable_invocation_count": mission_cost_unavailable_invocation_count,
+                "cost_unavailable": mission_cost_unavailable_invocation_count > 0,
+                "cost_status": _cost_status(
+                    total_tokens=float(mission_total_tokens),
+                    total_cost=mission_total_cost,
+                    invocation_count=len(rows),
+                    cost_unavailable_invocation_count=mission_cost_unavailable_invocation_count,
+                ),
             },
             "active_task": {
                 "task_id": active_task_id,
                 "token_usage": active_tokens,
                 "cost_usage": active_costs,
-                "total_tokens": int(_metric_total(active_tokens, preferred_keys=("total_tokens",))),
-                "total_cost": _metric_total(active_costs, preferred_keys=("usd", "total_cost")),
+                "total_tokens": active_total_tokens,
+                "total_cost": active_total_cost,
+                "invocation_count": active_invocation_count,
+                "cost_unavailable_invocation_count": active_cost_unavailable_invocation_count,
+                "cost_unavailable": active_cost_unavailable_invocation_count > 0,
+                "cost_status": _cost_status(
+                    total_tokens=float(active_total_tokens),
+                    total_cost=active_total_cost,
+                    invocation_count=active_invocation_count,
+                    cost_unavailable_invocation_count=active_cost_unavailable_invocation_count,
+                ),
             },
             "by_provider": by_provider,
             "by_lane": by_lane,

@@ -19,6 +19,30 @@ export function formatCurrency(value) {
   return `$${Number(value).toFixed(4)}`;
 }
 
+export function formatUsageCost(summary) {
+  const costStatus = String(summary?.cost_status ?? "available");
+  const totalTokens = Number(summary?.total_tokens ?? 0);
+  if (costStatus === "unavailable" && totalTokens > 0) {
+    return "Cost unavailable";
+  }
+  if (costStatus === "partial" && totalTokens > 0) {
+    return `${formatCurrency(summary?.total_cost ?? 0)} + gaps`;
+  }
+  return formatCurrency(summary?.total_cost ?? 0);
+}
+
+export function usageCostStatusDetail(summary) {
+  const costStatus = String(summary?.cost_status ?? "available");
+  const missingCount = Number(summary?.cost_unavailable_invocation_count ?? 0);
+  if (costStatus === "unavailable" && missingCount > 0) {
+    return `${missingCount} provider call${missingCount === 1 ? "" : "s"} missing cost metadata`;
+  }
+  if (costStatus === "partial" && missingCount > 0) {
+    return `${missingCount} provider call${missingCount === 1 ? "" : "s"} missing cost metadata`;
+  }
+  return "";
+}
+
 export function formatRuntime(seconds) {
   if (!seconds) {
     return "0s";

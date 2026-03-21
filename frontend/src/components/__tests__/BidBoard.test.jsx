@@ -166,4 +166,35 @@ describe("BidBoard", () => {
     expect(screen.getByText("LEADING")).toBeInTheDocument();
     expect(screen.getByText("STANDBY")).toBeInTheDocument();
   });
+
+  it("shows cost unavailable instead of a misleading zero when token usage exists without billing metadata", () => {
+    render(
+      <BidBoard
+        bids={bids}
+        winnerBidId="winner"
+        standbyBidId="standby"
+        activeTaskId="T2"
+        activePhase="select"
+        activeBidRound={2}
+        biddingState={{ generation_mode: "provider_model", degraded: false }}
+        usageSummary={{
+          mission: {
+            total_tokens: 377,
+            total_cost: 0,
+            cost_status: "unavailable",
+            cost_unavailable_invocation_count: 2
+          },
+          active_task: {
+            total_tokens: 377,
+            total_cost: 0,
+            cost_status: "unavailable",
+            cost_unavailable_invocation_count: 2
+          }
+        }}
+      />
+    );
+
+    expect(screen.getByText(/Cost unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 provider calls missing cost metadata/i)).toBeInTheDocument();
+  });
 });

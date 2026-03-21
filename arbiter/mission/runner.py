@@ -601,7 +601,7 @@ class MissionRuntime:
                     "status": envelope.status,
                     "allowed_skills": envelope.allowed_skills,
                     "reasoning": envelope.reasoning,
-                    "constraints": envelope.constraints,
+                    "constraints": getattr(envelope, "constraints", []),
                 },
             )
             if envelope.status != "approved":

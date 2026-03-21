@@ -1,4 +1,11 @@
-import { formatCurrency, formatInteger, formatNumber, shortCommit, summarizeProvider } from "../lib/format";
+import {
+  formatInteger,
+  formatNumber,
+  formatUsageCost,
+  shortCommit,
+  summarizeProvider,
+  usageCostStatusDetail
+} from "../lib/format";
 
 function humanizeStrategy(value) {
   return String(value || "pending")
@@ -133,15 +140,21 @@ export default function ArtifactsPanel({
             <span>Mission Usage</span>
             <strong>
               {formatInteger(usageSummary?.mission?.total_tokens ?? 0)} tok |{" "}
-              {formatCurrency(usageSummary?.mission?.total_cost ?? 0)}
+              {formatUsageCost(usageSummary?.mission)}
             </strong>
+            {usageCostStatusDetail(usageSummary?.mission) ? (
+              <p>{usageCostStatusDetail(usageSummary?.mission)}</p>
+            ) : null}
           </div>
           <div className="usage-summary-card">
             <span>Current Round</span>
             <strong>
               {formatInteger(usageSummary?.active_task?.total_tokens ?? 0)} tok |{" "}
-              {formatCurrency(usageSummary?.active_task?.total_cost ?? 0)}
+              {formatUsageCost(usageSummary?.active_task)}
             </strong>
+            {usageCostStatusDetail(usageSummary?.active_task) ? (
+              <p>{usageCostStatusDetail(usageSummary?.active_task)}</p>
+            ) : null}
           </div>
         </div>
         <div className="provider-totals">
@@ -150,7 +163,7 @@ export default function ArtifactsPanel({
               <div key={row.provider} className="provider-total-row">
                 <strong>{summarizeProvider(row.provider)}</strong>
                 <span>
-                  {formatInteger(row.total_tokens)} tok | {formatCurrency(row.total_cost)}
+                  {formatInteger(row.total_tokens)} tok | {formatUsageCost(row)}
                 </span>
               </div>
             ))

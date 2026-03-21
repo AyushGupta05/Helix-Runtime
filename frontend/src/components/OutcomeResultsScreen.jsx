@@ -1,7 +1,12 @@
 import React from "react";
 
 import { useBidRanking } from "../hooks/useBidRanking";
-import { formatInteger, formatRuntime } from "../lib/format";
+import {
+  formatInteger,
+  formatRuntime,
+  formatUsageCost,
+  usageCostStatusDetail
+} from "../lib/format";
 import { useMissionElapsedSeconds } from "../lib/useMissionElapsed";
 import "../styles/screens.css";
 
@@ -100,6 +105,7 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
   const elapsedSeconds = useMissionElapsedSeconds(mission);
   const confidence = confidencePercent(selectedBid, mission);
   const missionTotals = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
+  const spendDetail = usageCostStatusDetail(missionTotals);
   const branchLabel = String(mission?.branch_name ?? "branch").split("/").pop();
   const trust = trustRows(mission, passed);
   const governance = governanceRows(mission);
@@ -141,6 +147,14 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
         <span>
           Spend: <strong>{formatInteger(missionTotals.total_tokens ?? 0)} tokens</strong>
         </span>
+        <span>
+          Cost: <strong>{formatUsageCost(missionTotals)}</strong>
+        </span>
+        {spendDetail ? (
+          <span>
+            Billing: <strong>{spendDetail}</strong>
+          </span>
+        ) : null}
         <span>
           Files: <strong>{passed ? "Passed" : "Needs review"}</strong>
         </span>

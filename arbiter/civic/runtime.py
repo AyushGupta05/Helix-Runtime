@@ -580,12 +580,18 @@ class CivicRuntime:
         if required_skills and missing_actions:
             blocked = True
         reasoning: list[str] = []
+        constraints = ["read_write_scope:read_only"]
         if missing_skills:
             reasoning.append(f"Missing required skills: {', '.join(missing_skills)}.")
+            constraints.append(f"missing_skills:{','.join(missing_skills)}")
         if missing_actions:
             reasoning.append(f"Missing governed actions: {', '.join(missing_actions)}.")
+            constraints.append(f"missing_governed_actions:{','.join(missing_actions)}")
         if required_skills and not connection.connected:
             reasoning.append("Civic connection is unavailable for required governed capabilities.")
+            constraints.append("civic_connection:unavailable")
+        elif required_skills:
+            constraints.append("civic_connection:connected")
         if not reasoning:
             reasoning.append("Bid is admissible under the current Civic capability surface.")
         matched_actions = [
@@ -607,6 +613,7 @@ class CivicRuntime:
             read_write_scope="read_only",
             runtime_budget_seconds=estimated_runtime_seconds,
             token_budget=token_budget,
+            constraints=constraints,
             policy_state=PolicyState.BLOCKED if blocked else PolicyState.CLEAR,
             policy_decision=policy_decision,
             reasoning=reasoning,

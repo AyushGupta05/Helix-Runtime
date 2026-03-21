@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from arbiter.agents.backend import EditOperation, EditProposal, FileUpdate, ModelInvocationResult, ProposalCandidate, ScriptedStrategyBackend
+from arbiter.agents.backend import DefaultStrategyBackend, EditOperation, EditProposal, FileUpdate, ModelInvocationResult, ProposalCandidate, ScriptedStrategyBackend
 from arbiter.core.contracts import (
     ActivePhase,
     Bid,
@@ -112,6 +112,30 @@ class FakeGovernedCivic:
             payload=record.input_payload,
         )
 
+    def authorize_and_execute(self, *, mission_id, task_id, action_type, decision, payload, executor):
+        audit = CivicAuditRecord(
+            audit_id=f"audit-exec-{task_id}",
+            mission_id=mission_id,
+            task_id=task_id,
+            action_type=action_type,
+            status="executed" if decision.allowed else "blocked",
+            policy_state=decision.state,
+            reasons=list(decision.reasons),
+            payload=payload,
+        )
+        if not decision.allowed:
+            return type(
+                "GovernedExecutionResult",
+                (),
+                {"success": False, "result": {"blocked": True}, "audit": audit},
+            )()
+        result = executor() if executor is not None else {}
+        return type(
+            "GovernedExecutionResult",
+            (),
+            {"success": True, "result": result, "audit": audit},
+        )()
+
     def preflight_bid(
         self,
         *,
@@ -136,6 +160,7 @@ class FakeGovernedCivic:
             allowed_skills=[] if blocked else [*required_skills, *optional_skills],
             allowed_actions=[] if blocked else list(governed_action_plan),
             toolkit_id="toolkit-demo",
+            constraints=["read_write_scope:read_only", "civic_connection:connected"],
             policy_state=PolicyState.BLOCKED if blocked else PolicyState.CLEAR,
             policy_decision="block" if blocked else "allow",
             reasoning=["Civic policy denied bid."] if blocked else ["Bid is admissible."],
@@ -602,8 +627,69 @@ def test_preflight_governed_bids_rejects_blocked_strategy(python_bug_repo: Path)
         runtime.store.close()
 
     assert runtime.state.governed_bid_envelopes["bid-allowed"].status == "approved"
+    assert runtime.state.governed_bid_envelopes["bid-allowed"].constraints == [
+        "read_write_scope:read_only",
+        "civic_connection:connected",
+    ]
     assert runtime.state.governed_bid_envelopes["bid-blocked"].status == "blocked"
+    assert runtime.state.governed_bid_envelopes["bid-blocked"].constraints == [
+        "read_write_scope:read_only",
+        "civic_connection:connected",
+    ]
     assert blocked_bid.rejection_reason == "civic_policy_block"
+
+
+def test_provider_backed_mission_reaches_civic_preflight_and_executes_with_openai_usage(python_bug_repo: Path) -> None:
+    from tests.fake_provider_backend import FakeProviderRouter
+
+    class GovernedProviderRouter(FakeProviderRouter):
+        @staticmethod
+        def _bid_payload(user_prompt: str, provider: str, lane: str) -> str:
+            payload = json.loads(FakeProviderRouter._bid_payload(user_prompt, provider, lane))
+            payload["required_skills"] = ["github_context"]
+            payload["governed_action_plan"] = ["fetch_ci_status"]
+            return json.dumps(payload)
+
+    backend = DefaultStrategyBackend(GovernedProviderRouter(providers=("openai",)))
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests with provider-backed execution",
+        mission_id="provider-civic-openai",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=backend)
+    runtime.civic = FakeGovernedCivic(available_skills=["github_context"])
+    try:
+        state = runtime.run()
+    finally:
+        runtime.store.close()
+
+    assert state.outcome is not None
+    assert state.outcome.value == "success"
+
+    mission_root = python_bug_repo / ".arbiter" / "missions" / spec.mission_id
+    connection = sqlite3.connect(mission_root / "state.db")
+    connection.row_factory = sqlite3.Row
+    try:
+        langgraph_checkpoint_count = connection.execute("SELECT COUNT(*) FROM langgraph_checkpoints").fetchone()[0]
+        traces = connection.execute("SELECT trace_type FROM trace_entries ORDER BY id ASC").fetchall()
+        invocations = connection.execute(
+            "SELECT provider, invocation_kind, status, cost_usage_json FROM model_invocations ORDER BY id ASC"
+        ).fetchall()
+        execution_steps = connection.execute("SELECT COUNT(*) FROM execution_steps").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert langgraph_checkpoint_count >= 1
+    assert any(row["trace_type"] == "civic.bid.preflight_allowed" for row in traces)
+    assert any(
+        row["provider"] == "openai"
+        and row["invocation_kind"] == "proposal_generation"
+        and row["status"] == "completed"
+        and row["cost_usage_json"] not in {None, "null"}
+        for row in invocations
+    )
+    assert execution_steps >= 1
 
 
 def test_collect_safe_stops_when_requested_skill_is_unavailable(python_bug_repo: Path) -> None:

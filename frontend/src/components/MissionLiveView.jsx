@@ -2,7 +2,7 @@ import BidBoard from "./BidBoard";
 import CivicPanel from "./CivicPanel";
 import EventStrip from "./EventStrip";
 import MonteCarloPanel from "./MonteCarloPanel";
-import { formatCurrency, formatInteger, formatNumber } from "../lib/format";
+import { formatInteger, formatNumber, formatUsageCost, usageCostStatusDetail } from "../lib/format";
 
 function liveSummaryCards(mission, selectedBid, usageSummary, latestProposalTrace) {
   const missionUsage = usageSummary?.mission ?? {};
@@ -30,8 +30,8 @@ function liveSummaryCards(mission, selectedBid, usageSummary, latestProposalTrac
     },
     {
       label: "Mission spend",
-      value: formatCurrency(missionUsage.total_cost ?? 0),
-      detail: `${formatInteger(missionUsage.total_tokens ?? 0)} tokens`
+      value: formatUsageCost(missionUsage),
+      detail: `${formatInteger(missionUsage.total_tokens ?? 0)} tokens${usageCostStatusDetail(missionUsage) ? ` | ${usageCostStatusDetail(missionUsage)}` : ""}`
     }
   ];
 }

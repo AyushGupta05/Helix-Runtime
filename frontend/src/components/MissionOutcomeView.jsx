@@ -1,8 +1,8 @@
 import {
-  formatCurrency,
   formatInteger,
   formatNumber,
   formatRuntime,
+  formatUsageCost,
   humanizeEventType,
   humanizeMissionStage,
   shortCommit,
@@ -169,7 +169,7 @@ export default function MissionOutcomeView({
   const summary = outcomeSummary.plain_summary ?? summaryText(mission, selectedBid, latestProposalTrace);
   const validationPassed = Boolean(mission.validation_report?.passed);
   const confidence = Number(outcomeSummary.confidence ?? selectedBid?.confidence ?? 0);
-  const totalCost = usageSummary?.mission?.total_cost ?? 0;
+  const missionUsage = usageSummary?.mission ?? { total_cost: 0, total_tokens: 0 };
   const totalTokens = usageSummary?.mission?.total_tokens ?? 0;
   const risks = outcomeSummary.risks?.length ? outcomeSummary.risks : riskList(mission, selectedBid);
   const actions = outcomeSummary.next_actions?.length
@@ -228,7 +228,7 @@ export default function MissionOutcomeView({
             </article>
             <article className="outcome-stat-card">
               <span>Spend</span>
-              <strong>{formatCurrency(totalCost)}</strong>
+              <strong>{formatUsageCost(missionUsage)}</strong>
               <p>{formatInteger(totalTokens)} tokens</p>
             </article>
             <article className="outcome-stat-card">

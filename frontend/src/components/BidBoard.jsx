@@ -3,11 +3,13 @@ import {
   formatInteger,
   formatNumber,
   formatRuntime,
+  formatUsageCost,
   humanizeEventType,
   humanizeGenerationMode,
   humanizeToken,
   isDeterministicFallbackBid,
-  summarizeProvider
+  summarizeProvider,
+  usageCostStatusDetail
 } from "../lib/format";
 
 function humanizeStrategy(value) {
@@ -265,14 +267,22 @@ export default function BidBoard({
     taskTotals.total_tokens && taskTotals.total_tokens > 0
       ? taskTotals.total_tokens
       : marketBids.reduce((total, bid) => total + metricTotal(bid.token_usage), 0);
-  const roundCost =
-    taskTotals.total_cost && taskTotals.total_cost > 0
-      ? taskTotals.total_cost
-      : marketBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0);
+  const roundUsage =
+    taskTotals.total_tokens && taskTotals.total_tokens > 0
+      ? taskTotals
+      : roundTokens > 0
+        ? {
+            total_tokens: roundTokens,
+            total_cost: marketBids.reduce((total, bid) => total + metricTotal(bid.cost_usage), 0),
+            cost_status: "available",
+            cost_unavailable_invocation_count: 0
+          }
+        : missionTotals;
   const providerCount = new Set(marketBids.map((bid) => providerLabelForBid(bid))).size;
   const liveEntries = bidTickerEntries(events, activeTaskId);
   const rejectedCount = marketBids.filter((bid) => Boolean(bid.rejection_reason)).length;
   const leadingBid = orderedBids[0] ?? null;
+  const spendDetail = usageCostStatusDetail(roundUsage);
 
   return (
     <section className="panel strategy-board">
@@ -306,8 +316,11 @@ export default function BidBoard({
         </div>
         <div className="arena-stat arena-stat-spend">
           <span>Spend</span>
-          <strong>{formatInteger(roundTokens || missionTotals.total_tokens || 0)} tok</strong>
-          <p>{formatCurrency(roundCost || missionTotals.total_cost || 0)}</p>
+          <strong>{formatInteger(roundUsage.total_tokens || missionTotals.total_tokens || 0)} tok</strong>
+          <p>
+            {formatUsageCost(roundUsage)}
+            {spendDetail ? ` | ${spendDetail}` : ""}
+          </p>
         </div>
       </div>
 

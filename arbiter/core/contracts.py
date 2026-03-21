@@ -453,6 +453,7 @@ class GovernedBidEnvelope(BaseModel):
     read_write_scope: str = "read_only"
     runtime_budget_seconds: float | None = None
     token_budget: int | None = None
+    constraints: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
     revoked_at: datetime | None = None
     policy_state: PolicyState = PolicyState.CLEAR

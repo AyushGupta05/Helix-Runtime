@@ -2,6 +2,11 @@ import { expect, test } from "@playwright/test";
 
 let historyPayload = [];
 let missionPayload = {};
+let usagePayload = {
+  mission: { total_tokens: 0, total_cost: 0 },
+  active_task: { total_tokens: 0, total_cost: 0 },
+  by_provider: {}
+};
 
 function buildMissionPayload(overrides = {}) {
   const now = Date.now();
@@ -124,13 +129,7 @@ async function wireMissionApi(page) {
     }
 
     if (pathname === "/api/missions/mission-1/usage") {
-      await route.fulfill({
-        json: {
-          mission: { total_tokens: 0, total_cost: 0 },
-          active_task: { total_tokens: 0, total_cost: 0 },
-          by_provider: {}
-        }
-      });
+      await route.fulfill({ json: usagePayload });
       return;
     }
 
@@ -156,6 +155,11 @@ async function wireMissionApi(page) {
 test.beforeEach(async ({ page }) => {
   historyPayload = [];
   missionPayload = buildMissionPayload();
+  usagePayload = {
+    mission: { total_tokens: 0, total_cost: 0 },
+    active_task: { total_tokens: 0, total_cost: 0 },
+    by_provider: {}
+  };
 
   await page.addInitScript(() => {
     const eventSources = [];
@@ -225,7 +229,7 @@ test("streams live market and monte carlo updates with Civic auth prompts", asyn
   await expect(page.getByText(/Live Prompt/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Cancel/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /Live Market/i })).toBeVisible();
-  await expect(page.getByText(/Competing plans stay visible/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Strategy Bidding Board/i })).toBeVisible();
 
   await page.evaluate(() =>
     window.__emitMissionEvent(
@@ -365,5 +369,37 @@ test("ticks elapsed time locally and keeps the compact workspace after reload", 
 
   await page.reload();
   await expect(page.getByText(/Live Prompt/i)).toBeVisible();
-  await expect(page.getByText(/Competing plans stay visible/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Strategy Bidding Board/i })).toBeVisible();
+});
+
+test("shows cost unavailable when provider usage has tokens but missing billing metadata", async ({ page }) => {
+  usagePayload = {
+    mission: {
+      total_tokens: 377,
+      total_cost: 0,
+      cost_status: "unavailable",
+      cost_unavailable_invocation_count: 2
+    },
+    active_task: {
+      total_tokens: 377,
+      total_cost: 0,
+      cost_status: "unavailable",
+      cost_unavailable_invocation_count: 2
+    },
+    by_provider: {
+      openai: {
+        provider: "openai",
+        total_tokens: 377,
+        total_cost: 0,
+        cost_status: "unavailable",
+        cost_unavailable_invocation_count: 2
+      }
+    }
+  };
+
+  await page.goto("/missions/mission-1?repo=C%3A%5Crepo");
+
+  await expect(page.getByRole("heading", { name: /Usage Signal/i })).toBeVisible();
+  await expect(page.getByText("Spend: Cost unavailable")).toBeVisible();
+  await expect(page.getByText(/2 provider calls missing cost metadata/i).first()).toBeVisible();
 });
