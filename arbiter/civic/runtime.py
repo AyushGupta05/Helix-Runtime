@@ -403,6 +403,25 @@ class CivicRuntime:
                     metadata={"domain": "github"},
                 )
             )
+        github_write_tools = [
+            name
+            for name in tool_names
+            if self._tool_is_github(name)
+            and any(
+                self._tool_matches(name, action)
+                for action in ("github-remote-create_branch", "github-remote-push_files", "github-remote-create_pull_request")
+            )
+        ]
+        if github_write_tools:
+            capabilities.append(
+                CivicCapability(
+                    capability_id="github_write",
+                    display_name="GitHub Branch and Pull Request Delivery",
+                    read_only=False,
+                    tools=github_write_tools,
+                    metadata={"domain": "github"},
+                )
+            )
         knowledge_tools = [name for name in tool_names if self._tool_is_knowledge(name)]
         if knowledge_tools:
             capabilities.append(
@@ -486,6 +505,35 @@ class CivicRuntime:
         )
         if github_available:
             available_skills.append("github_context")
+
+        github_publish_required = [
+            "github-remote-create_branch",
+            "github-remote-push_files",
+            "github-remote-create_pull_request",
+        ]
+        github_publish_available_tools = sorted(
+            tool_name
+            for tool_name in tool_names
+            if self._tool_is_github(tool_name)
+            and any(self._tool_matches(tool_name, required) for required in github_publish_required)
+        )
+        github_publish_discovered = {tool_name: tool_name for tool_name in github_publish_available_tools}
+        github_publish_available = (
+            repo_snapshot is not None
+            and repo_snapshot.remote_provider == "github"
+            and all(self._action_available(required, github_publish_discovered) for required in github_publish_required)
+        )
+        skill_health["github_publish"] = SkillHealth(
+            skill_id="github_publish",
+            status="available" if github_publish_available else "inactive",
+            available=github_publish_available,
+            required_tools=github_publish_required,
+            available_tools=github_publish_available_tools,
+            reason=None if github_publish_available else "GitHub publication tools are unavailable.",
+            last_checked_at=utc_now(),
+        )
+        if github_publish_available:
+            available_skills.append("github_publish")
 
         knowledge_available_tools = sorted(tool_name for tool_name in tool_names if self._tool_is_knowledge(tool_name))
         knowledge_available = bool(knowledge_available_tools)
@@ -819,16 +867,21 @@ class CivicRuntime:
         )
         if not decision.allowed:
             return ActionOutcome(success=False, result={"blocked": True, "reasons": decision.reasons}, audit=audit)
+        if self.available():
+            connection = self.check_connection(force=True)
+            if not connection.connected:
+                audit.status = ActionStatus.BLOCKED
+                audit.policy_state = PolicyState.RESTRICTED
+                audit.reasons.append("civic_transport_unavailable")
+                return ActionOutcome(
+                    success=False,
+                    result={"blocked": True, "reasons": list(audit.reasons)},
+                    audit=audit,
+                )
         try:
             result = executor()
         except Exception as exc:
             audit.reasons.append(f"execution_failed: {exc}")
             return ActionOutcome(success=False, result={"blocked": False, "error": str(exc)}, audit=audit)
         audit.status = ActionStatus.EXECUTED
-        if self.available():
-            try:
-                self.check_connection(force=True)
-            except Exception:
-                audit.policy_state = PolicyState.RESTRICTED
-                audit.reasons.append("civic_transport_unavailable")
         return ActionOutcome(success=True, result=result, audit=audit)

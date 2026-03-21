@@ -159,6 +159,7 @@ class MissionSpec(BaseModel):
             "run_lint",
             "static_analysis",
             "benchmark",
+            "create_commit",
             "revert_to_checkpoint",
             "fetch_ci_status",
             "open_pr_metadata",

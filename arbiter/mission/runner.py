@@ -50,7 +50,7 @@ from arbiter.runtime.config import load_runtime_config
 from arbiter.runtime.checkpoints import MissionCheckpointManager, RepoCheckpointManager
 from arbiter.runtime.events import EventLogger
 from arbiter.runtime.migrate import migrate_legacy_mission
-from arbiter.runtime.paths import build_mission_paths, generate_mission_id, resolve_repo_path, sanitize_branch_fragment
+from arbiter.runtime.paths import build_managed_branch_name, build_mission_paths, generate_mission_id, resolve_repo_path
 from arbiter.runtime.persistence import PersistenceCoordinator
 from arbiter.runtime.replay import ReplayManager
 from arbiter.runtime.store import MissionStore
@@ -92,7 +92,7 @@ class MissionRuntime:
         )
         self.recovery = RecoveryEngine()
         self.civic = CivicRuntime(self.config)
-        self.branch_name = f"codex/helix-{sanitize_branch_fragment(spec.mission_id)}"
+        self.branch_name = build_managed_branch_name(spec.repo_path, spec.objective, spec.mission_id)
         self.mission_checkpoints = MissionCheckpointManager(spec.mission_id, self.store)
         self.repo_checkpoints = RepoCheckpointManager(spec.mission_id, self.branch_name, self.store)
         self.worktree = WorktreeManager(spec.repo_path, paths.worktree_dir, self.branch_name)
@@ -117,6 +117,12 @@ class MissionRuntime:
             if (row["generation_mode"] or json.loads(row["payload_json"]).get("generation_mode")) == BidGenerationMode.PROVIDER_MODEL.value
         }
         self.state.bidding_state.total_provider_invocations = len(self._provider_invocations_seen)
+
+    def _set_branch_name(self, branch_name: str) -> None:
+        self.branch_name = branch_name
+        self.repo_checkpoints.branch_name = branch_name
+        self.worktree.branch_name = branch_name
+        self.state.summary.branch_name = branch_name
 
     def emit(self, event_type: str, message: str, refresh_view: bool = False, **payload) -> None:
         event = MissionEvent(event_type=event_type, mission_id=self.spec.mission_id, message=message, payload=payload)
@@ -173,10 +179,15 @@ class MissionRuntime:
             return self.strategy_backend.market_generation_mode()
         return BidGenerationMode.DETERMINISTIC_FALLBACK
 
+    def _civic_governance_required(self) -> bool:
+        return self.config.civic_required or self.civic.available()
+
     def _required_skill_set(self) -> set[str]:
         return {*(self.spec.requested_skills or []), *self.config.civic_required_skills}
 
     def _should_engage_civic(self) -> bool:
+        if self._civic_governance_required():
+            return True
         if self.spec.requested_skills or self.config.civic_required or self.config.civic_required_skills:
             return True
         if not self.state.repo_snapshot:
@@ -214,10 +225,7 @@ class MissionRuntime:
             created_at=record.created_at.isoformat(),
         )
 
-    def _register_governed_action(self, record: GovernedActionRecord, *, refresh_view: bool = False) -> None:
-        audit = self.civic.record_audit(record)
-        record.audit_id = audit.audit_id
-        self._record_audit(audit)
+    def _emit_governed_action_record(self, record: GovernedActionRecord, *, refresh_view: bool = False) -> None:
         self.state.recent_civic_actions.append(record)
         self.state.recent_civic_actions = self.state.recent_civic_actions[-20:]
         self._save_governed_action_record(record)
@@ -253,6 +261,46 @@ class MissionRuntime:
             audit_id=record.audit_id,
             output_payload=record.output_payload,
         )
+
+    def _register_governed_action(self, record: GovernedActionRecord, *, refresh_view: bool = False) -> None:
+        audit = self.civic.record_audit(record)
+        record.audit_id = audit.audit_id
+        self._record_audit(audit)
+        self._emit_governed_action_record(record, refresh_view=refresh_view)
+
+    def _register_local_governed_action(
+        self,
+        outcome,
+        *,
+        action_type: str,
+        task_id: str | None,
+        bid_id: str | None,
+        envelope: GovernedBidEnvelope | None = None,
+        tool_name: str | None = None,
+        skill_id: str | None = None,
+        refresh_view: bool = False,
+    ) -> GovernedActionRecord:
+        self._record_audit(outcome.audit)
+        blocked = bool(outcome.result.get("blocked"))
+        record = GovernedActionRecord(
+            action_id=uuid4().hex,
+            mission_id=self.spec.mission_id,
+            task_id=task_id,
+            bid_id=bid_id,
+            envelope_id=envelope.envelope_id if envelope else None,
+            skill_id=skill_id,
+            action_type=action_type,
+            tool_name=tool_name or action_type,
+            status="preflight_blocked" if blocked else "executed" if outcome.success else "failed",
+            allowed=not blocked,
+            audit_id=outcome.audit.audit_id,
+            policy_state=outcome.audit.policy_state,
+            reasoning=list(outcome.audit.reasons),
+            input_payload=outcome.audit.payload,
+            output_payload=outcome.result,
+        )
+        self._emit_governed_action_record(record, refresh_view=refresh_view)
+        return record
 
     def _bid_event_payload(self, bid: Bid) -> dict:
         return {
@@ -427,11 +475,13 @@ class MissionRuntime:
             self.state.governance.stop_reason = f"requested_skill_unavailable:{','.join(missing_requested)}"
             return False
         missing_required = [skill for skill in self._required_skill_set() if skill not in self.state.available_skills]
-        if self.config.civic_required and (self.state.civic_connection.status == "unavailable" or missing_required):
+        civic_required = self._civic_governance_required()
+        self.state.governance.active_guardrails = ["civic"] if civic_required else []
+        if civic_required and (not self.state.civic_connection.connected or missing_required):
             self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
             self.state.governance.stop_reason = (
                 "civic_connection_unavailable"
-                if self.state.civic_connection.status == "unavailable"
+                if not self.state.civic_connection.connected
                 else f"missing_required_skills:{','.join(missing_required)}"
             )
             return False

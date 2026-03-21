@@ -10,7 +10,7 @@ from pathlib import Path
 from arbiter.core.contracts import MissionOutcome, MissionSpec, MissionSummary, RunState, utc_now
 from arbiter.mission.runner import build_mission_spec, resume_mission, start_mission
 from arbiter.runtime.migrate import migrate_legacy_mission
-from arbiter.runtime.paths import build_mission_paths, resolve_repo_path
+from arbiter.runtime.paths import build_managed_branch_name, build_mission_paths, resolve_repo_path
 from arbiter.runtime.store import MissionStore
 from arbiter.server.schemas import MissionControlResponse, MissionCreateRequest, MissionHistoryEntry
 
@@ -84,6 +84,7 @@ class MissionService:
                 public_api_surface=request.public_api_surface,
             )
             paths = build_mission_paths(spec.repo_path, spec.mission_id)
+            branch_name = build_managed_branch_name(spec.repo_path, spec.objective, spec.mission_id)
             store = MissionStore(paths.db_path)
             try:
                 store.upsert_mission(
@@ -91,10 +92,15 @@ class MissionService:
                     status="running",
                     repo_path=spec.repo_path,
                     objective=spec.objective,
-                    branch_name=f"codex/helix-{spec.mission_id}",
+                    branch_name=branch_name,
                     outcome=None,
                     spec=spec,
-                    summary=MissionSummary(mission_id=spec.mission_id, repo_path=spec.repo_path, objective=spec.objective),
+                    summary=MissionSummary(
+                        mission_id=spec.mission_id,
+                        repo_path=spec.repo_path,
+                        objective=spec.objective,
+                        branch_name=branch_name,
+                    ),
                     created_at=utc_now().isoformat(),
                 )
                 store.upsert_control_state(spec.mission_id, RunState.RUNNING.value, None, None, utc_now().isoformat())

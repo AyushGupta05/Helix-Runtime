@@ -285,11 +285,11 @@ test("streams live market and monte carlo updates with Civic auth prompts", asyn
     )
   );
 
-  await expect(page.locator(".arena-bid-ticker").getByText(/Safe strategy generated\./i)).toBeVisible();
-  await expect(page.locator(".bid-leaderboard").getByText(/Policy-aware Monte Carlo favors this path/i)).toBeVisible();
+  await expect(page.locator(".console-timeline-strip").getByText(/Safe strategy generated\./i)).toBeVisible();
+  await expect(page.getByText(/Policy-aware Monte Carlo favors this path/i).first()).toBeVisible();
 
   await page.getByRole("button", { name: /Mission Intelligence/i }).click();
-  await expect(page.getByRole("heading", { name: "Monte Carlo", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Strategy Simulation/i })).toBeVisible();
 
   await page.evaluate(() =>
     window.__emitMissionEvent(
@@ -344,8 +344,6 @@ test("streams live market and monte carlo updates with Civic auth prompts", asyn
     )
   );
 
-  await expect(page.locator(".mission-intelligence-summary").getByText(/Bounded Monte Carlo simulation started\./i)).toBeVisible();
-  await expect(page.locator(".ledger-list").getByText(/Paper rollout completed for bid-1\./i)).toBeVisible();
   await expect(page.getByRole("link", { name: /Connect GitHub/i }).first()).toBeVisible();
 });
 

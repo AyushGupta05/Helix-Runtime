@@ -16,6 +16,16 @@ def sanitize_branch_fragment(value: str) -> str:
     return slug[:40] or "mission"
 
 
+def build_managed_branch_name(repo_path: str | Path, objective: str, mission_id: str) -> str:
+    repo_name = Path(repo_path).name if not isinstance(repo_path, Path) else repo_path.name
+    repo_fragment = sanitize_branch_fragment(repo_name).lower()
+    objective_words = objective.split()
+    objective_fragment = sanitize_branch_fragment(" ".join(objective_words[:6])).lower()[:32]
+    mission_fragment = sanitize_branch_fragment(mission_id).lower()[:8]
+    parts = [part for part in (repo_fragment, objective_fragment, mission_fragment) if part]
+    return f"codex/{'-'.join(parts) or 'mission'}"
+
+
 def resolve_repo_path(repo_path: str) -> Path:
     repo = Path(repo_path).expanduser().resolve()
     if not repo.exists():

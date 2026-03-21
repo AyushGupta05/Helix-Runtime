@@ -96,7 +96,7 @@ class GovernanceEngine:
         reasons: list[str] = []
         if intent.action_type not in spec.allowed_tool_classes:
             reasons.append("tool_not_allowed")
-        if intent.action_type not in task.allowed_tools and intent.action_type not in {"run_tests", "run_lint", "static_analysis", "benchmark", "revert_to_checkpoint"}:
+        if intent.action_type not in task.allowed_tools and intent.action_type not in {"run_tests", "run_lint", "static_analysis", "benchmark", "create_commit", "revert_to_checkpoint"}:
             reasons.append("task_tool_mismatch")
         touched = intent.file_scope or bid.touched_files
         if len(touched) > spec.stop_policy.max_file_scope:
