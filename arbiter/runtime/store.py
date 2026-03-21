@@ -28,6 +28,16 @@ def _dump(value: Any) -> str:
     return json.dumps(value, default=str)
 
 
+def _metric_total(values: dict[str, Any] | None, *, preferred_keys: tuple[str, ...]) -> float:
+    if not values:
+        return 0.0
+    for key in preferred_keys:
+        value = values.get(key)
+        if value is not None:
+            return float(value)
+    return sum(float(value) for value in values.values())
+
+
 class MissionStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -754,8 +764,8 @@ class MissionStore:
                     active_costs[key] = active_costs.get(key, 0.0) + float(value)
             provider_bucket = by_provider.setdefault(row["provider"], {"provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
             lane_bucket = by_lane.setdefault(row["lane"], {"lane": row["lane"], "provider": row["provider"], "token_usage": {}, "cost_usage": {}, "total_tokens": 0, "total_cost": 0.0, "invocation_count": 0})
-            total_tokens = sum(int(value) for value in (token_usage or {}).values())
-            total_cost = sum(float(value) for value in (cost_usage or {}).values())
+            total_tokens = int(_metric_total(token_usage, preferred_keys=("total_tokens",)))
+            total_cost = _metric_total(cost_usage, preferred_keys=("usd", "total_cost"))
             provider_bucket["total_tokens"] += total_tokens
             provider_bucket["total_cost"] += total_cost
             provider_bucket["invocation_count"] += 1
@@ -795,15 +805,15 @@ class MissionStore:
             "mission": {
                 "token_usage": mission_tokens,
                 "cost_usage": mission_costs,
-                "total_tokens": sum(mission_tokens.values()),
-                "total_cost": sum(mission_costs.values()),
+                "total_tokens": int(_metric_total(mission_tokens, preferred_keys=("total_tokens",))),
+                "total_cost": _metric_total(mission_costs, preferred_keys=("usd", "total_cost")),
             },
             "active_task": {
                 "task_id": active_task_id,
                 "token_usage": active_tokens,
                 "cost_usage": active_costs,
-                "total_tokens": sum(active_tokens.values()),
-                "total_cost": sum(active_costs.values()),
+                "total_tokens": int(_metric_total(active_tokens, preferred_keys=("total_tokens",))),
+                "total_cost": _metric_total(active_costs, preferred_keys=("usd", "total_cost")),
             },
             "by_provider": by_provider,
             "by_lane": by_lane,

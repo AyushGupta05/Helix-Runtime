@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any
@@ -57,28 +58,162 @@ class ProposalCandidate(BaseModel):
     rejection_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class ModelPriceCard:
+    input_per_mtok: float
+    cached_input_per_mtok: float
+    output_per_mtok: float
+    cache_write_5m_per_mtok: float | None = None
+    cache_write_1h_per_mtok: float | None = None
+
+
+_OPENAI_PRICE_CARDS: tuple[tuple[str, ModelPriceCard], ...] = (
+    ("gpt-5.4-mini", ModelPriceCard(input_per_mtok=0.75, cached_input_per_mtok=0.075, output_per_mtok=4.5)),
+    ("gpt-5.4", ModelPriceCard(input_per_mtok=2.5, cached_input_per_mtok=0.25, output_per_mtok=15.0)),
+    ("gpt-5.2-codex", ModelPriceCard(input_per_mtok=1.75, cached_input_per_mtok=0.175, output_per_mtok=14.0)),
+    ("gpt-5.2", ModelPriceCard(input_per_mtok=1.75, cached_input_per_mtok=0.175, output_per_mtok=14.0)),
+    ("gpt-5.1-codex-mini", ModelPriceCard(input_per_mtok=0.25, cached_input_per_mtok=0.025, output_per_mtok=2.0)),
+    ("gpt-5.1-codex-max", ModelPriceCard(input_per_mtok=1.25, cached_input_per_mtok=0.125, output_per_mtok=10.0)),
+    ("gpt-5.1-codex", ModelPriceCard(input_per_mtok=1.25, cached_input_per_mtok=0.125, output_per_mtok=10.0)),
+    ("gpt-5-mini", ModelPriceCard(input_per_mtok=0.25, cached_input_per_mtok=0.025, output_per_mtok=2.0)),
+    ("gpt-5.1", ModelPriceCard(input_per_mtok=1.25, cached_input_per_mtok=0.125, output_per_mtok=10.0)),
+    ("gpt-5", ModelPriceCard(input_per_mtok=1.25, cached_input_per_mtok=0.125, output_per_mtok=10.0)),
+)
+
+_ANTHROPIC_PRICE_CARDS: tuple[tuple[str, ModelPriceCard], ...] = (
+    (
+        "claude-sonnet-4",
+        ModelPriceCard(
+            input_per_mtok=3.0,
+            cached_input_per_mtok=0.3,
+            output_per_mtok=15.0,
+            cache_write_5m_per_mtok=3.75,
+            cache_write_1h_per_mtok=6.0,
+        ),
+    ),
+)
+
+
 def _preview_text(text: str, limit: int = 1200) -> str:
     cleaned = text.strip()
     return cleaned[:limit]
 
 
+def _nested_mapping(payload: dict[str, Any] | None, *path: str) -> dict[str, Any]:
+    current: Any = payload or {}
+    for key in path:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _nested_number(payload: dict[str, Any] | None, *path: str) -> int | float | None:
+    current: Any = payload or {}
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, (int, float)) and not isinstance(current, bool):
+        return current
+    return None
+
+
+def _set_if_positive(target: dict[str, int], key: str, value: int) -> None:
+    if value > 0:
+        target[key] = value
+
+
 def _normalize_usage_metadata(usage: dict[str, Any] | None) -> dict[str, int]:
-    normalized: dict[str, int] = {}
     if not usage:
+        return {}
+
+    openai_usage = _nested_mapping(usage, "response_metadata", "token_usage")
+    if openai_usage:
+        input_tokens = int(
+            _nested_number(usage, "response_metadata", "token_usage", "prompt_tokens")
+            or _nested_number(usage, "usage_metadata", "input_tokens")
+            or 0
+        )
+        cached_input_tokens = int(
+            _nested_number(usage, "response_metadata", "token_usage", "prompt_tokens_details", "cached_tokens")
+            or _nested_number(usage, "usage_metadata", "input_token_details", "cache_read")
+            or 0
+        )
+        output_tokens = int(
+            _nested_number(usage, "response_metadata", "token_usage", "completion_tokens")
+            or _nested_number(usage, "usage_metadata", "output_tokens")
+            or 0
+        )
+        total_tokens = int(
+            _nested_number(usage, "response_metadata", "token_usage", "total_tokens")
+            or _nested_number(usage, "usage_metadata", "total_tokens")
+            or (input_tokens + output_tokens)
+        )
+        reasoning_tokens = int(
+            _nested_number(usage, "response_metadata", "token_usage", "completion_tokens_details", "reasoning_tokens")
+            or _nested_number(usage, "usage_metadata", "output_token_details", "reasoning")
+            or 0
+        )
+        normalized: dict[str, int] = {}
+        _set_if_positive(normalized, "input_tokens", input_tokens)
+        _set_if_positive(normalized, "cached_input_tokens", cached_input_tokens)
+        _set_if_positive(normalized, "output_tokens", output_tokens)
+        _set_if_positive(normalized, "reasoning_tokens", reasoning_tokens)
+        _set_if_positive(normalized, "total_tokens", total_tokens)
         return normalized
+
+    anthropic_usage = _nested_mapping(usage, "response_metadata", "usage")
+    usage_metadata = _nested_mapping(usage, "usage_metadata")
+    if anthropic_usage or usage_metadata:
+        input_tokens = int(
+            _nested_number(usage, "response_metadata", "usage", "input_tokens")
+            or _nested_number(usage, "usage_metadata", "input_tokens")
+            or 0
+        )
+        output_tokens = int(
+            _nested_number(usage, "response_metadata", "usage", "output_tokens")
+            or _nested_number(usage, "usage_metadata", "output_tokens")
+            or 0
+        )
+        cache_read_input_tokens = int(
+            _nested_number(usage, "response_metadata", "usage", "cache_read_input_tokens")
+            or _nested_number(usage, "usage_metadata", "input_token_details", "cache_read")
+            or 0
+        )
+        cache_creation_input_tokens = int(
+            _nested_number(usage, "response_metadata", "usage", "cache_creation_input_tokens")
+            or _nested_number(usage, "usage_metadata", "input_token_details", "cache_creation")
+            or 0
+        )
+        cache_write_5m_input_tokens = int(
+            _nested_number(usage, "response_metadata", "usage", "cache_creation", "ephemeral_5m_input_tokens")
+            or 0
+        )
+        cache_write_1h_input_tokens = int(
+            _nested_number(usage, "response_metadata", "usage", "cache_creation", "ephemeral_1h_input_tokens")
+            or 0
+        )
+        if cache_creation_input_tokens > 0 and (cache_write_5m_input_tokens + cache_write_1h_input_tokens == 0):
+            # Anthropic's default prompt cache duration is 5 minutes when the breakdown is omitted.
+            cache_write_5m_input_tokens = cache_creation_input_tokens
+        total_tokens = _nested_number(usage, "usage_metadata", "total_tokens")
+        if total_tokens is None:
+            total_tokens = input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens
+        normalized = {}
+        _set_if_positive(normalized, "input_tokens", input_tokens)
+        _set_if_positive(normalized, "output_tokens", output_tokens)
+        _set_if_positive(normalized, "cache_read_input_tokens", cache_read_input_tokens)
+        _set_if_positive(normalized, "cache_creation_input_tokens", cache_creation_input_tokens)
+        _set_if_positive(normalized, "cache_write_5m_input_tokens", cache_write_5m_input_tokens)
+        _set_if_positive(normalized, "cache_write_1h_input_tokens", cache_write_1h_input_tokens)
+        _set_if_positive(normalized, "total_tokens", int(total_tokens))
+        return normalized
+
+    normalized: dict[str, int] = {}
     for key, value in usage.items():
-        if isinstance(value, bool):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             normalized[key] = int(value)
-        elif isinstance(value, int):
-            normalized[key] = value
-        elif isinstance(value, float):
-            normalized[key] = int(value)
-        elif isinstance(value, dict):
-            for nested_key, nested_value in value.items():
-                if isinstance(nested_value, (int, float)) and not isinstance(nested_value, bool):
-                    normalized[f"{key}.{nested_key}"] = int(nested_value)
-        else:
-            continue
     return normalized
 
 
@@ -100,6 +235,75 @@ def _extract_cost_usage(value: Any, prefix: str = "") -> dict[str, float]:
     return normalized
 
 
+def _price_card_for(provider: str | None, model_id: str | None, raw_usage: dict[str, Any] | None) -> ModelPriceCard | None:
+    response_metadata = _nested_mapping(raw_usage, "response_metadata")
+    candidates: list[str] = []
+    for candidate in (
+        model_id,
+        response_metadata.get("model_name"),
+        response_metadata.get("model"),
+    ):
+        if isinstance(candidate, str):
+            lowered = candidate.lower()
+            if lowered not in candidates:
+                candidates.append(lowered)
+    if (provider or "").lower() == "anthropic":
+        for candidate in candidates:
+            for prefix, card in _ANTHROPIC_PRICE_CARDS:
+                if candidate.startswith(prefix):
+                    return card
+        return None
+    for candidate in candidates:
+        for prefix, card in _OPENAI_PRICE_CARDS:
+            if candidate.startswith(prefix):
+                return card
+    return None
+
+
+def _estimate_cost_usage(
+    *,
+    raw_usage: dict[str, Any] | None,
+    token_usage: dict[str, int] | None,
+    provider: str | None,
+    model_id: str | None,
+) -> dict[str, float] | None:
+    if not token_usage:
+        return None
+    card = _price_card_for(provider, model_id, raw_usage)
+    if card is None:
+        return None
+
+    provider_name = (provider or "").lower()
+    total_cost = 0.0
+
+    if provider_name == "anthropic":
+        input_tokens = max(int(token_usage.get("input_tokens", 0)), 0)
+        output_tokens = max(int(token_usage.get("output_tokens", 0)), 0)
+        cache_read_input_tokens = max(int(token_usage.get("cache_read_input_tokens", 0)), 0)
+        cache_write_5m_input_tokens = max(int(token_usage.get("cache_write_5m_input_tokens", 0)), 0)
+        cache_write_1h_input_tokens = max(int(token_usage.get("cache_write_1h_input_tokens", 0)), 0)
+        cache_creation_input_tokens = max(int(token_usage.get("cache_creation_input_tokens", 0)), 0)
+        if cache_creation_input_tokens > 0 and (cache_write_5m_input_tokens + cache_write_1h_input_tokens == 0):
+            cache_write_5m_input_tokens = cache_creation_input_tokens
+        total_cost += input_tokens * card.input_per_mtok / 1_000_000
+        total_cost += cache_read_input_tokens * card.cached_input_per_mtok / 1_000_000
+        total_cost += output_tokens * card.output_per_mtok / 1_000_000
+        total_cost += cache_write_5m_input_tokens * (card.cache_write_5m_per_mtok or card.input_per_mtok) / 1_000_000
+        total_cost += cache_write_1h_input_tokens * (card.cache_write_1h_per_mtok or card.input_per_mtok) / 1_000_000
+    else:
+        input_tokens = max(int(token_usage.get("input_tokens", 0)), 0)
+        cached_input_tokens = max(int(token_usage.get("cached_input_tokens", 0)), 0)
+        output_tokens = max(int(token_usage.get("output_tokens", 0)), 0)
+        uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)
+        total_cost += uncached_input_tokens * card.input_per_mtok / 1_000_000
+        total_cost += cached_input_tokens * card.cached_input_per_mtok / 1_000_000
+        total_cost += output_tokens * card.output_per_mtok / 1_000_000
+
+    if total_cost <= 0:
+        return None
+    return {"usd": round(total_cost, 8)}
+
+
 def _usage_reason(token_usage: dict[str, int] | None, cost_usage: dict[str, float] | None, generation_mode: BidGenerationMode) -> str | None:
     if generation_mode == BidGenerationMode.REPLAY:
         return None
@@ -107,7 +311,7 @@ def _usage_reason(token_usage: dict[str, int] | None, cost_usage: dict[str, floa
     if token_usage is None:
         reasons.append("token usage unavailable: provider response did not include token metadata")
     if cost_usage is None:
-        reasons.append("cost usage unavailable: provider response did not include billing metadata")
+        reasons.append("cost usage unavailable: provider response did not include billing metadata and no pricing estimate was available")
     return "; ".join(reasons) or None
 
 
@@ -182,6 +386,13 @@ class ProviderModelRouter:
             }
         token_usage = _normalize_usage_metadata(raw_usage) or None
         cost_usage = _extract_cost_usage(raw_usage) or None
+        if cost_usage is None:
+            cost_usage = _estimate_cost_usage(
+                raw_usage=raw_usage,
+                token_usage=token_usage,
+                provider=lane_config.provider,
+                model_id=lane_config.model_id,
+            )
         result = ModelInvocationResult(
             content=content,
             provider=lane_config.provider,

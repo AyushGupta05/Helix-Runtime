@@ -16,6 +16,15 @@ function humanizeStrategy(value) {
 }
 
 function metricTotal(values) {
+  if (values?.total_tokens !== undefined && values?.total_tokens !== null) {
+    return Number(values.total_tokens || 0);
+  }
+  if (values?.usd !== undefined && values?.usd !== null) {
+    return Number(values.usd || 0);
+  }
+  if (values?.total_cost !== undefined && values?.total_cost !== null) {
+    return Number(values.total_cost || 0);
+  }
   return Object.values(values ?? {}).reduce((total, value) => total + Number(value || 0), 0);
 }
 
