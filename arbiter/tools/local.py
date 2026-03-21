@@ -44,13 +44,46 @@ class LocalToolset:
     def _replace_nth(text: str, target: str, replacement: str, occurrence: int) -> str:
         if occurrence < 1:
             raise ValueError("Edit operations use 1-based occurrence indexes.")
+        match = LocalToolset._find_target_match(text, target, occurrence)
+        if match is None:
+            raise ValueError("Edit operation target was not found in file content.")
+        start_index, end_index = match
+        return text[:start_index] + replacement + text[end_index:]
+
+    @staticmethod
+    def _find_target_match(text: str, target: str, occurrence: int) -> tuple[int, int] | None:
         start = 0
         for _ in range(occurrence):
             index = text.find(target, start)
-            if index == -1:
-                raise ValueError("Edit operation target was not found in file content.")
-            start = index + len(target)
-        return text[:index] + replacement + text[index + len(target) :]
+            if index != -1:
+                start = index + len(target)
+                continue
+
+            matches = list(LocalToolset._iter_whitespace_tolerant_matches(text, target))
+            if len(matches) < occurrence:
+                return None
+            return matches[occurrence - 1]
+        return (index, index + len(target))
+
+    @staticmethod
+    def _iter_whitespace_tolerant_matches(text: str, target: str):
+        # Model-generated structured edits often preserve the right code shape but
+        # drift slightly on indentation or newline formatting.
+        normalized_target = target.strip()
+        if not normalized_target:
+            return
+        chunks = [chunk for chunk in re.split(r"(\s+)", normalized_target) if chunk]
+        pattern_parts: list[str] = []
+        for chunk in chunks:
+            if chunk.isspace():
+                pattern_parts.append(r"\s+")
+            else:
+                pattern_parts.append(re.escape(chunk))
+        pattern = "".join(pattern_parts)
+        if not pattern:
+            return
+        for match in re.finditer(pattern, text, flags=re.MULTILINE):
+            yield match.span()
 
     def _apply_operation_to_text(
         self,

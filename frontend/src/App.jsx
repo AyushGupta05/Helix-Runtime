@@ -210,6 +210,10 @@ function MissionRoute() {
     }
   }, [missionQuery.data?.run_state]);
 
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [activeTab]);
+
   if (missionQuery.isLoading) {
     return <div className="empty-panel">Hydrating the Helix mission workspace...</div>;
   }

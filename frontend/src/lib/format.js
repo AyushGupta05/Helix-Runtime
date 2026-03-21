@@ -46,18 +46,22 @@ export function getMissionElapsedSeconds(
   if (!mission) {
     return 0;
   }
+  const startedAt = parseTimestamp(
+    mission.events?.[0]?.created_at ?? mission.created_at ?? mission.updated_at
+  );
   const baseRuntime = Number(mission.runtime_seconds ?? 0);
   if (baseRuntime > 0) {
     if (["running", "cancelling"].includes(mission.run_state)) {
       const liveDelta = Math.max(0, (now - snapshotReceivedAt) / 1000);
-      return baseRuntime + liveDelta;
+      const streamRuntime = baseRuntime + liveDelta;
+      if (startedAt === null) {
+        return streamRuntime;
+      }
+      const wallClockRuntime = Math.max(0, (now - startedAt) / 1000);
+      return Math.max(streamRuntime, wallClockRuntime);
     }
     return baseRuntime;
   }
-
-  const startedAt = parseTimestamp(
-    mission.created_at ?? mission.events?.[0]?.created_at ?? mission.updated_at
-  );
   if (startedAt === null) {
     return 0;
   }

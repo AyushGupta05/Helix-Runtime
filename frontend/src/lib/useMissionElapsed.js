@@ -12,9 +12,8 @@ export function useMissionElapsedSeconds(mission) {
   const snapshotKey = [
     mission?.mission_id ?? "",
     mission?.run_state ?? "",
-    mission?.updated_at ?? "",
-    mission?.runtime_seconds ?? 0,
-    mission?.latest_event_id ?? 0
+    mission?.created_at ?? "",
+    mission?.runtime_seconds ?? 0
   ].join("|");
 
   useEffect(() => {

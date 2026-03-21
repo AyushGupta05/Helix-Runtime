@@ -89,7 +89,7 @@ const bids = [
 ];
 
 describe("BidBoard", () => {
-  it("renders the bidding arena with prioritized bid statuses", () => {
+  it("renders the strategy market with prioritized bid statuses", () => {
     render(
       <BidBoard
         bids={bids}
@@ -126,7 +126,7 @@ describe("BidBoard", () => {
       />
     );
 
-    expect(screen.getByText(/Competitive bidding, governed live/i)).toBeInTheDocument();
+    expect(screen.getByText(/Competing plans stay visible/i)).toBeInTheDocument();
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
     expect(screen.getByText(/Strategy notice/i)).toBeInTheDocument();
     expect(screen.getByText(/Provider lanes were unavailable/i)).toBeInTheDocument();
@@ -142,11 +142,11 @@ describe("BidBoard", () => {
     expect(screen.getByText("LEADING")).toBeInTheDocument();
     expect(screen.getByText("STANDBY")).toBeInTheDocument();
     expect(screen.getByText("REJECTED")).toBeInTheDocument();
-    expect(screen.getByText(/Round spend/i)).toBeInTheDocument();
-    expect(screen.getByText(/Mission spend/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Spend$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Blocked$/i)).toBeInTheDocument();
   });
 
-  it("shows an empty-state market when the active task has not accumulated contenders yet", () => {
+  it("keeps winner and standby context visible even when the active task changes", () => {
     render(
       <BidBoard
         bids={bids}
@@ -161,8 +161,9 @@ describe("BidBoard", () => {
       />
     );
 
-    expect(screen.getByText(/Competitive bidding, governed live/i)).toBeInTheDocument();
+    expect(screen.getByText(/Competing plans stay visible/i)).toBeInTheDocument();
     expect(screen.getByText(/^T3$/)).toBeInTheDocument();
-    expect(screen.getByText(/Strategies are forming for the next market move/i)).toBeInTheDocument();
+    expect(screen.getByText("LEADING")).toBeInTheDocument();
+    expect(screen.getByText("STANDBY")).toBeInTheDocument();
   });
 });

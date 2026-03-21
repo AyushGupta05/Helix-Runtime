@@ -225,7 +225,7 @@ test("streams live market and monte carlo updates with Civic auth prompts", asyn
   await expect(page.getByText(/Live Prompt/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Cancel/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /Live Market/i })).toBeVisible();
-  await expect(page.getByText(/Competitive bidding, governed live/i)).toBeVisible();
+  await expect(page.getByText(/Competing plans stay visible/i)).toBeVisible();
 
   await page.evaluate(() =>
     window.__emitMissionEvent(
@@ -342,7 +342,7 @@ test("streams live market and monte carlo updates with Civic auth prompts", asyn
 
   await expect(page.locator(".mission-intelligence-summary").getByText(/Bounded Monte Carlo simulation started\./i)).toBeVisible();
   await expect(page.locator(".ledger-list").getByText(/Paper rollout completed for bid-1\./i)).toBeVisible();
-  await expect(page.getByRole("link", { name: /Connect GitHub/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Connect GitHub/i }).first()).toBeVisible();
 });
 
 test("ticks elapsed time locally and keeps the compact workspace after reload", async ({ page }) => {
@@ -365,5 +365,5 @@ test("ticks elapsed time locally and keeps the compact workspace after reload", 
 
   await page.reload();
   await expect(page.getByText(/Live Prompt/i)).toBeVisible();
-  await expect(page.getByText(/Competitive bidding, governed live/i)).toBeVisible();
+  await expect(page.getByText(/Competing plans stay visible/i)).toBeVisible();
 });

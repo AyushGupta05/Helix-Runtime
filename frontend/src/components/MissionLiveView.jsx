@@ -4,7 +4,7 @@ import EventStrip from "./EventStrip";
 import MonteCarloPanel from "./MonteCarloPanel";
 import { formatCurrency, formatInteger, formatNumber } from "../lib/format";
 
-function liveSummaryCards(mission, selectedBid, usageSummary) {
+function liveSummaryCards(mission, selectedBid, usageSummary, latestProposalTrace) {
   const missionUsage = usageSummary?.mission ?? {};
   const contenderCount = mission?.bids?.length ?? 0;
   const civicActions = mission?.recent_civic_actions?.length ?? 0;
@@ -17,7 +17,11 @@ function liveSummaryCards(mission, selectedBid, usageSummary) {
     {
       label: "Active leader",
       value: selectedBid?.role ?? selectedBid?.strategy_family ?? "Awaiting winner",
-      detail: selectedBid?.search_summary ?? selectedBid?.mission_rationale ?? "Strategy board is still comparing contenders."
+      detail:
+        latestProposalTrace?.payload?.summary ??
+        selectedBid?.mission_rationale ??
+        selectedBid?.strategy_summary ??
+        "Strategy board is still comparing contenders."
     },
     {
       label: "Visible contenders",
@@ -65,7 +69,12 @@ export default function MissionLiveView({
   selectedBid,
   latestProposalTrace
 }) {
-  const summaryCards = liveSummaryCards(mission, selectedBid, usageSummary);
+  const summaryCards = liveSummaryCards(
+    mission,
+    selectedBid,
+    usageSummary,
+    latestProposalTrace
+  );
   const autonomy = autonomyStatus(mission);
 
   return (

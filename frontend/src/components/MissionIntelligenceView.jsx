@@ -91,8 +91,20 @@ function simulationEntries(mission, trace) {
   if (mission.simulation_activity?.length) {
     return mission.simulation_activity;
   }
-  return [...(mission.events ?? []), ...(trace ?? [])]
+  const keyedEntries = new Map();
+  [...(mission.events ?? []), ...(trace ?? [])]
     .filter((entry) => String(entry.event_type ?? entry.trace_type ?? "").startsWith("simulation."))
+    .forEach((entry) => {
+      const key = [
+        entry.event_type ?? entry.trace_type ?? "simulation",
+        entry.created_at ?? "",
+        entry.message ?? ""
+      ].join("|");
+      if (!keyedEntries.has(key)) {
+        keyedEntries.set(key, entry);
+      }
+    });
+  return [...keyedEntries.values()]
     .sort((left, right) => new Date(left.created_at ?? 0).getTime() - new Date(right.created_at ?? 0).getTime())
     .slice(-20);
 }
@@ -225,6 +237,16 @@ function SimulationSection({ mission, trace }) {
           {bids.length ? (
             bids.map((bid) => {
               const diagnostics = bid.search_diagnostics ?? {};
+              const success = diagnostics.success_rate ?? bid.score ?? bid.confidence ?? 0;
+              const rollback = diagnostics.rollback_rate ?? bid.risk ?? 0;
+              const capability =
+                diagnostics.capability_availability_probability ??
+                Math.max(0.2, 1 - Number(bid.policy_friction_score ?? 0) * 0.6);
+              const policy = diagnostics.policy_friction_cost ?? bid.policy_friction_score ?? 0;
+              const sampleCount =
+                diagnostics.sample_count ??
+                mission.simulation_summary?.monte_carlo_samples ??
+                0;
               return (
                 <article key={bid.bid_id} className="simulation-bid-card">
                   <div className="simulation-bid-head">
@@ -238,11 +260,11 @@ function SimulationSection({ mission, trace }) {
                     <span>Score {formatNumber(bid.score)}</span>
                     <span>Search {formatNumber(bid.search_score)}</span>
                     <span>Runtime {formatNumber(bid.estimated_runtime_seconds ?? 0, 0)}s</span>
-                    <span>Samples {formatInteger(diagnostics.sample_count ?? 0)}</span>
-                    <span>Success {formatNumber(diagnostics.success_rate ?? 0, 2)}</span>
-                    <span>Rollback {formatNumber(diagnostics.rollback_rate ?? 0, 2)}</span>
-                    <span>Capability {formatNumber(diagnostics.capability_availability_probability ?? 1, 2)}</span>
-                    <span>Policy {formatNumber(diagnostics.policy_friction_cost ?? 0, 2)}</span>
+                    <span>Samples {formatInteger(sampleCount)}</span>
+                    <span>Success {formatNumber(success, 2)}</span>
+                    <span>Rollback {formatNumber(rollback, 2)}</span>
+                    <span>Capability {formatNumber(capability, 2)}</span>
+                    <span>Policy {formatNumber(policy, 2)}</span>
                   </div>
                   <p>{bid.search_summary ?? bid.mission_rationale ?? bid.strategy_summary}</p>
                 </article>
@@ -447,7 +469,7 @@ function HistorySection({ history, onSelectMission }) {
       </div>
       <div className="history-comparison-list">
         {history.length ? (
-          history.map((item) => (
+          history.slice(0, 12).map((item) => (
             <button key={item.mission_id} className="history-compare-card" onClick={() => onSelectMission(item)} type="button">
               <div className="history-item-head">
                 <strong>{item.objective}</strong>
@@ -492,7 +514,7 @@ export default function MissionIntelligenceView({
       return;
     }
     const nextSection = sectionRefs.current[initialSection];
-    if (nextSection) {
+    if (nextSection && typeof nextSection.scrollIntoView === "function") {
       window.requestAnimationFrame(() => {
         nextSection.scrollIntoView({ behavior: "smooth", block: "start" });
       });
@@ -540,7 +562,7 @@ export default function MissionIntelligenceView({
 
   const jumpToSection = (sectionId) => {
     const target = sectionRefs.current[sectionId];
-    if (target) {
+    if (target && typeof target.scrollIntoView === "function") {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   };

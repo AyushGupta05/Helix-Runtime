@@ -70,6 +70,33 @@ def test_apply_edit_operations_raises_when_target_is_missing(tmp_path: Path) -> 
         )
 
 
+def test_apply_edit_operations_tolerates_whitespace_drift_in_target(tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    target = worktree / "calc.py"
+    target.write_text(
+        "def add(a, b):\n    total = a + b\n    return total\n",
+        encoding="utf-8",
+    )
+
+    toolset = LocalToolset(str(worktree))
+    touched = toolset.apply_edit_operations(
+        [
+            {
+                "type": "replace",
+                "path": "calc.py",
+                "target": "total = a + b\nreturn total",
+                "content": "total = a + b\n    return max(total, 0)",
+            }
+        ]
+    )
+
+    assert touched == ["calc.py"]
+    assert target.read_text(encoding="utf-8") == (
+        "def add(a, b):\n    total = a + b\n    return max(total, 0)\n"
+    )
+
+
 def test_apply_edit_operations_is_atomic_when_a_later_operation_fails(tmp_path: Path) -> None:
     worktree = tmp_path / "repo"
     worktree.mkdir()

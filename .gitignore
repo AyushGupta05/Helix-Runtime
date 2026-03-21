@@ -25,3 +25,4 @@ codex_pytest*/
 codex_pytest_cache/
 pytest-temp*/
 tmp*/
+.mcp.json
