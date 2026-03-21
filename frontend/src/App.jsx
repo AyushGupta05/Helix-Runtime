@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -13,14 +13,38 @@ import {
   resumeMission
 } from "./lib/api";
 import { useMissionStream } from "./lib/missionStream";
-import { relativeTime } from "./lib/format";
+import { formatInteger, relativeTime } from "./lib/format";
 import MissionComposer from "./components/MissionComposer";
 import MissionHistoryList from "./components/MissionHistoryList";
 import MissionHeader from "./components/MissionHeader";
 import BidBoard from "./components/BidBoard";
-import ArtifactsPanel from "./components/ArtifactsPanel";
 import EventStrip from "./components/EventStrip";
+import MissionIntelligenceView from "./components/MissionIntelligenceView";
+import MissionOutcomeView from "./components/MissionOutcomeView";
+import MissionLiveView from "./components/MissionLiveView";
 import StatusBadge from "./components/StatusBadge";
+
+const FEATURE_COLUMNS = [
+  {
+    title: "Understand",
+    copy: "Repo scan, constraints, validators, and operating boundaries stay visible from the first minute."
+  },
+  {
+    title: "Compete",
+    copy: "Provider-backed bids, simulation, governance, and standby strategies all stay in one live workspace."
+  },
+  {
+    title: "Deliver",
+    copy: "Outcome summaries, checkpoints, diff review, and confidence notes are ready for the repo owner."
+  }
+];
+
+function repoLabel(repoPath) {
+  const segments = String(repoPath || "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  return segments[segments.length - 1] ?? repoPath ?? "repo";
+}
 
 function HomePanel({
   activeMission,
@@ -38,16 +62,51 @@ function HomePanel({
 
   return (
     <div className="home-stack">
-      <section className="panel launcher-header">
-        <p className="eyebrow">Arbiter Mission Launcher</p>
-        <div className="launcher-title-row">
-          <h1>Launch with a prompt. Open a live room only when you choose to.</h1>
-          {activeMission ? <StatusBadge value={activeMission.outcome ?? activeMission.run_state} /> : null}
+      <section className="panel hero-panel">
+        <div className="brand-lockup">
+          <div className="brand-mark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div>
+            <p className="eyebrow">Helix Runtime</p>
+            <h1>Autonomous coding missions, governed execution, and simulation-driven decisions.</h1>
+            <p className="hero-copy">
+              Launch a mission, watch the live market evolve, and hand the repo owner a result page
+              that feels calm, reviewable, and trustworthy.
+            </p>
+          </div>
         </div>
-        <p className="launcher-copy">
-          The default state is idle. Arbiter should only move once a user submits an
-          objective, while any existing live mission stays visible but secondary.
-        </p>
+        <div className="hero-side">
+          <div className="hero-status-card">
+            <div className="hero-status-topline">
+              <span>Workspace status</span>
+              {activeMission ? <StatusBadge value={activeMission.outcome ?? activeMission.run_state} quiet /> : null}
+            </div>
+            <strong>{activeMission ? "A mission is live" : "Ready to launch"}</strong>
+            <p>
+              {activeMission
+                ? "The active run stays visible, but Helix does not take over your screen unless you open it."
+                : "No mission is active. Configure the repo and objective when you are ready."}
+            </p>
+            {activeMission ? (
+              <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
+                Open Live Workspace
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
+      <section className="home-feature-grid">
+        {FEATURE_COLUMNS.map((item) => (
+          <article key={item.title} className="panel feature-card">
+            <p className="eyebrow">How It Works</p>
+            <h2>{item.title}</h2>
+            <p>{item.copy}</p>
+          </article>
+        ))}
       </section>
 
       <div className="launcher-grid">
@@ -60,32 +119,29 @@ function HomePanel({
         />
 
         <div className="launcher-secondary">
-          <section className="panel-like launcher-active">
+          <section className="panel launcher-active">
             <div className="section-title">
-              <h2>{activeMission ? "Live Mission" : "Ready State"}</h2>
+              <h2>{activeMission ? "Current Mission" : "Mission Queue"}</h2>
               <p>
                 {activeMission
-                  ? "A live run exists, but it does not take over the screen unless you open it."
-                  : "No mission is active. Launch a new run from the left panel."}
+                  ? "Live work stays one click away while finished missions remain reviewable."
+                  : "Finished missions stay here for replay, audit, and comparison."}
               </p>
             </div>
             {activeMission ? (
-              <div className="launcher-active-card">
-                <div className="launcher-active-head">
+              <button className="active-mission-card" onClick={() => onOpenActiveMission(activeMission)}>
+                <div className="active-mission-head">
                   <strong>{activeMission.objective}</strong>
                   <StatusBadge value={activeMission.outcome ?? activeMission.run_state} quiet />
                 </div>
-                <div className="launcher-active-meta">
-                  <span>{activeMission.repo_path}</span>
+                <div className="active-mission-meta">
+                  <span>{repoLabel(activeMission.repo_path)}</span>
                   <span>{activeMission.branch_name ?? "branch pending"}</span>
                   <span>{relativeTime(activeMission.updated_at)}</span>
                 </div>
-                <button className="primary-button" onClick={() => onOpenActiveMission(activeMission)}>
-                  Open live room
-                </button>
-              </div>
+              </button>
             ) : (
-              <div className="history-empty">No mission is running in this process.</div>
+              <div className="history-empty">No live mission in this process.</div>
             )}
           </section>
 
@@ -103,6 +159,8 @@ function MissionRoute() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const missionQuery = useMissionStream(missionId, repo);
+  const [activeTab, setActiveTab] = useState("live");
+  const [intelligenceSection, setIntelligenceSection] = useState("overview");
 
   const controlMutation = useMutation({
     mutationFn: async (action) => {
@@ -123,6 +181,12 @@ function MissionRoute() {
     }
   });
 
+  const historyQuery = useQuery({
+    queryKey: ["missions", repo],
+    queryFn: () => getMissions(repo),
+    enabled: Boolean(repo)
+  });
+
   const traceQuery = useQuery({
     queryKey: ["mission-trace", repo, missionId],
     queryFn: () => getMissionTrace(missionId, repo),
@@ -141,8 +205,14 @@ function MissionRoute() {
     enabled: Boolean(missionId && repo)
   });
 
+  useEffect(() => {
+    if (missionQuery.data?.run_state === "finalized") {
+      setActiveTab((current) => (current === "outcome" ? current : "outcome"));
+    }
+  }, [missionQuery.data?.run_state]);
+
   if (missionQuery.isLoading) {
-    return <div className="empty-panel">Hydrating operator console...</div>;
+    return <div className="empty-panel">Hydrating the Helix mission workspace...</div>;
   }
 
   if (missionQuery.isError || !missionQuery.data) {
@@ -160,14 +230,17 @@ function MissionRoute() {
   const trace = traceQuery.data ?? mission.recent_trace ?? [];
   const diffState = diffQuery.data ?? { worktree_state: mission.worktree_state ?? {} };
   const usageSummary = usageQuery.data ?? mission.usage_summary ?? {};
-  const latestProposalTrace = [...trace].reverse().find((entry) => entry.trace_type === "proposal.selected");
   const selectedBid =
     mission.bids.find((bid) => bid.bid_id === mission.winner_bid_id) ??
     mission.bids.find((bid) => bid.selected) ??
     null;
-  const latestCheckpoint = mission.accepted_checkpoints?.length
-    ? mission.accepted_checkpoints[mission.accepted_checkpoints.length - 1]
-    : null;
+  const latestProposalTrace = [...trace].reverse().find((entry) => entry.trace_type === "proposal.selected");
+  const history = (historyQuery.data ?? []).filter((item) => item.mission_id !== mission.mission_id);
+
+  const handleOutcomeJump = (section) => {
+    setIntelligenceSection(section);
+    setActiveTab("intelligence");
+  };
 
   return (
     <div className="mission-room">
@@ -175,13 +248,21 @@ function MissionRoute() {
         mission={mission}
         usageSummary={usageSummary}
         busy={controlMutation.isPending}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
         onPause={() => controlMutation.mutate("pause")}
         onResume={() => controlMutation.mutate("resume")}
         onCancel={() => controlMutation.mutate("cancel")}
       />
 
-      <div className="market-layout">
-        <section className="panel panel-arena">
+      {activeTab === "live" ? (
+        <MissionLiveView
+          mission={mission}
+          trace={trace}
+          usageSummary={usageSummary}
+          selectedBid={selectedBid}
+          latestProposalTrace={latestProposalTrace}
+        >
           <BidBoard
             bids={mission.bids}
             winnerBidId={mission.winner_bid_id}
@@ -193,23 +274,36 @@ function MissionRoute() {
             biddingState={mission.bidding_state}
             usageSummary={usageSummary}
           />
-        </section>
+          <EventStrip mission={mission} events={mission.events} trace={trace} />
+        </MissionLiveView>
+      ) : null}
 
-        <aside className="side-rail">
-          <ArtifactsPanel
-            mission={mission}
-            diffState={diffState}
-            usageSummary={usageSummary}
-            selectedBid={selectedBid}
-            latestProposalTrace={latestProposalTrace}
-            latestCheckpoint={latestCheckpoint}
-          />
-        </aside>
-      </div>
+      {activeTab === "intelligence" ? (
+        <MissionIntelligenceView
+          mission={mission}
+          history={history}
+          trace={trace}
+          diffState={diffState}
+          usageSummary={usageSummary}
+          initialSection={intelligenceSection}
+          onSelectMission={(nextMission) =>
+            navigate(`/missions/${nextMission.mission_id}?repo=${encodeURIComponent(repo || nextMission.repo_path || "")}`)
+          }
+        />
+      ) : null}
 
-      <section className="panel panel-event-strip">
-        <EventStrip mission={mission} events={mission.events} trace={trace} />
-      </section>
+      {activeTab === "outcome" ? (
+        <MissionOutcomeView
+          mission={mission}
+          trace={trace}
+          diffState={diffState}
+          usageSummary={usageSummary}
+          selectedBid={selectedBid}
+          latestProposalTrace={latestProposalTrace}
+          onOpenIntelligence={handleOutcomeJump}
+          onOpenLiveMarket={() => setActiveTab("live")}
+        />
+      ) : null}
     </div>
   );
 }
