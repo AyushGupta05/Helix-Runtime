@@ -24,6 +24,7 @@ import StrategyBiddingScreen from "./components/StrategyBiddingScreen";
 import SimulationIntelligenceScreen from "./components/SimulationIntelligenceScreen";
 import OutcomeResultsScreen from "./components/OutcomeResultsScreen";
 import StatusBadge from "./components/StatusBadge";
+import { missionPullRequestUrl } from "./lib/pullRequest";
 
 const FEATURE_COLUMNS = [
   {
@@ -39,11 +40,6 @@ const FEATURE_COLUMNS = [
     copy: "Outcome summaries, checkpoints, diff review, and confidence notes are ready for the repo owner."
   }
 ];
-
-function missionPullRequestUrl(mission) {
-  const pullRequest = mission?.mission_output?.pull_request ?? mission?.pull_request ?? null;
-  return pullRequest?.html_url ?? pullRequest?.url ?? null;
-}
 
 function repoLabel(repoPath) {
   const segments = String(repoPath || "")

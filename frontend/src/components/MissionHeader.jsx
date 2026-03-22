@@ -1,5 +1,6 @@
 import StatusBadge from "./StatusBadge";
 import { formatRuntime, humanizeMissionStage } from "../lib/format";
+import { missionPullRequestUrl } from "../lib/pullRequest";
 import { useMissionElapsedSeconds } from "../lib/useMissionElapsed";
 
 const TABS = [
@@ -22,11 +23,6 @@ function findGithubAuthChallenge(mission) {
     actions.find((entry) => entry?.payload?.output_payload?.authorization_url) ??
     null
   );
-}
-
-function pullRequestUrlForMission(mission) {
-  const pullRequest = mission?.mission_output?.pull_request ?? mission?.pull_request ?? null;
-  return pullRequest?.html_url ?? pullRequest?.url ?? null;
 }
 
 export default function MissionHeader({
@@ -54,7 +50,7 @@ export default function MissionHeader({
     civicChallenge?.output_payload?.authorization_url ??
     civicChallenge?.payload?.output_payload?.authorization_url ??
     null;
-  const pullRequestUrl = pullRequestUrlForMission(mission);
+  const pullRequestUrl = missionPullRequestUrl(mission);
   const activeSkills = Array.isArray(mission.available_skills) ? mission.available_skills.length : 0;
   const metaItems = [
     repoLabel(mission.repo_path),

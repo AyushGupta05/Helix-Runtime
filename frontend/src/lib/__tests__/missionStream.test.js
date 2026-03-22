@@ -177,4 +177,47 @@ describe("normalizeIncomingBid", () => {
     expect(updated.bids[0].risk).toBe(0.18);
     expect(updated.bids[0].status).toBe("submitted");
   });
+
+  it("merges github publish skill output events into the live mission snapshot", () => {
+    const snapshot = {
+      mission_id: "mission-1",
+      run_state: "running",
+      active_phase: "finalize",
+      latest_event_id: 10,
+      events: [],
+      recent_trace: [],
+      tasks: [],
+      bids: [],
+      accepted_checkpoints: [],
+      worktree_state: {},
+      latest_diff_summary: "",
+      skill_outputs: {},
+      recent_civic_actions: []
+    };
+
+    const updated = mergeMissionEvent(snapshot, {
+      id: 11,
+      event_type: "civic.skill.github_publish",
+      created_at: "2026-03-22T06:18:39Z",
+      message: "Pull request opened from mission branch into main.",
+      payload: {
+        skill_output: {
+          published: true,
+          pull_request: {
+            result: [
+              {
+                type: "text",
+                text: "{\"url\":\"https://github.com/example/repo/pull/42\"}"
+              }
+            ]
+          }
+        }
+      }
+    });
+
+    expect(updated.skill_outputs.github_publish.published).toBe(true);
+    expect(updated.skill_outputs.github_publish.pull_request.result[0].text).toContain("/pull/42");
+    expect(updated.recent_civic_actions).toHaveLength(1);
+    expect(updated.recent_civic_actions[0].event_type).toBe("civic.skill.github_publish");
+  });
 });

@@ -261,3 +261,50 @@ def test_score_bid_prefers_broader_recovery_coverage_when_multiple_focus_areas_r
     )
 
     assert score_bid(broader_recovery, task=task, failure_context=failure) > score_bid(narrow_followup, task=task, failure_context=failure)
+
+
+def test_score_bid_penalizes_required_bugfixes_with_sandbox_preview_errors() -> None:
+    task = TaskNode(
+        task_id="T1",
+        title="Fix dashboard reliability",
+        task_type=TaskType.BUGFIX,
+        requirement_level=TaskRequirementLevel.REQUIRED,
+        success_criteria=SuccessCriteria(description="done"),
+        candidate_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+        ],
+    )
+    stable_bid = Bid(
+        bid_id="b-stable",
+        task_id="T1",
+        role="Test",
+        variant_id="test-base",
+        strategy_family="coverage-first",
+        strategy_summary="Create targeted regression tests and fixes.",
+        exact_action="edit file",
+        expected_benefit=0.8,
+        utility=0.82,
+        confidence=0.8,
+        risk=0.18,
+        cost=0.12,
+        estimated_runtime_seconds=45,
+        touched_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+        ],
+        rollback_plan="revert",
+        search_score=0.62,
+        search_summary="paper, partial | mc=40 mean=0.72 success=0.7 rollback=0.2 cap=1.0 policy=0.0",
+    )
+    brittle_bid = stable_bid.model_copy(
+        update={
+            "bid_id": "b-brittle",
+            "search_score": 0.74,
+            "search_summary": "paper, partial, sandbox:error | mc=40 mean=0.58 success=0.45 rollback=0.17 cap=1.0 policy=0.0",
+        }
+    )
+
+    assert score_bid(stable_bid, task=task) > score_bid(brittle_bid, task=task)

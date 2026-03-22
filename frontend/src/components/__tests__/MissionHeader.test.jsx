@@ -95,4 +95,44 @@ describe("MissionHeader", () => {
       "https://github.com/example/repo/pull/42"
     );
   });
+
+  it("shows an Open PR link when github publish data arrives as a governed result payload", () => {
+    render(
+      <MissionHeader
+        mission={{
+          mission_id: "abc123",
+          objective: "Fix tests",
+          repo_path: "C:\\repo",
+          run_state: "finalized",
+          active_phase: "finalize",
+          outcome: "success",
+          skill_outputs: {
+            github_publish: {
+              pull_request: {
+                result: [
+                  {
+                    type: "text",
+                    text: "{\"url\":\"https://github.com/example/repo/pull/99\"}"
+                  }
+                ]
+              }
+            }
+          },
+          civic_connection: {},
+          available_skills: ["github_publish"],
+          recent_civic_actions: []
+        }}
+        busy={false}
+        activeTab="outcome"
+        onTabChange={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("link", { name: /Open PR/i })).toHaveAttribute(
+      "href",
+      "https://github.com/example/repo/pull/99"
+    );
+  });
 });

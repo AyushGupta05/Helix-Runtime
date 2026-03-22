@@ -280,6 +280,34 @@ function createBidRecord(event) {
   };
 }
 
+function civicSkillOutputs(event, payload = {}) {
+  if (
+    payload.skill_outputs &&
+    typeof payload.skill_outputs === "object" &&
+    !Array.isArray(payload.skill_outputs)
+  ) {
+    return payload.skill_outputs;
+  }
+  const eventType = String(event?.event_type ?? "");
+  const skillId = payload.skill_id ?? (eventType.startsWith("civic.skill.") ? eventType.slice("civic.skill.".length) : null);
+  if (!skillId || payload.skill_output === undefined) {
+    return {};
+  }
+  return {
+    [skillId]: payload.skill_output
+  };
+}
+
+function mergeCivicSkillSnapshot(snapshot, event) {
+  const payload = event.payload ?? {};
+  const skillOutputs = civicSkillOutputs(event, payload);
+  return mergeCivicSnapshot(snapshot, {
+    ...payload,
+    ...(Object.keys(skillOutputs).length ? { skill_outputs: skillOutputs } : {}),
+    recent_civic_action: civicActionPayload(event)
+  });
+}
+
 function ensureBid(existingBids, event) {
   const nextBid = normalizeIncomingBid(event);
   if (!nextBid.bid_id) {
@@ -488,10 +516,7 @@ export function mergeMissionEvent(snapshot, event) {
     case "civic.skill.github_context":
       return {
         ...next,
-        ...mergeCivicSnapshot(snapshot, {
-          ...payload,
-          recent_civic_action: civicActionPayload(event)
-        }),
+        ...mergeCivicSkillSnapshot(snapshot, event),
         bids: updateBidCivicState(snapshot.bids ?? [], payload)
       };
     case "mission.paused":
@@ -806,6 +831,13 @@ export function mergeMissionEvent(snapshot, event) {
         worktree_state: payload.worktree_state ?? snapshot.worktree_state ?? {}
       };
     default:
+      if (String(event.event_type).startsWith("civic.skill.")) {
+        return {
+          ...next,
+          ...mergeCivicSkillSnapshot(snapshot, event),
+          bids: updateBidCivicState(snapshot.bids ?? [], payload)
+        };
+      }
       return next;
   }
 }
@@ -867,6 +899,11 @@ const HISTORY_REFRESH_EVENTS = new Set([
   "mission.cancelled",
   "mission.finalized",
   "checkpoint.accepted"
+]);
+
+const MISSION_REFRESH_EVENTS = new Set([
+  "mission.finalized",
+  "civic.skill.github_publish"
 ]);
 
 function traceEntryFromEvent(event) {
@@ -986,6 +1023,9 @@ export function useMissionStream(missionId, repo) {
           }
           if (HISTORY_REFRESH_EVENTS.has(event.event_type)) {
             scheduleInvalidation(["missions", repo], 900);
+          }
+          if (MISSION_REFRESH_EVENTS.has(event.event_type)) {
+            scheduleInvalidation(["mission", repo, missionId], 500);
           }
         },
         onError: () => {

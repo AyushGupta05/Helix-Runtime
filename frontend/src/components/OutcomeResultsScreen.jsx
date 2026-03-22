@@ -7,6 +7,7 @@ import {
   formatUsageCost,
   usageCostStatusDetail
 } from "../lib/format";
+import { missionPullRequestUrl } from "../lib/pullRequest";
 import { useMissionElapsedSeconds } from "../lib/useMissionElapsed";
 import "../styles/screens.css";
 
@@ -58,25 +59,6 @@ function researchContextSummary(mission) {
     sourceUrls: Array.isArray(knowledge.source_urls) ? knowledge.source_urls.filter(Boolean) : [],
     trusted: Boolean(knowledge?.provenance?.trusted)
   };
-}
-
-function reliabilityNotes(mission, bid, fileCount, passed, research) {
-  const notes = [
-    "Winner selected after simulation and validation",
-    bid?.provider ? `${bid.provider} context influenced the result` : "Provider context captured in mission trace",
-    fileCount
-      ? `${fileCount} file${fileCount === 1 ? "" : "s"} touched with bounded scope`
-      : "No widened file surface detected",
-    passed ? "No policy violations surfaced in execution" : "Validation requires follow-up review"
-  ];
-  if (research?.summary) {
-    notes.push(
-      `${research.trusted ? "Trusted" : "Governed"} research fed the winner prompts from ${research.sourceUrls.length} source${
-        research.sourceUrls.length === 1 ? "" : "s"
-      }.`
-    );
-  }
-  return notes;
 }
 
 function trustRows(mission, passed) {
@@ -148,20 +130,39 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
   const confidence = confidencePercent(selectedBid, mission);
   const missionTotals = usageSummary?.mission ?? { total_tokens: 0, total_cost: 0 };
   const spendDetail = usageCostStatusDetail(missionTotals);
-  const branchLabel = String(mission?.branch_name ?? "branch").split("/").pop();
+  const branchLabel = String(mission?.branch_name ?? "branch");
   const research = researchContextSummary(mission);
   const trust = trustRows(mission, passed);
   const governance = governanceRows(mission, research);
-  const notes = reliabilityNotes(mission, selectedBid, files.length, passed, research);
+  const pullRequestUrl = missionPullRequestUrl(mission);
+  const publishSummary =
+    mission?.skill_outputs?.github_publish?.summary ??
+    mission?.mission_output?.pull_request_summary ??
+    null;
+  const acceptedDiffSummary = mission?.mission_output?.accepted_diff_summary ?? null;
+  const resultHeading =
+    mission?.outcome === "success"
+      ? "Mission completed"
+      : `${selectedBid?.role ?? selectedBid?.strategy_family ?? "Mission result"} selected`;
   const summaryBullets = [
-    selectedBid
-      ? `${selectedBid.role ?? selectedBid.strategy_family} selected`
-      : "Winner strategy pending",
-    selectedBid?.mission_rationale ??
+    mission?.outcome === "success"
+      ? "Validated changes accepted and finalized."
+      : selectedBid
+        ? `${selectedBid.role ?? selectedBid.strategy_family} selected`
+        : "Winner strategy pending",
+    publishSummary ??
+      mission?.latest_diff_summary ??
+      selectedBid?.mission_rationale ??
       selectedBid?.search_summary ??
       "Execution rationale captured in mission trace.",
-    mission?.latest_diff_summary || "No diff summary available yet.",
-    research?.summary ? `Governed research: ${research.summary}` : "No governed research was required for this result."
+    mission?.latest_diff_summary ||
+      acceptedDiffSummary ||
+      "Validated diff recorded in the accepted checkpoint.",
+    pullRequestUrl
+      ? `Pull request ready: ${pullRequestUrl}`
+      : mission?.branch_name
+        ? `Managed branch ready: ${mission.branch_name}`
+        : "No publish target surfaced for this mission yet."
   ];
   const topbarItems = [
     { label: "Repo", value: repoLabel(mission?.repo_path) },
@@ -187,10 +188,6 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
               <strong>{item.value}</strong>
             </div>
           ))}
-        </div>
-        <div className="screen-ref-inline-toolbar" aria-hidden="true">
-          <span className="screen-ref-action-chip">Result</span>
-          <span className="screen-ref-action-chip">Diff</span>
         </div>
       </section>
 
@@ -245,18 +242,8 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
         </aside>
 
         <main className="panel screen-ref-result-main">
-          <nav className="screen-ref-tab-row" aria-label="Outcome sections">
-            <button type="button" className="is-active">
-              Result
-            </button>
-            <button type="button">Diff</button>
-            <button type="button">Validation</button>
-            <button type="button">Governance</button>
-            <button type="button">Recovery</button>
-          </nav>
-
           <div className="screen-ref-heading-block">
-            <h1>{selectedBid?.role ?? selectedBid?.strategy_family ?? "Mission result"} selected</h1>
+            <h1>{resultHeading}</h1>
           </div>
 
           <section className="screen-ref-main-section">
@@ -333,13 +320,23 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
 
           <section className="panel screen-ref-side-panel">
             <div className="section-title">
-              <h2>Why this result is reliable</h2>
+              <h2>GitHub</h2>
             </div>
-            <ul className="screen-ref-bullet-list">
-              {notes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
+            <div className="screen-ref-kv-list">
+              <div className="screen-ref-kv-row">
+                <span>Branch</span>
+                <strong>{mission?.branch_name ?? "Pending"}</strong>
+              </div>
+              <div className="screen-ref-kv-row">
+                <span>Pull request</span>
+                <strong>{pullRequestUrl ? "Ready" : "Not published"}</strong>
+              </div>
+            </div>
+            {pullRequestUrl ? (
+              <a className="primary-button" href={pullRequestUrl} target="_blank" rel="noreferrer">
+                Open PR
+              </a>
+            ) : null}
           </section>
         </aside>
       </div>

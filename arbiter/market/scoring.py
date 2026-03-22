@@ -85,6 +85,19 @@ def score_bid(bid: Bid, *, task: TaskNode | None = None, failure_context: Failur
     revocation = -0.05 * float(bid.revocation_risk_score or 0.0)
     # Reward strategies that articulate a mission-level rationale
     rationale_bonus = 0.04 if bid.mission_rationale and len(bid.mission_rationale) > 20 else 0.0
+    rollout_bonus = 0.0
+    rollout_summary = str(bid.search_summary or "").lower()
+    if "sandbox:error" in rollout_summary:
+        rollout_bonus -= 0.18
+    elif "sandbox:fail" in rollout_summary:
+        rollout_bonus -= 0.10
+    elif "sandbox:pass" in rollout_summary:
+        rollout_bonus += 0.05
+    if task is not None and task.required and task.task_type in {TaskType.BUGFIX, TaskType.TEST}:
+        if "sandbox:no_patch" in rollout_summary:
+            rollout_bonus -= 0.08
+        if "partial" in rollout_summary and ("sandbox:error" in rollout_summary or "sandbox:fail" in rollout_summary):
+            rollout_bonus -= 0.05
     touched = set(_normalize_paths(bid.touched_files))
     task_focus_bonus = 0.0
     task_focus = set()
@@ -120,4 +133,4 @@ def score_bid(bid: Bid, *, task: TaskNode | None = None, failure_context: Failur
             elif overlap <= 3:
                 recovery_bonus -= 0.05
 
-    return round(base + search + policy + capability + friction + revocation + rationale_bonus + task_focus_bonus + recovery_bonus, 4)
+    return round(base + search + policy + capability + friction + revocation + rationale_bonus + rollout_bonus + task_focus_bonus + recovery_bonus, 4)
