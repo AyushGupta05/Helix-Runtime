@@ -242,11 +242,12 @@ class GoalDecomposer:
                     )
                 return None
 
+        candidates: list[DecompositionCandidate] = []
         for provider in ordered_providers:
             candidate = run_provider(provider)
             if candidate is not None:
-                return [candidate]
-        return []
+                candidates.append(candidate)
+        return candidates
 
     def _heuristic_decompose(self, objective: str, snapshot: RepoSnapshot) -> list[TaskNode]:
         objective_lower = objective.lower()

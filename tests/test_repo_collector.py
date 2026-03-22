@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
 import subprocess
 from pathlib import Path
 
-from arbiter.repo.collector import RepoStateCollector
+from arbiter.repo.collector import RepoStateCollector, _command_in_subdir
 
 
 def test_detects_python_repo(python_bug_repo) -> None:
@@ -19,6 +20,34 @@ def test_detects_supported_single_package_ts_repo(ts_repo) -> None:
     assert snapshot.capabilities.is_single_package_tsjs is True
     expected_pm = "npm.cmd" if sys.platform.startswith("win") else "npm"
     assert snapshot.capabilities.test_commands == [[expected_pm, "run", "test"]]
+
+
+def test_detects_split_backend_frontend_commands(tmp_path: Path) -> None:
+    repo = tmp_path / "split_repo"
+    repo.mkdir()
+    (repo / "backend" / "tests").mkdir(parents=True)
+    (repo / "backend" / "tests" / "test_api.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (repo / "frontend").mkdir()
+    (repo / "frontend" / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "frontend",
+                "scripts": {
+                    "test": "vitest run",
+                    "build": "vite build",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = RepoStateCollector(str(repo)).collect(run_commands=False)
+    expected_pm = "npm.cmd" if sys.platform.startswith("win") else "npm"
+
+    assert snapshot.capabilities.runtime == "python"
+    assert snapshot.capabilities.test_commands[0] == _command_in_subdir("backend", [sys.executable, "-m", "pytest"])
+    assert [expected_pm, "--prefix", "frontend", "run", "test"] in snapshot.capabilities.test_commands
+    assert [expected_pm, "--prefix", "frontend", "run", "build"] in snapshot.capabilities.static_commands
 
 
 def test_skips_heavy_ignored_directories_in_scan(tmp_path: Path) -> None:

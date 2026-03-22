@@ -127,4 +127,54 @@ describe("normalizeIncomingBid", () => {
     expect(reconciled.events).toHaveLength(1);
     expect(reconciled.events[0].event_type).toBe("recovery.round_opened");
   });
+
+  it("preserves bid details when later stream events only carry status updates", () => {
+    const snapshot = {
+      mission_id: "mission-1",
+      run_state: "running",
+      active_phase: "strategize",
+      latest_event_id: 1,
+      events: [],
+      recent_trace: [],
+      tasks: [],
+      bids: [
+        {
+          bid_id: "bid-1",
+          task_id: "T1",
+          role: "Safe",
+          provider: "anthropic",
+          model_id: "claude-haiku",
+          strategy_summary: "Keep the patch narrowly scoped.",
+          confidence: 0.82,
+          risk: 0.18,
+          status: "generated",
+          selected: false,
+          standby: false
+        }
+      ],
+      accepted_checkpoints: [],
+      worktree_state: {},
+      latest_diff_summary: ""
+    };
+
+    const updated = mergeMissionEvent(snapshot, {
+      id: 2,
+      event_type: "bid.submitted",
+      created_at: "2026-03-21T10:00:02Z",
+      message: "Bid submitted.",
+      payload: {
+        bid_id: "bid-1",
+        task_id: "T1",
+        status: "submitted"
+      }
+    });
+
+    expect(updated.bids).toHaveLength(1);
+    expect(updated.bids[0].provider).toBe("anthropic");
+    expect(updated.bids[0].model_id).toBe("claude-haiku");
+    expect(updated.bids[0].strategy_summary).toBe("Keep the patch narrowly scoped.");
+    expect(updated.bids[0].confidence).toBe(0.82);
+    expect(updated.bids[0].risk).toBe(0.18);
+    expect(updated.bids[0].status).toBe("submitted");
+  });
 });

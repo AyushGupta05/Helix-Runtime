@@ -48,6 +48,35 @@ def test_openai_router_uses_request_timeout(monkeypatch, tmp_path: Path) -> None
     assert "timeout" not in captured
 
 
+def test_openai_proposal_router_uses_low_reasoning_verbosity(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class _DummyOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_openai",
+        types.SimpleNamespace(ChatOpenAI=_DummyOpenAI),
+    )
+
+    replay = _replay_manager(tmp_path)
+    try:
+        config = RuntimeConfig(
+            MODEL_PROVIDER="openai",
+            OPENAI_API_KEY="test-openai-key",
+        )
+
+        router = ProviderModelRouter(config, replay)
+        router._get_model("proposal_gen.openai")
+    finally:
+        replay.store.close()
+
+    assert captured["reasoning"] == {"effort": "low", "summary": "concise"}
+    assert captured["verbosity"] == "low"
+
+
 def test_anthropic_router_uses_default_request_timeout(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 

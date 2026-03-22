@@ -153,7 +153,7 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
           areaPath: curvePath(diagnostics.success, diagnostics.spread, phaseShift),
           linePath: linePath(diagnostics.success, diagnostics.spread, phaseShift),
           color: CURVE_COLORS[index % CURVE_COLORS.length],
-          gradientId: `console-mc-gradient-${bid.bid_id}`,
+          gradientId: `screen-ref-gradient-${bid.bid_id}`,
           winner: bid.bid_id === activeWinner?.bid_id
         };
       }),
@@ -185,17 +185,25 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
     );
 
   return (
-    <section className="console-mc-panel">
-      <div className="console-mc-head">
-        <span className="console-mc-flag">Governed simulation active</span>
-        <span className="console-mc-flag muted">
+    <section className="panel screen-ref-chart-panel">
+      <div className="section-title">
+        <h2>Dynamic Simulation Graph</h2>
+        <p>The chart stays live and animated, but it now occupies the reference’s central focus area.</p>
+      </div>
+
+      <div className="screen-ref-chip-row">
+        <span className="screen-ref-data-chip">Governed simulation active</span>
+        <span className="screen-ref-data-chip">
           Frontier gap {formatNumber(simulationSummary.frontier_gap ?? 0, 3)}
+        </span>
+        <span className="screen-ref-data-chip">
+          Search mode {String(simulationSummary.search_mode ?? "bounded_monte_carlo").replace(/_/g, " ")}
         </span>
       </div>
 
-      <div className="console-mc-plot">
+      <div className="screen-ref-chart-shell">
         <svg
-          className="console-mc-svg"
+          className="screen-ref-chart-svg"
           viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
           role="img"
           aria-label="Real-time Monte Carlo distribution plot"
@@ -203,13 +211,13 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
           <defs>
             {rows.map((row) => (
               <linearGradient key={row.gradientId} id={row.gradientId} x1="0%" x2="100%" y1="0%" y2="100%">
-                <stop offset="0%" stopColor={row.color} stopOpacity="0.7" />
-                <stop offset="100%" stopColor={row.color} stopOpacity="0.06" />
+                <stop offset="0%" stopColor={row.color} stopOpacity="0.72" />
+                <stop offset="100%" stopColor={row.color} stopOpacity="0.08" />
               </linearGradient>
             ))}
           </defs>
 
-          <g className="console-mc-grid">
+          <g className="screen-ref-chart-grid">
             {[0, 0.2, 0.4, 0.6, 0.8, 1].map((ratio) => (
               <line key={`x-${ratio}`} x1={ratio * VIEWBOX_WIDTH} x2={ratio * VIEWBOX_WIDTH} y1="8" y2={VIEWBOX_HEIGHT - 26} />
             ))}
@@ -218,11 +226,11 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
             ))}
           </g>
 
-          <g className="console-mc-particles">
+          <g className="screen-ref-chart-particles">
             {particles.map((particle) => (
               <circle
                 key={particle.id}
-                className="console-mc-particle"
+                className="screen-ref-chart-particle"
                 cx={particle.x}
                 cy={particle.y}
                 r={particle.r}
@@ -236,7 +244,7 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
             ))}
           </g>
 
-          <g className="console-mc-curves">
+          <g className="screen-ref-chart-curves">
             {rows.map((row) => (
               <g key={row.bid.bid_id}>
                 <path d={row.areaPath} fill={`url(#${row.gradientId})`} />
@@ -245,7 +253,7 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
                   fill="none"
                   stroke={row.color}
                   strokeWidth={row.winner ? 3.2 : 2}
-                  opacity={row.winner ? 1 : 0.8}
+                  opacity={row.winner ? 1 : 0.82}
                 />
               </g>
             ))}
@@ -253,7 +261,7 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
 
           {winnerX !== null ? (
             <line
-              className="console-mc-crosshair"
+              className="screen-ref-chart-crosshair"
               x1={winnerX}
               x2={winnerX}
               y1="12"
@@ -263,7 +271,7 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
         </svg>
       </div>
 
-      <div className="console-mc-axis-labels" aria-hidden="true">
+      <div className="screen-ref-chart-axis" aria-hidden="true">
         <span>20</span>
         <span>40</span>
         <span>60</span>
@@ -273,20 +281,18 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
         <span>120</span>
       </div>
 
-      <div className="console-mc-replay">
-        <button type="button" className="console-mc-replay-button">
-          Replay Simulation
-        </button>
-        <div className="console-mc-stepper" aria-label="Simulation rounds">
+      <div className="screen-ref-chart-replay">
+        <span className="screen-ref-action-chip is-active">Replay simulation</span>
+        <div className="screen-ref-chart-stepper" aria-label="Simulation rounds">
           {Array.from({ length: 10 }, (_, index) => index + 1).map((step) => (
-            <span key={step} className={step === activeStep ? "active" : ""}>
+            <span key={step} className={step === activeStep ? "is-active" : ""}>
               {step}
             </span>
           ))}
         </div>
       </div>
 
-      <div className="console-mc-metrics">
+      <div className="screen-ref-chart-metrics">
         {winnerDiagnostics ? (
           <>
             <span>Winner {activeWinner?.role ?? activeWinner?.strategy_family}</span>

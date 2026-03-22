@@ -238,6 +238,79 @@ def test_generate_edit_proposal_uses_execution_timeout_for_real_edits() -> None:
     assert captured["timeout"] == 23.0
 
 
+def test_generate_edit_proposal_retries_with_compact_prompt_after_unusable_payload() -> None:
+    captured_prompts: list[str] = []
+    lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
+
+    class _Router:
+        def __init__(self) -> None:
+            self.replay = SimpleNamespace(mode="off")
+            self.config = SimpleNamespace(
+                enabled_providers=["openai"],
+                default_provider="openai",
+                preview_request_timeout_seconds=11.0,
+                proposal_request_timeout_seconds=23.0,
+                model_lanes={"proposal_gen": lane_config, "proposal_gen.openai": lane_config},
+            )
+            self.invocations = 0
+
+        def invoke(
+            self,
+            lane: str,
+            prompt: dict[str, str],
+            *,
+            request_timeout_seconds: float | None = None,
+        ):
+            del lane, request_timeout_seconds
+            from arbiter.agents.backend import ModelInvocationResult
+
+            self.invocations += 1
+            captured_prompts.append(prompt["user"])
+            if self.invocations == 1:
+                content = json.dumps([{"id": "rs_1", "summary": [], "type": "reasoning"}])
+            else:
+                content = json.dumps(
+                    {
+                        "summary": "Apply a compact retry patch.",
+                        "operations": [
+                            {
+                                "type": "replace",
+                                "path": "calc.py",
+                                "target": "return a - b",
+                                "content": "return a + b",
+                            }
+                        ],
+                        "notes": ["compact_retry"],
+                    }
+                )
+            return ModelInvocationResult(
+                content=content,
+                provider="openai",
+                model_id="gpt-5-mini",
+                lane="proposal_gen.openai",
+                prompt_preview=prompt["user"],
+                response_preview=content,
+                token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                cost_usage={"usd": 0.001},
+            )
+
+    router = _Router()
+    backend = DefaultStrategyBackend(router)
+
+    proposal, invocation = backend.generate_edit_proposal(
+        task=_task(),
+        bid=_bid(provider="openai"),
+        mission_objective="Fix failing tests",
+        candidate_files=_candidate_files(),
+        preview=False,
+    )
+
+    assert router.invocations == 2
+    assert proposal.operations[0].path == "calc.py"
+    assert invocation.provider == "openai"
+    assert "Retry requirement:" in captured_prompts[-1]
+
+
 def test_generate_edit_proposal_includes_governed_research_context_in_prompt() -> None:
     captured: dict[str, object] = {}
     lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)

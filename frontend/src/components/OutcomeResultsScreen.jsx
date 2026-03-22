@@ -63,11 +63,11 @@ function researchContextSummary(mission) {
 function reliabilityNotes(mission, bid, fileCount, passed, research) {
   const notes = [
     "Winner selected after simulation and validation",
-    bid?.provider ? `${bid.provider} context influenced fix` : "Provider context captured in mission trace",
+    bid?.provider ? `${bid.provider} context influenced the result` : "Provider context captured in mission trace",
     fileCount
       ? `${fileCount} file${fileCount === 1 ? "" : "s"} touched with bounded scope`
       : "No widened file surface detected",
-    passed ? "No policy violations in execution" : "Validation requires follow-up review"
+    passed ? "No policy violations surfaced in execution" : "Validation requires follow-up review"
   ];
   if (research?.summary) {
     notes.push(
@@ -84,12 +84,12 @@ function trustRows(mission, passed) {
   const fallbackUnused =
     !String(mission?.bidding_state?.generation_mode ?? "").includes("deterministic_fallback");
   return [
-    { label: "Tests Passed", state: passed ? "ok" : "warn" },
-    { label: "No Regression", state: noRegression ? "ok" : "warn" },
+    { label: "Tests passed", state: passed ? "ok" : "warn" },
+    { label: "No regression", state: noRegression ? "ok" : "warn" },
     {
       label: "Fallback",
       state: fallbackUnused ? "ok" : "warn",
-      detail: fallbackUnused ? "Not Used" : "Used"
+      detail: fallbackUnused ? "Not used" : "Used"
     }
   ];
 }
@@ -109,19 +109,19 @@ function governanceRows(mission, research) {
       value: String(mission?.civic_connection?.status ?? "idle").replace(/[_-]/g, " ")
     },
     {
-      label: "Skills Used",
+      label: "Skills used",
       value: (mission?.available_skills ?? []).join(", ") || "None"
     },
     {
-      label: "Governed Actions",
+      label: "Governed actions",
       value: formatInteger((mission?.recent_civic_actions ?? []).length)
     },
     {
-      label: "Top Bids Reviewed",
+      label: "Top bids reviewed",
       value: formatInteger(reviewedBidCount)
     },
     {
-      label: "Winner Envelope",
+      label: "Winner envelope",
       value: winnerEnvelope?.status ?? "Approved"
     },
     {
@@ -163,87 +163,90 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
     mission?.latest_diff_summary || "No diff summary available yet.",
     research?.summary ? `Governed research: ${research.summary}` : "No governed research was required for this result."
   ];
+  const topbarItems = [
+    { label: "Repo", value: repoLabel(mission?.repo_path) },
+    { label: "Objective", value: mission?.objective ?? "Mission objective pending" },
+    { label: "Status", value: mission?.outcome ?? mission?.run_state ?? "pending" }
+  ];
+  const summaryItems = [
+    { label: "Duration", value: formatRuntime(elapsedSeconds) },
+    { label: "Spend", value: formatInteger(missionTotals.total_tokens ?? 0), suffix: "tokens" },
+    { label: "Cost", value: formatUsageCost(missionTotals) },
+    spendDetail ? { label: "Billing", value: spendDetail } : null,
+    { label: "Validation", value: passed ? "Passed" : "Needs review" },
+    { label: "Branch", value: branchLabel }
+  ].filter(Boolean);
 
   return (
-    <section className="console-screen console-screen-outcome panel">
-      <header className="console-topbar console-topbar-outcome">
-        <div className="console-topbar-group">
-          <span>Repo: {repoLabel(mission?.repo_path)}</span>
-          <span>Objective: {mission?.objective ?? "Mission objective pending"}</span>
-          <span>Status: {mission?.outcome ?? mission?.run_state ?? "pending"}</span>
-        </div>
-        <div className="console-result-topicons" aria-hidden="true">
-          <span />
-          <span />
-        </div>
-      </header>
-
-      <div className="console-result-summarybar">
-        <span>
-          Repo: <strong>{repoLabel(mission?.repo_path)}</strong>
-        </span>
-        <span>
-          Status: <strong>{mission?.outcome ?? mission?.run_state ?? "pending"}</strong>
-        </span>
-        <span>
-          Duration: <strong>{formatRuntime(elapsedSeconds)}</strong>
-        </span>
-        <span>
-          Spend: <strong>{formatInteger(missionTotals.total_tokens ?? 0)} tokens</strong>
-        </span>
-        <span>
-          Cost: <strong>{formatUsageCost(missionTotals)}</strong>
-        </span>
-        {spendDetail ? (
-          <span>
-            Billing: <strong>{spendDetail}</strong>
-          </span>
-        ) : null}
-        <span>
-          Files: <strong>{passed ? "Passed" : "Needs review"}</strong>
-        </span>
-        <span>
-          Branch: <strong>{branchLabel}</strong>
-        </span>
-      </div>
-
-      <div className="console-result-grid">
-        <aside className="console-result-left panel-like">
-          <div className="console-result-nav-section">
-            <h3>Mission</h3>
-            <div className="console-nav-item active">
-              <span className="console-nav-dot" /> Current Mission
+    <div className="workspace-view screen-ref screen-ref-three">
+      <section className="panel screen-ref-topbar">
+        <div className="screen-ref-topbar-items">
+          {topbarItems.map((item) => (
+            <div key={item.label} className="screen-ref-topbar-item">
+              <span className="screen-ref-topbar-label">{item.label}</span>
+              <strong>{item.value}</strong>
             </div>
-            <div className="console-nav-item">
-              <span className="console-nav-dot" /> Past Missions
+          ))}
+        </div>
+        <div className="screen-ref-inline-toolbar" aria-hidden="true">
+          <span className="screen-ref-action-chip">Result</span>
+          <span className="screen-ref-action-chip">Diff</span>
+        </div>
+      </section>
+
+      <section className="panel screen-ref-summary-strip">
+        <div className="screen-ref-summary-grid">
+          {summaryItems.map((item) => (
+            <article key={item.label} className="screen-ref-summary-card">
+              <span className="screen-ref-topbar-label">{item.label}</span>
+              <strong>
+                {item.value}
+                {item.suffix ? ` ${item.suffix}` : ""}
+              </strong>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <div className="screen-ref-three-grid">
+        <aside className="panel screen-ref-nav-panel">
+          <div className="screen-ref-nav-section">
+            <h2>Mission</h2>
+            <div className="screen-ref-nav-item is-active">
+              <span className="screen-ref-nav-dot" /> Current Mission
+            </div>
+            <div className="screen-ref-nav-item">
+              <span className="screen-ref-nav-dot" /> Past Missions
             </div>
           </div>
-          <div className="console-result-nav-section">
-            <h3>Structure</h3>
-            <div className="console-nav-item">
-              <span className="console-nav-dot" /> Checkpoints
+
+          <div className="screen-ref-nav-section">
+            <h2>Structure</h2>
+            <div className="screen-ref-nav-item">
+              <span className="screen-ref-nav-dot" /> Checkpoints
             </div>
-            <div className="console-nav-item">
-              <span className="console-nav-dot" /> Changed Files
+            <div className="screen-ref-nav-item">
+              <span className="screen-ref-nav-dot" /> Changed Files
             </div>
-            <div className="console-nav-item active">
-              <span className="console-nav-dot" /> Validation
+            <div className="screen-ref-nav-item is-active">
+              <span className="screen-ref-nav-dot" /> Validation
             </div>
           </div>
-          <div className="console-result-nav-section">
-            <h3>Governance</h3>
-            <div className="console-nav-item">
-              <span className="console-nav-dot" /> Civic Evidence
+
+          <div className="screen-ref-nav-section">
+            <h2>Governance</h2>
+            <div className="screen-ref-nav-item">
+              <span className="screen-ref-nav-dot" /> Civic Evidence
             </div>
-            <div className="console-nav-item">
-              <span className="console-nav-dot" /> Recovery Log
+            <div className="screen-ref-nav-item">
+              <span className="screen-ref-nav-dot" /> Recovery Log
             </div>
           </div>
         </aside>
 
-        <main className="console-result-main panel-like">
-          <nav className="console-result-tabs">
-            <button type="button" className="active">
+        <main className="panel screen-ref-result-main">
+          <nav className="screen-ref-tab-row" aria-label="Outcome sections">
+            <button type="button" className="is-active">
               Result
             </button>
             <button type="button">Diff</button>
@@ -252,14 +255,12 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
             <button type="button">Recovery</button>
           </nav>
 
-          <div className="console-result-main-heading">
-            <h1>
-              {selectedBid?.role ?? selectedBid?.strategy_family ?? "Mission result"} selected
-            </h1>
+          <div className="screen-ref-heading-block">
+            <h1>{selectedBid?.role ?? selectedBid?.strategy_family ?? "Mission result"} selected</h1>
             <p>Result keeps the decision path, changed files, and trust evidence in one pane.</p>
           </div>
 
-          <section className="console-outcome-summary">
+          <section className="screen-ref-main-section">
             <h2>Outcome Summary</h2>
             <ul>
               {summaryBullets.map((item) => (
@@ -268,7 +269,7 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
             </ul>
           </section>
 
-          <section className="console-outcome-summary">
+          <section className="screen-ref-main-section">
             <h2>Files Touched</h2>
             {files.length ? (
               <ul>
@@ -277,11 +278,11 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
                 ))}
               </ul>
             ) : (
-              <p>No changed files surfaced in current snapshot.</p>
+              <p>No changed files surfaced in the current snapshot.</p>
             )}
           </section>
 
-          <section className="console-outcome-summary">
+          <section className="screen-ref-main-section">
             <h2>Impact</h2>
             <p>
               {files.length <= 3
@@ -290,7 +291,7 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
             </p>
           </section>
 
-          <section className="console-outcome-summary">
+          <section className="screen-ref-main-section">
             <h2>Remaining Risk</h2>
             <p>
               {passed
@@ -300,35 +301,42 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
           </section>
         </main>
 
-        <aside className="console-result-right">
-          <section className="panel-like console-result-card">
-            <h3>Trust</h3>
-            {trust.map((item) => (
-              <div key={item.label} className={`console-status-row ${item.state}`}>
-                <span className={`console-status-symbol ${item.state}`}>
-                  {item.state === "ok" ? "OK" : "!"}
-                </span>
-                <span className="console-status-dot" />
-                <span>{item.label}</span>
-                <strong>{item.detail ?? (item.state === "ok" ? "OK" : "Watch")}</strong>
-              </div>
-            ))}
-            <p className="console-confidence-line">Confidence: {confidence}%</p>
+        <aside className="screen-ref-three-side">
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
+              <h2>Trust</h2>
+            </div>
+            <div className="screen-ref-status-list">
+              {trust.map((item) => (
+                <div key={item.label} className={`screen-ref-status-row is-${item.state}`}>
+                  <span className="screen-ref-status-dot" />
+                  <span>{item.label}</span>
+                  <strong>{item.detail ?? (item.state === "ok" ? "OK" : "Watch")}</strong>
+                </div>
+              ))}
+            </div>
+            <p className="screen-ref-confidence">Confidence {confidence}%</p>
           </section>
 
-          <section className="panel-like console-result-card">
-            <h3>Governance</h3>
-            {governance.map((row) => (
-              <div key={row.label} className="console-kv-row">
-                <span>{row.label}</span>
-                <strong>{row.value}</strong>
-              </div>
-            ))}
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
+              <h2>Governance</h2>
+            </div>
+            <div className="screen-ref-kv-list">
+              {governance.map((row) => (
+                <div key={row.label} className="screen-ref-kv-row">
+                  <span>{row.label}</span>
+                  <strong>{row.value}</strong>
+                </div>
+              ))}
+            </div>
           </section>
 
-          <section className="panel-like console-result-card">
-            <h3>Why this result is reliable</h3>
-            <ul>
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
+              <h2>Why this result is reliable</h2>
+            </div>
+            <ul className="screen-ref-bullet-list">
               {notes.map((note) => (
                 <li key={note}>{note}</li>
               ))}
@@ -336,6 +344,6 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
           </section>
         </aside>
       </div>
-    </section>
+    </div>
   );
 });

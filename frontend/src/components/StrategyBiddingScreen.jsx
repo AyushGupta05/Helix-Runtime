@@ -63,15 +63,15 @@ function tokenUsageTotal(bid) {
 
 function bidStatus(bid, winnerBidId, standbyBidId) {
   if (bid.bid_id === winnerBidId) {
-    return { label: "LEADING", tone: "leading" };
+    return { label: "Leading", tone: "leading" };
   }
   if (bid.bid_id === standbyBidId) {
-    return { label: "STANDBY", tone: "standby" };
+    return { label: "Standby", tone: "standby" };
   }
   if (bid.rejection_reason) {
-    return { label: "BLOCKED", tone: "blocked" };
+    return { label: "Blocked", tone: "blocked" };
   }
-  return { label: "COMPETING", tone: "competing" };
+  return { label: "Competing", tone: "competing" };
 }
 
 function eventTone(eventType) {
@@ -141,26 +141,28 @@ function winnerEnvelopeRows(mission, winnerBidId, reviewedBids, research) {
   const reviewTarget = Math.min(3, Math.max(reviewedBids.length, (mission?.bids ?? []).length));
   return [
     {
-      label: "Top 3 Reviewed",
-      state: reviewedBids.length > 0,
+      label: "Top 3 reviewed",
+      state: reviewedBids.length > 0 ? "ok" : "warn",
       detail:
         reviewTarget > 0
           ? `${formatInteger(reviewedBids.length)} of ${formatInteger(reviewTarget)} bids screened by Civic`
           : "Waiting for the first review set"
     },
     {
-      label: "Winner Status",
-      state: !String(policyState).includes("block"),
+      label: "Winner status",
+      state: !String(policyState).includes("block") ? "ok" : "danger",
       detail: String(policyState).replace(/[_-]/g, " ")
     },
     {
-      label: "Winner Constraints",
-      state: !constraints.some((item) => String(item).includes("missing_") || String(item).includes("unavailable")),
+      label: "Winner constraints",
+      state: !constraints.some((item) => String(item).includes("missing_") || String(item).includes("unavailable"))
+        ? "ok"
+        : "warn",
       detail: constraints.length ? constraints.join(", ") : "No extra constraints"
     },
     {
       label: "Research",
-      state: Boolean(research),
+      state: research ? "ok" : "neutral",
       detail: research
         ? `${formatInteger(research.sourceUrls.length)} sources across ${formatInteger(research.queries.length)} queries`
         : "No governed research used"
@@ -230,45 +232,49 @@ export default React.memo(function StrategyBiddingScreen({
   const research = useMemo(() => researchContextSummary(mission), [mission]);
   const envelopeRows = winnerEnvelopeRows(mission, winnerBidId, reviewedBids, research);
   const policyRows = policyImpactRows(rankedBids, mission, reviewedBids, research);
+  const topbarItems = [
+    { label: "Repo", value: repoLabel(mission?.repo_path) },
+    { label: "Objective", value: mission?.objective ?? "Mission objective pending" },
+    { label: "Status", value: String(mission?.run_state ?? "idle").replace(/[_-]/g, " ") },
+    { label: "Phase", value: humanizePhase(activePhase) },
+    { label: "Elapsed", value: formatRuntime(elapsedSeconds) },
+    { label: "Spend", value: formatUsageCost(missionUsage) },
+    { label: "Tokens", value: formatInteger(missionTokens) },
+    spendDetail ? { label: "Billing", value: spendDetail } : null
+  ].filter(Boolean);
 
   return (
-    <section className="console-screen console-screen-bidding panel">
-      <header className="console-topbar">
-        <div className="console-topbar-group">
-          <span>Repo: {repoLabel(mission?.repo_path)}</span>
-          <span>Objective: {mission?.objective ?? "Mission objective pending"}</span>
-          <span>Status: {String(mission?.run_state ?? "idle")}</span>
-          <span>Phase: {humanizePhase(activePhase)}</span>
-          <span>Elapsed: {formatRuntime(elapsedSeconds)}</span>
-          <span>Top 3 Civic Review: {formatInteger(reviewedBids.length)}</span>
-          <span>Spend: {formatUsageCost(missionUsage)}</span>
-          {spendDetail ? <span>{spendDetail}</span> : null}
+    <div className="workspace-view screen-ref screen-ref-one">
+      <section className="panel screen-ref-topbar">
+        <div className="screen-ref-topbar-items">
+          {topbarItems.map((item) => (
+            <div key={item.label} className="screen-ref-topbar-item">
+              <span className="screen-ref-topbar-label">{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
         </div>
-        <div className="console-topbar-controls" aria-hidden="true">
-          <button type="button" className="console-control-button" disabled tabIndex={-1}>
-            Pause
-          </button>
-          <button
-            type="button"
-            className="console-control-button console-control-danger"
-            disabled
-            tabIndex={-1}
-          >
-            Cancel
-          </button>
+        <div className="screen-ref-topbar-actions" aria-hidden="true">
+          <span className="screen-ref-action-chip">Pause</span>
+          <span className="screen-ref-action-chip screen-ref-action-chip-danger">Cancel</span>
         </div>
-      </header>
+      </section>
 
-      <div className="console-bidding-grid">
-        <section className="console-panel-frame">
-          <div className="console-panel-header console-panel-header-with-tools">
-            <h2>Strategy Bidding Board</h2>
-            <div className="console-header-tools" aria-hidden="true">
-              <span>III</span>
-              <span>II</span>
+      <div className="screen-ref-one-grid">
+        <section className="panel screen-ref-main">
+          <div className="screen-ref-main-head">
+            <div className="section-title">
+              <p className="eyebrow">Screen 1</p>
+              <h2>Strategy Bidding Board</h2>
+              <p>All live contenders stay visible, but the hierarchy now follows the board-first layout from the reference.</p>
+            </div>
+            <div className="screen-ref-view-switch" aria-hidden="true">
+              <span className="screen-ref-view-pill">List</span>
+              <span className="screen-ref-view-pill is-active">Board</span>
             </div>
           </div>
-          <div className="console-bid-list">
+
+          <div className="screen-ref-bid-list">
             {rankedBids.length ? (
               rankedBids.map((bid, index) => {
                 const status = bidStatus(bid, winnerBidId, standbyBidId);
@@ -278,137 +284,139 @@ export default React.memo(function StrategyBiddingScreen({
                 const envelopeConstraints = Array.isArray(envelope?.constraints)
                   ? envelope.constraints.slice(0, 2)
                   : [];
+
                 return (
-                  <article key={bid.bid_id} className={`console-bid-row tone-${status.tone}`}>
-                    <div className="console-bid-head">
-                      <div className="console-bid-title">
+                  <article
+                    key={bid.bid_id}
+                    className={`screen-ref-bid-card is-${status.tone}`}
+                  >
+                    <div className="screen-ref-bid-head">
+                      <div className="screen-ref-bid-title">
                         <strong>{planLabel(index, bid)}</strong>
-                        <span className={`console-state-badge tone-${status.tone}`}>{status.label}</span>
+                        <span className={`screen-ref-status-pill is-${status.tone}`}>{status.label}</span>
                       </div>
-                      <div className="console-bid-head-right">
-                        <span className="console-bid-meta">
-                          {bid.provider ?? "provider"} {bid.model_id ? `| ${bid.model_id}` : ""}
-                        </span>
-                        <span className="console-bid-menu">...</span>
-                      </div>
-                    </div>
-                    <div className="console-bid-stats">
-                      <span>
-                        Value: <strong>{scoreValue(bid)}</strong>
+                      <span className="screen-ref-bid-provider">
+                        {bid.provider ?? "provider"} {bid.model_id ? `| ${bid.model_id}` : ""}
                       </span>
-                      <span>Risk: {riskLabel(bid)}</span>
-                      <span>Cost: {formatInteger(tokens)} tokens</span>
-                      <span>Confidence: {formatNumber(confidence, 0)}%</span>
                     </div>
-                    {bid.rejection_reason ? (
-                      <p className="console-bid-note">{bid.rejection_reason}</p>
-                    ) : (
-                      <p className="console-bid-note">
-                        {bid.search_summary ?? bid.mission_rationale ?? bid.strategy_summary ?? "Competing in current round."}
-                      </p>
-                    )}
+
+                    <div className="screen-ref-chip-row">
+                      <span className="screen-ref-data-chip">Value {scoreValue(bid)}</span>
+                      <span className="screen-ref-data-chip">Risk {riskLabel(bid)}</span>
+                      <span className="screen-ref-data-chip">Cost {formatInteger(tokens)} tokens</span>
+                      <span className="screen-ref-data-chip">Confidence {formatNumber(confidence, 0)}%</span>
+                    </div>
+
+                    <p className="screen-ref-bid-copy">
+                      {bid.rejection_reason
+                        ? bid.rejection_reason
+                        : bid.search_summary ?? bid.mission_rationale ?? bid.strategy_summary ?? "Competing in the current round."}
+                    </p>
+
                     {envelope ? (
-                      <p className="console-bid-note">
+                      <p className="screen-ref-bid-subcopy">
                         Civic review: {String(envelope.status ?? "approved").replace(/[_-]/g, " ")}
                         {envelopeConstraints.length ? ` | Constraints: ${envelopeConstraints.join(", ")}` : " | No extra constraints"}
                       </p>
-                    ) : null}
-                    {status.tone === "blocked" ? (
-                      <button type="button" className="console-inline-detail" disabled>
-                        Details
-                      </button>
                     ) : null}
                   </article>
                 );
               })
             ) : (
-              <div className="console-empty">Bids are still being generated.</div>
+              <div className="section-empty">Bids are still being generated.</div>
             )}
           </div>
         </section>
 
-        <aside className="console-side-stack">
-          <section className="console-panel-frame">
-            <div className="console-panel-header">
+        <aside className="screen-ref-side-stack">
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
               <h2>Usage Signal</h2>
+              <p>Mission spend and research activity stay in view without taking over the board.</p>
             </div>
-            <div className="console-kv-list">
-              <div className="console-kv-row">
-                <span>Mission Spend</span>
+            <p className="screen-ref-inline-copy">Spend: {formatUsageCost(missionUsage)}</p>
+            {spendDetail ? <p className="screen-ref-inline-copy">{spendDetail}</p> : null}
+            <div className="screen-ref-kv-list">
+              <div className="screen-ref-kv-row">
+                <span>Mission spend</span>
                 <strong>{formatUsageCost(missionUsage)}</strong>
               </div>
-              <div className="console-kv-row">
-                <span>Total Tokens</span>
+              <div className="screen-ref-kv-row">
+                <span>Total tokens</span>
                 <strong>{formatInteger(missionTokens)}</strong>
               </div>
-              <div className="console-kv-row">
-                <span>Research Signals</span>
+              <div className="screen-ref-kv-row">
+                <span>Research signals</span>
                 <strong>{research ? formatInteger(research.sourceUrls.length) : "0"}</strong>
               </div>
               {spendDetail ? (
-                <div className="console-kv-row">
-                  <span>Billing Detail</span>
+                <div className="screen-ref-kv-row">
+                  <span>Billing detail</span>
                   <strong>{spendDetail}</strong>
                 </div>
               ) : null}
             </div>
           </section>
 
-          <section className="console-panel-frame">
-            <div className="console-panel-header">
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
               <h2>Civic &amp; Policy Panel</h2>
+              <p>Connection health, skills, envelopes, and policy effects are grouped into a single side rail.</p>
             </div>
-            <div className="console-kv-list">
-              <div className="console-kv-row">
-                <span>Civic Status</span>
+            <p className="screen-ref-inline-copy">
+              Top 3 Civic Review: {formatInteger(reviewedBids.length)}
+            </p>
+            <div className="screen-ref-kv-list">
+              <div className="screen-ref-kv-row">
+                <span>Civic status</span>
                 <strong>{civicStatus}</strong>
               </div>
-              <div className="console-kv-row">
+              <div className="screen-ref-kv-row">
                 <span>Toolkit</span>
                 <strong>{mission?.civic_connection?.toolkit_id ?? "GitHub-Civic"}</strong>
               </div>
-              <div className="console-kv-row">
-                <span>Last Check</span>
+              <div className="screen-ref-kv-row">
+                <span>Last check</span>
                 <strong>
                   {mission?.civic_connection?.last_checked_at
                     ? relativeTime(mission.civic_connection.last_checked_at)
                     : "waiting"}
                 </strong>
               </div>
-              <div className="console-kv-row">
-                <span>Reviewed This Round</span>
+              <div className="screen-ref-kv-row">
+                <span>Reviewed this round</span>
                 <strong>{formatInteger(reviewedBids.length)}</strong>
               </div>
             </div>
           </section>
 
-          <section className="console-panel-frame">
-            <div className="console-panel-header">
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
               <h2>Active Skills</h2>
             </div>
-            <div className="console-status-list">
+            <div className="screen-ref-status-list">
               {skillRows.length ? (
                 skillRows.map((skill) => (
-                  <div key={skill.name} className={`console-status-row ${skill.available ? "ok" : "warn"}`}>
-                    <span className="console-status-dot" />
+                  <div key={skill.name} className={`screen-ref-status-row ${skill.available ? "is-ok" : "is-danger"}`}>
+                    <span className="screen-ref-status-dot" />
                     <span>{skill.name}</span>
                     <strong>{skill.available ? "Active" : "Unavailable"}</strong>
                   </div>
                 ))
               ) : (
-                <div className="console-empty">No skills loaded yet.</div>
+                <div className="section-empty">No skills loaded yet.</div>
               )}
             </div>
           </section>
 
-          <section className="console-panel-frame">
-            <div className="console-panel-header">
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
               <h2>Winner Envelope</h2>
             </div>
-            <div className="console-status-list">
+            <div className="screen-ref-status-list">
               {envelopeRows.map((item) => (
-                <div key={item.label} className={`console-status-row ${item.state ? "ok" : "warn"}`}>
-                  <span className="console-status-dot" />
+                <div key={item.label} className={`screen-ref-status-row ${item.state ? `is-${item.state}` : ""}`}>
+                  <span className="screen-ref-status-dot" />
                   <span>{item.label}</span>
                   <strong>{item.detail}</strong>
                 </div>
@@ -416,38 +424,43 @@ export default React.memo(function StrategyBiddingScreen({
             </div>
           </section>
 
-          <section className="console-panel-frame">
-            <div className="console-panel-header">
+          <section className="panel screen-ref-side-panel">
+            <div className="section-title">
               <h2>Policy Impact</h2>
             </div>
-            <div className="console-impact-list">
+            <div className="screen-ref-impact-list">
               {policyRows.map((row) => (
-                <div key={row.text} className={`console-impact-row tone-${row.tone}`}>
-                  <span className="console-status-dot" />
+                <article key={row.text} className={`screen-ref-impact-row is-${row.tone}`}>
+                  <span className="screen-ref-status-dot" />
                   <p>{row.text}</p>
-                </div>
+                </article>
               ))}
             </div>
           </section>
         </aside>
       </div>
 
-      <footer className="console-timeline-strip">
-        <h3>
-          <span className="console-timeline-prefix">- -</span> Live Event Timeline
-        </h3>
-        <div className="console-event-chip-row">
+      <section className="panel screen-ref-timeline console-timeline-strip">
+        <div className="section-title">
+          <p className="eyebrow">Live Event Timeline</p>
+          <h2>Realtime mission events</h2>
+        </div>
+        <div className="screen-ref-timeline-row">
           {topEvents.length ? (
             topEvents.map((entry) => (
-              <div key={`${entry.event_type}-${entry.id}`} className={`console-event-chip tone-${eventTone(entry.event_type)}`}>
-                <span>{timelineLabel(entry)}</span>
-              </div>
+              <article
+                key={`${entry.event_type}-${entry.id}`}
+                className={`screen-ref-timeline-chip is-${eventTone(entry.event_type)}`}
+              >
+                <strong>{timelineLabel(entry)}</strong>
+                <span>{humanizeEventType(entry.event_type)}</span>
+              </article>
             ))
           ) : (
-            <div className="console-empty">Live timeline updates will appear here.</div>
+            <div className="section-empty">Live timeline updates will appear here.</div>
           )}
         </div>
-      </footer>
-    </section>
+      </section>
+    </div>
   );
 });

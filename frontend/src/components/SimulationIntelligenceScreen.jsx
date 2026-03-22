@@ -90,18 +90,18 @@ function winnerInsights(bids, winnerBidId) {
       Number(a.search_diagnostics?.rollback_rate ?? a.risk ?? 0)
   )[0];
   return [
-    { label: "Highest Upside", value: highestUpside?.role ?? highestUpside?.strategy_family },
+    { label: "Highest upside", value: highestUpside?.role ?? highestUpside?.strategy_family },
     {
-      label: "Lowest Failure Risk",
+      label: "Lowest failure risk",
       value: `${safest?.role ?? safest?.strategy_family} (${Math.round(
         Number(safest?.search_diagnostics?.rollback_rate ?? safest?.risk ?? 0) * 100
       )}%)`
     },
     {
-      label: "Cheapest Path",
+      label: "Cheapest path",
       value: `${cheapest?.role ?? cheapest?.strategy_family} (${formatInteger(tokenTotal(cheapest))} tok)`
     },
-    { label: "Most Fragile Strategy", value: fragile?.role ?? fragile?.strategy_family }
+    { label: "Most fragile strategy", value: fragile?.role ?? fragile?.strategy_family }
   ];
 }
 
@@ -130,100 +130,150 @@ export default React.memo(function SimulationIntelligenceScreen({
     winner?.search_summary ??
     winner?.mission_rationale ??
     "Winning strategy has the best risk-adjusted expected value.";
+  const topbarItems = [
+    { label: "Repo", value: repoLabel(mission?.repo_path) },
+    { label: "Objective", value: mission?.objective ?? "Mission objective pending" },
+    { label: "Strategies simulated", value: formatInteger(rankedBids.length) },
+    { label: "Monte Carlo depth", value: formatInteger(totalSamples) },
+    { label: "Current winner", value: winner?.role ?? winner?.strategy_family ?? "Pending" },
+    { label: "Expected mission", value: formatInteger(expectedMission) },
+    { label: "Phase", value: humanizePhase(activePhase) },
+    { label: "Spend", value: formatUsageCost(missionUsage) },
+    spendDetail ? { label: "Billing", value: spendDetail } : null
+  ].filter(Boolean);
 
   return (
-    <section className="console-screen console-screen-simulation panel">
-      <header className="console-topbar console-topbar-sim">
-        <div className="console-topbar-group">
-          <span>Repo: {repoLabel(mission?.repo_path)}</span>
-          <span>Objective: {mission?.objective ?? "Mission objective pending"}</span>
-          <span>Strategies Simulated: {formatInteger(rankedBids.length)}</span>
-          <span>Monte Carlo Depth: {formatInteger(totalSamples)}</span>
-          <span>Current Winner: {winner?.role ?? winner?.strategy_family ?? "Pending"}</span>
-          <span>Current Expected Mission: {formatInteger(expectedMission)}</span>
-          <span>Spend: {formatUsageCost(missionUsage)}</span>
-          {spendDetail ? <span>{spendDetail}</span> : null}
+    <div className="workspace-view screen-ref screen-ref-two">
+      <section className="panel screen-ref-topbar">
+        <div className="screen-ref-topbar-items">
+          {topbarItems.map((item) => (
+            <div key={item.label} className="screen-ref-topbar-item">
+              <span className="screen-ref-topbar-label">{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
         </div>
-      </header>
+      </section>
 
-      <div className="console-simulation-grid">
-        <aside className="console-sim-sidebar">
-          <div className="console-sim-sidebar-head">
+      <div className="screen-ref-two-grid">
+        <aside className="panel screen-ref-sim-sidebar">
+          <div className="section-title">
+            <p className="eyebrow">Screen 2</p>
             <h2>Strategy Simulation</h2>
-            <span>{humanizePhase(activePhase)}</span>
+            <p>The current Helix visual system stays intact while the information shifts into the reference’s three-column story.</p>
           </div>
-          <div className="console-sim-strategy-list">
+
+          <div className="screen-ref-inline-toolbar">
+            <span className="screen-ref-action-chip is-active">Dynamic graph</span>
+            <span className="screen-ref-action-chip">Strategy list</span>
+            <span className="screen-ref-action-chip">Reanalyze</span>
+          </div>
+
+          <div className="screen-ref-sim-list">
             {rankedBids.length ? (
               rankedBids.map((bid, index) => {
                 const mean = scoreMean(bid);
                 const spread = spreadRange(bid);
-                const markerWidth = `${Math.max(12, Math.min(100, mean))}%`;
+                const winnerLabel = bid.bid_id === winnerBidId ? "Winner" : "Simulated";
                 return (
-                  <article key={bid.bid_id} className="console-sim-strategy-row">
-                    <div className="console-sim-strategy-head">
+                  <article key={bid.bid_id} className="screen-ref-sim-card">
+                    <div className="screen-ref-sim-card-head">
                       <strong>{strategyLabel(index, bid)}</strong>
-                      <span>{bid.bid_id === winnerBidId ? "WINNER" : "SIMULATED"}</span>
+                      <span>{winnerLabel}</span>
                     </div>
-                    <div className="console-sim-barline">
-                      <span style={{ width: markerWidth }} />
+                    <div className="screen-ref-sim-bar">
+                      <span style={{ width: `${Math.max(12, Math.min(100, mean))}%` }} />
                     </div>
-                    <div className="console-sim-strategy-meta">
-                      <span>Mean outcome {formatInteger(mean)}</span>
-                      <span>+/- {formatInteger(spread)}</span>
+                    <div className="screen-ref-chip-row">
+                      <span className="screen-ref-data-chip">Mean {formatInteger(mean)}</span>
+                      <span className="screen-ref-data-chip">+/- {formatInteger(spread)}</span>
+                      <span className="screen-ref-data-chip">
+                        Samples {formatInteger(estimateSamples(bid, simulationSummary))}
+                      </span>
                     </div>
                   </article>
                 );
               })
             ) : (
-              <div className="console-empty">No simulation candidates yet.</div>
+              <div className="section-empty">No simulation candidates yet.</div>
             )}
+          </div>
+
+          <div className="screen-ref-chip-row">
+            <span className="screen-ref-data-chip">Pin</span>
+            <span className="screen-ref-data-chip">Raw</span>
+            <span className="screen-ref-data-chip">Compare</span>
           </div>
         </aside>
 
-        <div className="console-sim-center">
+        <div className="screen-ref-sim-center-stack">
           <MonteCarloPanel mission={mission} bids={rankedBids} winnerBidId={winnerBidId} />
+
+          <section className="panel screen-ref-explanation-panel">
+            <div className="section-title">
+              <h2>Simulation Explanation Strip</h2>
+              <p>Decision rationale stays adjacent to the chart, so the winner can be understood without changing modes.</p>
+            </div>
+            <div className="screen-ref-note-stack">
+              <article className="screen-ref-note-card">
+                <strong>Why the winner leads</strong>
+                <p>{explanation}</p>
+              </article>
+              <article className="screen-ref-note-card">
+                <strong>Frontier signal</strong>
+                <p>
+                  Frontier gap {formatNumber(simulationSummary.frontier_gap ?? 0, 3)} with search mode{" "}
+                  {String(simulationSummary.search_mode ?? "bounded_monte_carlo").replace(/_/g, " ")}.
+                </p>
+              </article>
+            </div>
+          </section>
         </div>
 
-        <aside className="console-sim-insights">
-          <div className="console-panel-header">
+        <aside className="panel screen-ref-sim-insights">
+          <div className="section-title">
             <h2>Simulation Insights</h2>
+            <p>Winner context, tradeoffs, and governance signals occupy the right rail just like the reference.</p>
           </div>
-          <div className="console-sim-winner">
-            <span>Winner</span>
+
+          <article className="screen-ref-highlight-card">
+            <span className="screen-ref-topbar-label">Winner</span>
             <strong>{winner?.role ?? winner?.strategy_family ?? "Pending"}</strong>
             <p>Highest risk-adjusted reward</p>
-          </div>
-          <div className="console-sim-insight-list">
+          </article>
+
+          <div className="screen-ref-insight-list">
             {insightRows.length ? (
               insightRows.map((row) => (
-                <article key={row.label} className="console-sim-insight-item">
+                <article key={row.label} className="screen-ref-insight-item">
                   <span>{row.label}</span>
                   <strong>{row.value}</strong>
                 </article>
               ))
             ) : (
-              <div className="console-empty">Insights will populate after simulation.</div>
+              <div className="section-empty">Insights will populate after simulation.</div>
             )}
           </div>
-          <div className="console-sim-governance">
-            <strong>Governance Influence</strong>
+
+          <article className="screen-ref-note-card">
+            <strong>Best governed</strong>
+            <p>
+              {winner?.role ?? winner?.strategy_family ?? "Pending"}{" "}
+              {envelope
+                ? `advanced with envelope ${String(envelope.status ?? envelope.policy_decision ?? "approved").replace(/[_-]/g, " ")}.`
+                : "is still awaiting a governed envelope."}
+            </p>
+          </article>
+
+          <article className="screen-ref-note-card">
+            <strong>Governance influence</strong>
             <p>
               Civic constraints clipped {formatInteger(governanceImpact)} candidate
               {governanceImpact === 1 ? "" : "s"} in this cycle.
             </p>
             <p>
               Civic reviewed {formatInteger(civicReviewed)} of the top {formatInteger(Math.min(3, rankedBids.length))} bids
-              before the current winner advanced.
-            </p>
-            <p>
-              Winner envelope:{" "}
-              {envelope
-                ? `${String(envelope.status ?? envelope.policy_decision ?? "approved").replace(/[_-]/g, " ")}${
-                    Array.isArray(envelope.constraints) && envelope.constraints.length
-                      ? ` | ${envelope.constraints.join(", ")}`
-                      : ""
-                  }`
-                : "pending"}
+              before the winner advanced.
             </p>
             <p>
               {research
@@ -232,18 +282,9 @@ export default React.memo(function SimulationIntelligenceScreen({
                   )} sources.`
                 : "No governed research was needed for this cycle."}
             </p>
-          </div>
+          </article>
         </aside>
       </div>
-
-      <footer className="console-explanation-strip">
-        <h3>Simulation Explanation Strip</h3>
-        <p>{explanation}</p>
-        <p>
-          Frontier gap {formatNumber(simulationSummary.frontier_gap ?? 0, 3)} with search mode{" "}
-          {String(simulationSummary.search_mode ?? "bounded_monte_carlo").replace(/_/g, " ")}.
-        </p>
-      </footer>
-    </section>
+    </div>
   );
 });

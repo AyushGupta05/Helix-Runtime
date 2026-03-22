@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -83,6 +84,13 @@ def _run(command: list[str], cwd: str, timeout: int = 120) -> CommandResult:
         stderr=completed.stderr[-8000:],
         duration_seconds=0.0,
     )
+
+
+def _command_in_subdir(subdir: str, command: list[str]) -> list[str]:
+    normalized = _platform_command(command)
+    if os.name == "nt":
+        return ["cmd", "/c", f"cd /d {subdir} && {subprocess.list2cmdline(normalized)}"]
+    return ["bash", "-lc", f"cd {shlex.quote(subdir)} && {shlex.join(normalized)}"]
 
 
 def _prune_directories(directories: list[str]) -> None:
@@ -287,12 +295,23 @@ class RepoStateCollector:
         python = sys.executable
         if (self.repo / "tests").exists() or any(self.repo.glob("test_*.py")):
             test_commands.append([python, "-m", "pytest"])
+        if not test_commands and self._nested_python_project("backend"):
+            test_commands.append(_command_in_subdir("backend", [python, "-m", "pytest"]))
         if (self.repo / "ruff.toml").exists() or (self.repo / "pyproject.toml").exists():
             lint_commands.append([python, "-m", "ruff", "check", "."])
         if (self.repo / "mypy.ini").exists() or (self.repo / ".mypy.ini").exists() or self._pyproject_has_tool("mypy"):
             static_commands.append([python, "-m", "mypy", "."])
         if (self.repo / "benchmarks").exists():
             benchmark_commands.append([python, "-m", "pytest", "benchmarks"])
+        frontend_scripts = self._package_scripts("frontend")
+        if frontend_scripts:
+            pm = _platform_command(["npm"])[0]
+            frontend_tests = [[pm, "--prefix", "frontend", "run", name] for name in ("test", "test:ci", "unit") if name in frontend_scripts][:1]
+            frontend_lint = [[pm, "--prefix", "frontend", "run", name] for name in ("lint", "eslint") if name in frontend_scripts][:1]
+            frontend_static = [[pm, "--prefix", "frontend", "run", name] for name in ("typecheck", "build") if name in frontend_scripts][:1]
+            test_commands.extend(command for command in frontend_tests if command not in test_commands)
+            lint_commands.extend(command for command in frontend_lint if command not in lint_commands)
+            static_commands.extend(command for command in frontend_static if command not in static_commands)
         return CapabilitySet(
             runtime="python",
             test_commands=test_commands,
@@ -313,6 +332,25 @@ class RepoStateCollector:
             return False
         tool = data.get("tool")
         return isinstance(tool, dict) and tool_name in tool
+
+    def _nested_python_project(self, relative_dir: str) -> bool:
+        root = self.repo / relative_dir
+        return root.exists() and (
+            (root / "pyproject.toml").exists()
+            or (root / "tests").exists()
+            or _find_matching_file(root, "test_*.py")
+        )
+
+    def _package_scripts(self, relative_dir: str) -> dict[str, str]:
+        path = self.repo / relative_dir / "package.json"
+        if not path.exists():
+            return {}
+        try:
+            package = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        scripts = package.get("scripts")
+        return scripts if isinstance(scripts, dict) else {}
 
     def _detect_tsjs(self) -> CapabilitySet:
         package_path = self.repo / "package.json"

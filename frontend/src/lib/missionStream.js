@@ -179,50 +179,104 @@ function upsertTask(tasks, payload, nextStatus) {
 
 export function normalizeIncomingBid(event) {
   const payload = event.payload ?? {};
-  return {
+  const bid = {
     bid_id: payload.bid_id,
-    task_id: payload.task_id,
-    role: payload.role ?? null,
-    provider: payload.provider ?? null,
-    lane: payload.lane ?? null,
-    model_id: payload.model_id ?? null,
-    invocation_id: payload.invocation_id ?? null,
-    invocation_kind: payload.invocation_kind ?? null,
-    generation_mode: payload.generation_mode ?? (payload.provider === "system" ? "deterministic_fallback" : null),
-    strategy_family: payload.strategy_family ?? "pending",
-    strategy_summary: payload.strategy_summary ?? "Live contender",
-    exact_action: payload.exact_action ?? null,
-    mission_rationale: payload.mission_rationale ?? null,
-    proposed_task_title: payload.proposed_task_title ?? null,
-    proposed_task_type: payload.proposed_task_type ?? null,
-    score: payload.score ?? null,
-    confidence: payload.confidence ?? null,
-    risk: payload.risk ?? 0,
-    cost: payload.cost ?? 0,
-    estimated_runtime_seconds: payload.estimated_runtime_seconds ?? 0,
-    touched_files: payload.touched_files ?? [],
-    validator_plan: payload.validator_plan ?? [],
-    rollback_plan: payload.rollback_plan ?? null,
-    rollout_level: payload.rollout_level ?? null,
-    search_summary: payload.search_summary ?? null,
-    search_diagnostics: payload.search_diagnostics ?? {},
-    policy_state: payload.policy_state ?? null,
-    required_skills: payload.required_skills ?? [],
-    optional_skills: payload.optional_skills ?? [],
-    governed_action_plan: payload.governed_action_plan ?? [],
-    external_evidence_plan: payload.external_evidence_plan ?? [],
-    capability_reliance_score: payload.capability_reliance_score ?? null,
-    policy_friction_score: payload.policy_friction_score ?? null,
-    revocation_risk_score: payload.revocation_risk_score ?? null,
-    governed_envelope: payload.governed_envelope ?? null,
-    civic_preflight: payload.civic_preflight ?? null,
-    token_usage: payload.token_usage ?? null,
-    cost_usage: payload.cost_usage ?? null,
-    usage_unavailable_reason: payload.usage_unavailable_reason ?? null,
-    rejection_reason: payload.rejection_reason ?? payload.reason ?? null,
-    status: payload.status ?? "generated",
+    task_id: payload.task_id
+  };
+  const assign = (key, value) => {
+    if (value !== undefined) {
+      bid[key] = value;
+    }
+  };
+  assign("role", payload.role);
+  assign("provider", payload.provider);
+  assign("lane", payload.lane);
+  assign("model_id", payload.model_id);
+  assign("invocation_id", payload.invocation_id);
+  assign("invocation_kind", payload.invocation_kind);
+  assign(
+    "generation_mode",
+    payload.generation_mode ?? (payload.provider === "system" ? "deterministic_fallback" : undefined)
+  );
+  assign("strategy_family", payload.strategy_family);
+  assign("strategy_summary", payload.strategy_summary);
+  assign("exact_action", payload.exact_action);
+  assign("mission_rationale", payload.mission_rationale);
+  assign("proposed_task_title", payload.proposed_task_title);
+  assign("proposed_task_type", payload.proposed_task_type);
+  assign("score", payload.score);
+  assign("confidence", payload.confidence);
+  assign("risk", payload.risk);
+  assign("cost", payload.cost);
+  assign("estimated_runtime_seconds", payload.estimated_runtime_seconds);
+  assign("touched_files", payload.touched_files);
+  assign("validator_plan", payload.validator_plan);
+  assign("rollback_plan", payload.rollback_plan);
+  assign("rollout_level", payload.rollout_level);
+  assign("search_summary", payload.search_summary);
+  assign("search_diagnostics", payload.search_diagnostics);
+  assign("policy_state", payload.policy_state);
+  assign("required_skills", payload.required_skills);
+  assign("optional_skills", payload.optional_skills);
+  assign("governed_action_plan", payload.governed_action_plan);
+  assign("external_evidence_plan", payload.external_evidence_plan);
+  assign("capability_reliance_score", payload.capability_reliance_score);
+  assign("policy_friction_score", payload.policy_friction_score);
+  assign("revocation_risk_score", payload.revocation_risk_score);
+  assign("governed_envelope", payload.governed_envelope);
+  assign("civic_preflight", payload.civic_preflight);
+  assign("token_usage", payload.token_usage);
+  assign("cost_usage", payload.cost_usage);
+  assign("usage_unavailable_reason", payload.usage_unavailable_reason);
+  assign("rejection_reason", payload.rejection_reason ?? payload.reason);
+  assign("status", payload.status);
+  return bid;
+}
+
+function createBidRecord(event) {
+  return {
+    role: null,
+    provider: null,
+    lane: null,
+    model_id: null,
+    invocation_id: null,
+    invocation_kind: null,
+    generation_mode: null,
+    strategy_family: "pending",
+    strategy_summary: "Live contender",
+    exact_action: null,
+    mission_rationale: null,
+    proposed_task_title: null,
+    proposed_task_type: null,
+    score: null,
+    confidence: null,
+    risk: 0,
+    cost: 0,
+    estimated_runtime_seconds: 0,
+    touched_files: [],
+    validator_plan: [],
+    rollback_plan: null,
+    rollout_level: null,
+    search_summary: null,
+    search_diagnostics: {},
+    policy_state: null,
+    required_skills: [],
+    optional_skills: [],
+    governed_action_plan: [],
+    external_evidence_plan: [],
+    capability_reliance_score: null,
+    policy_friction_score: null,
+    revocation_risk_score: null,
+    governed_envelope: null,
+    civic_preflight: null,
+    token_usage: null,
+    cost_usage: null,
+    usage_unavailable_reason: null,
+    rejection_reason: null,
+    status: "generated",
     selected: false,
-    standby: false
+    standby: false,
+    ...normalizeIncomingBid(event)
   };
 }
 
@@ -231,7 +285,13 @@ function ensureBid(existingBids, event) {
   if (!nextBid.bid_id) {
     return existingBids;
   }
-  return appendBounded(existingBids, nextBid, STREAM_LIMIT, "bid_id");
+  const exists = existingBids.some((bid) => bid.bid_id === nextBid.bid_id);
+  return appendBounded(
+    existingBids,
+    exists ? nextBid : createBidRecord(event),
+    STREAM_LIMIT,
+    "bid_id"
+  );
 }
 
 function mergeBiddingState(snapshot, event) {

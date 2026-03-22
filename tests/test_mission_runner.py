@@ -463,7 +463,7 @@ def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
         )
 
 
-def test_execute_prefers_winning_provider_before_widening(python_bug_repo: Path) -> None:
+def test_execute_compares_all_enabled_provider_proposals_with_winner_first(python_bug_repo: Path) -> None:
     class RecordingProposalBackend:
         def __init__(self) -> None:
             self.calls: list[list[str]] = []
@@ -494,34 +494,36 @@ def test_execute_prefers_winning_provider_before_widening(python_bug_repo: Path)
             del task, bid, mission_objective, candidate_files, failure_context, research_context, preview, on_invocation
             requested = list(providers or [])
             self.calls.append(requested)
-            provider = requested[0] if requested else "anthropic"
-            proposal = EditProposal(
-                summary=f"{provider} proposal",
-                files=[] if provider == "anthropic" else [FileUpdate(path="calc.py", content="def add(a, b):\n    return a + b\n")],
-            )
-            invocation = ModelInvocationResult(
-                content=proposal.model_dump_json(),
-                provider=provider,
-                model_id=f"{provider}-proposal",
-                lane=f"proposal_gen.{provider}",
-                generation_mode=BidGenerationMode.PROVIDER_MODEL,
-                prompt_preview="",
-                response_preview=proposal.summary,
-                started_at=utc_now().isoformat(),
-                completed_at=utc_now().isoformat(),
-            )
-            return [
-                ProposalCandidate(
-                    candidate_id=f"{provider}-candidate",
-                    task_id="task-1",
-                    bid_id="bid-1",
-                    provider=provider,
-                    lane=f"proposal_gen.{provider}",
-                    model_id=f"{provider}-proposal",
-                    proposal=proposal,
-                    invocation=invocation,
+            candidates = []
+            for provider in requested or ["anthropic"]:
+                proposal = EditProposal(
+                    summary=f"{provider} proposal",
+                    files=[] if provider == "anthropic" else [FileUpdate(path="calc.py", content="def add(a, b):\n    return a + b\n")],
                 )
-            ]
+                invocation = ModelInvocationResult(
+                    content=proposal.model_dump_json(),
+                    provider=provider,
+                    model_id=f"{provider}-proposal",
+                    lane=f"proposal_gen.{provider}",
+                    generation_mode=BidGenerationMode.PROVIDER_MODEL,
+                    prompt_preview="",
+                    response_preview=proposal.summary,
+                    started_at=utc_now().isoformat(),
+                    completed_at=utc_now().isoformat(),
+                )
+                candidates.append(
+                    ProposalCandidate(
+                        candidate_id=f"{provider}-candidate",
+                        task_id="task-1",
+                        bid_id="bid-1",
+                        provider=provider,
+                        lane=f"proposal_gen.{provider}",
+                        model_id=f"{provider}-proposal",
+                        proposal=proposal,
+                        invocation=invocation,
+                    )
+                )
+            return candidates
 
     backend = RecordingProposalBackend()
     spec = build_mission_spec(
@@ -590,7 +592,7 @@ def test_execute_prefers_winning_provider_before_widening(python_bug_repo: Path)
     finally:
         runtime.store.close()
 
-    assert backend.calls == [["anthropic"], ["openai"]]
+    assert backend.calls == [["anthropic", "openai"]]
     assert any(candidate.provider == "openai" and candidate.proposal.files for candidate in candidates)
 
 
@@ -681,6 +683,38 @@ def test_collect_activates_github_context_before_bidding(python_bug_repo: Path) 
     assert "github_context" in runtime.state.available_skills
     assert runtime.state.skill_outputs["github_context"]["ci_summary"] == "ci-failing"
     assert "Civic CI summary: ci-failing" in runtime.state.repo_snapshot.failure_signals
+
+
+def test_collect_skips_civic_context_for_plain_github_repo_without_requested_skills(python_bug_repo: Path) -> None:
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/python_bug_repo.git"],
+        cwd=str(python_bug_repo),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests in the local repo",
+        mission_id="civic-checkbox-off",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    runtime.civic = FakeGovernedCivic(
+        available_skills=["github_context", "knowledge_context", "trusted_external_context"],
+        connected=True,
+        configured=True,
+    )
+    try:
+        runtime._prepare_run()
+        result = runtime.node_collect()
+    finally:
+        runtime.store.close()
+
+    assert result == {"status": ActivePhase.STRATEGIZE.value}
+    assert runtime.state.available_skills == []
+    assert runtime.state.skill_outputs == {}
+    assert runtime.civic.actions == []
 
 
 def test_build_managed_branch_name_uses_repo_and_objective_context(python_bug_repo: Path) -> None:
@@ -842,6 +876,7 @@ def test_collect_enriches_knowledge_context_before_bidding(python_bug_repo: Path
     spec = build_mission_spec(
         repo=str(python_bug_repo),
         objective="Investigate the LangGraph checkpoint issue using Civic and Firecrawl-style research",
+        requested_skills=["knowledge_context"],
         mission_id="civic-knowledge-context",
     )
     paths = build_mission_paths(spec.repo_path, spec.mission_id)
@@ -881,6 +916,7 @@ def test_provider_backed_mission_reaches_civic_preflight_and_executes_with_opena
     spec = build_mission_spec(
         repo=str(python_bug_repo),
         objective="Fix failing tests with provider-backed execution",
+        requested_skills=["github_context"],
         mission_id="provider-civic-openai",
     )
     paths = build_mission_paths(spec.repo_path, spec.mission_id)
@@ -926,6 +962,7 @@ def test_provider_backed_mission_threads_governed_research_into_bid_and_proposal
     spec = build_mission_spec(
         repo=str(python_bug_repo),
         objective="Fix the LangGraph checkpoint error with Civic-safe research and provider-backed execution",
+        requested_skills=["knowledge_context"],
         mission_id="provider-civic-research",
     )
     paths = build_mission_paths(spec.repo_path, spec.mission_id)
@@ -985,6 +1022,7 @@ def test_successful_github_mission_publishes_pull_request_via_civic(python_bug_r
     spec = build_mission_spec(
         repo=str(python_bug_repo),
         objective="Fix failing tests and open a review branch",
+        requested_skills=["github_context"],
         mission_id="github-pr-publish",
     )
     paths = build_mission_paths(spec.repo_path, spec.mission_id)
@@ -1013,7 +1051,7 @@ def test_successful_github_mission_publishes_pull_request_via_civic(python_bug_r
     assert "github-remote-create_pull_request" in runtime.civic.actions
 
 
-def test_collect_safe_stops_when_configured_civic_is_unavailable_without_requested_skills(python_bug_repo: Path) -> None:
+def test_collect_ignores_unavailable_civic_when_no_skills_are_requested(python_bug_repo: Path) -> None:
     spec = build_mission_spec(
         repo=str(python_bug_repo),
         objective="Fix failing tests",
@@ -1028,9 +1066,9 @@ def test_collect_safe_stops_when_configured_civic_is_unavailable_without_request
     finally:
         runtime.store.close()
 
-    assert result == {"status": ActivePhase.FINALIZE.value}
-    assert runtime.state.outcome == MissionOutcome.FAILED_SAFE_STOP
-    assert runtime.state.governance.stop_reason == "civic_connection_unavailable"
+    assert result == {"status": ActivePhase.STRATEGIZE.value}
+    assert runtime.state.outcome is None
+    assert runtime.state.governance.stop_reason is None
 
 
 def test_collect_safe_stops_when_requested_skill_is_unavailable(python_bug_repo: Path) -> None:

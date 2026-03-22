@@ -168,6 +168,13 @@ def _preview_text(text: str, limit: int = 1200) -> str:
     return cleaned[:limit]
 
 
+def _should_retry_with_compact_proposal(exc: Exception, *, preview: bool) -> bool:
+    if preview:
+        return False
+    message = str(exc).lower()
+    return "usable json payload" in message or "no executable edits" in message
+
+
 def _research_source_urls(value: dict[str, Any] | None) -> list[str]:
     if not isinstance(value, dict):
         return []
@@ -470,12 +477,18 @@ class ProviderModelRouter:
                     raise ValueError("OPENAI_API_KEY is required when MODEL_PROVIDER=openai.")
                 from langchain_openai import ChatOpenAI
 
+                extra_openai_args: dict[str, Any] = {}
+                if lane_key.startswith("proposal_gen."):
+                    extra_openai_args["reasoning"] = {"effort": "low", "summary": "concise"}
+                    extra_openai_args["verbosity"] = "low"
+
                 self._models[cache_key] = ChatOpenAI(
                     model=lane_config.model_id,
                     temperature=lane_config.temperature,
                     api_key=self.config.openai_api_key,
                     max_tokens=lane_config.max_tokens,
                     request_timeout=timeout_seconds,
+                    **extra_openai_args,
                 )
             elif lane_config.provider == "anthropic":
                 if not self.config.anthropic_api_key:
@@ -627,46 +640,71 @@ class DefaultStrategyBackend:
         else:
             file_limit = max(1, min(len(preferred_files) if preferred_files else len(ordered_files), 3))
         char_limit = 6000 if preview else 12000
-        scoped_files = ordered_files[: max(1, file_limit)]
-        scoped_candidate_files = {path: candidate_files[path] for path in scoped_files}
-        system = (
-            "You are Arbiter's execution planner. Return only valid JSON with fields: summary, operations, files, notes. "
-            "Prefer compact operations for existing files. Each operation must contain type, path, and content, and "
-            "replace/insert_before/insert_after operations must also include target. Supported operation types are: "
-            "replace, insert_after, insert_before, append, prepend, create_file. "
-            "Use files only when a full replacement is genuinely required. Keep edits minimal and respect the bid strategy. "
-            "Do not include markdown fences or analysis."
-        )
-        if preview:
-            system += (
-                " This is simulation preview mode. Prefer the smallest viable patch, touch as few files as possible, "
-                "and return quickly if the change cannot be expressed cleanly."
-            )
-        file_blob = "\n\n".join(
-            f"FILE: {path}\n```\n{content[:char_limit]}\n```"
-            for path, content in scoped_candidate_files.items()
-        )
         research_block = _research_prompt_block(research_context)
-        user = (
-            f"Objective: {mission_objective}\n"
-            f"Task: {task.title}\n"
-            f"Task type: {task.task_type.value}\n"
-            f"Strategy: {bid.strategy_summary}\n"
-            f"Exact action: {bid.exact_action}\n"
-            f"Failure context: {failure_context or 'none'}\n"
-            f"{research_block + '\n' if research_block else ''}"
-            f"Candidate files:\n{file_blob}\n"
-            "This is an executable bounded work unit chosen by Arbiter. "
-            "Do not change the task type or return analysis-only output. "
-            "For bugfix, test, refactor, and perf_optimize tasks, return at least one operation or file update. "
-            "For existing files, prefer minimal operations over full replacement content. "
-            "Return JSON only."
-        )
-        if preview:
-            user += "\nPreview goal: prove the bid is viable with a minimal bounded patch, not a broad rewrite."
+
+        def build_prompt(*, compact_retry: bool = False) -> tuple[str, str]:
+            prompt_file_limit = file_limit
+            prompt_char_limit = char_limit
+            prompt_ordered_files = ordered_files
+            if compact_retry:
+                prompt_file_limit = min(2, max(1, len(preferred_files) if preferred_files else len(ordered_files)))
+                prompt_char_limit = 4000
+                prompt_ordered_files = (preferred_files or ordered_files) + [
+                    path for path in ordered_files if path not in preferred_files
+                ]
+            scoped_files = prompt_ordered_files[: max(1, prompt_file_limit)]
+            scoped_candidate_files = {path: candidate_files[path] for path in scoped_files}
+            system = (
+                "You are Arbiter's execution planner. Return only valid JSON with fields: summary, operations, files, notes. "
+                "Prefer compact operations for existing files. Each operation must contain type, path, and content, and "
+                "replace/insert_before/insert_after operations must also include target. Supported operation types are: "
+                "replace, insert_after, insert_before, append, prepend, create_file. "
+                "Use files only when a full replacement is genuinely required. Keep edits minimal and respect the bid strategy. "
+                "Do not include markdown fences or analysis."
+            )
+            if preview:
+                system += (
+                    " This is simulation preview mode. Prefer the smallest viable patch, touch as few files as possible, "
+                    "and return quickly if the change cannot be expressed cleanly."
+                )
+            if compact_retry:
+                system += (
+                    " The previous response was too verbose or malformed. "
+                    "Return a single compact JSON object with no prose before or after it. "
+                    "Prefer operations over full file replacements and keep the response as short as possible."
+                )
+            file_blob = "\n\n".join(
+                f"FILE: {path}\n```\n{content[:prompt_char_limit]}\n```"
+                for path, content in scoped_candidate_files.items()
+            )
+            user = (
+                f"Objective: {mission_objective}\n"
+                f"Task: {task.title}\n"
+                f"Task type: {task.task_type.value}\n"
+                f"Strategy: {bid.strategy_summary}\n"
+                f"Exact action: {bid.exact_action}\n"
+                f"Failure context: {failure_context or 'none'}\n"
+                f"{research_block + '\n' if research_block else ''}"
+                f"Candidate files:\n{file_blob}\n"
+                "This is an executable bounded work unit chosen by Arbiter. "
+                "Do not change the task type or return analysis-only output. "
+                "For bugfix, test, refactor, and perf_optimize tasks, return at least one operation or file update. "
+                "For existing files, prefer minimal operations over full replacement content. "
+                "Return JSON only."
+            )
+            if preview:
+                user += "\nPreview goal: prove the bid is viable with a minimal bounded patch, not a broad rewrite."
+            if compact_retry:
+                user += (
+                    "\nRetry requirement: the previous response was too long or not parseable. "
+                    "Return at most 2 operations or 1 full-file update. Keep the summary to one sentence and notes minimal."
+                )
+            return system, user
+
         provider_pool = providers or self.router.config.enabled_providers
 
-        def run_provider(provider: str) -> ProposalCandidate | None:
+        def run_provider_attempt(provider: str, *, compact_retry: bool = False) -> ProposalCandidate:
+            system, user = build_prompt(compact_retry=compact_retry)
             started_at = utc_now().isoformat()
             lane_key = f"{lane}.{provider}"
             invocation_id = uuid4().hex
@@ -755,6 +793,17 @@ class DefaultStrategyBackend:
                             "error": str(exc),
                         }
                     )
+                raise
+
+        def run_provider(provider: str) -> ProposalCandidate | None:
+            try:
+                return run_provider_attempt(provider)
+            except Exception as exc:
+                if _should_retry_with_compact_proposal(exc, preview=preview):
+                    try:
+                        return run_provider_attempt(provider, compact_retry=True)
+                    except Exception:
+                        return None
                 return None
 
         with ThreadPoolExecutor(max_workers=max(1, len(provider_pool))) as executor:

@@ -674,7 +674,7 @@ class TestProviderMissionPlanning:
         assert any(task.search_depth >= 3 for task in tasks)
         assert any(task.monte_carlo_samples >= 32 for task in tasks)
 
-    def test_provider_planner_prefers_the_default_provider_before_falling_back(self):
+    def test_provider_planner_scores_all_available_providers_before_selecting(self):
         decomposer = GoalDecomposer()
         invoked: list[str] = []
 
@@ -699,7 +699,7 @@ class TestProviderMissionPlanning:
         )
 
         assert tasks
-        assert invoked == ["triage.openai"]
+        assert invoked == ["triage.openai", "triage.anthropic"]
 
     def test_provider_planner_normalizes_common_task_aliases(self):
         decomposer = GoalDecomposer()

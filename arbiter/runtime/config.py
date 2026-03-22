@@ -62,7 +62,7 @@ class RuntimeConfig(BaseSettings):
     anthropic_model_test_gen: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_TEST_GEN")
     anthropic_model_perf_reason: str = Field(default="claude-haiku-4-5-20251001", alias="ANTHROPIC_MODEL_PERF_REASON")
     openai_market_lanes_raw: str | None = Field(default=None, alias="ARBITER_OPENAI_MARKET_LANES")
-    anthropic_market_lanes_raw: str | None = Field(default="triage,bid_fast", alias="ARBITER_ANTHROPIC_MARKET_LANES")
+    anthropic_market_lanes_raw: str | None = Field(default=None, alias="ARBITER_ANTHROPIC_MARKET_LANES")
 
     max_parallel_bidders: int = Field(default=8, alias="ARBITER_MAX_PARALLEL_BIDDERS")
     max_parallel_validators: int = Field(default=4, alias="ARBITER_MAX_PARALLEL_VALIDATORS")

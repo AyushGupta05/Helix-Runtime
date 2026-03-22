@@ -181,7 +181,24 @@ class MissionRuntime:
         return BidGenerationMode.DETERMINISTIC_FALLBACK
 
     def _civic_governance_required(self) -> bool:
-        return self.config.civic_required or self.civic.available()
+        return self.config.civic_required or bool(self.config.civic_required_skills)
+
+    def _objective_requests_civic_context(self) -> bool:
+        objective = f" {self.spec.objective.lower()} "
+        markers = (
+            " research ",
+            " docs ",
+            " documentation ",
+            " api ",
+            " sdk ",
+            " version ",
+            " release notes ",
+            " changelog ",
+            " upstream ",
+            " external ",
+            " firecrawl ",
+        )
+        return any(marker in objective for marker in markers)
 
     def _required_skill_set(self) -> set[str]:
         return {*(self.spec.requested_skills or []), *self.config.civic_required_skills}
@@ -189,12 +206,12 @@ class MissionRuntime:
     def _should_engage_civic(self) -> bool:
         if self._civic_governance_required():
             return True
-        if self.spec.requested_skills or self.config.civic_required or self.config.civic_required_skills:
+        if self.spec.requested_skills:
+            return True
+        if self._objective_requests_civic_context():
             return True
         if not self.state.repo_snapshot:
             return False
-        if self.state.repo_snapshot.remote_provider == "github":
-            return True
         return bool(self.state.repo_snapshot.objective_hints.get("has_github_reference"))
 
     def _record_audit(self, audit) -> None:
@@ -1296,7 +1313,18 @@ class MissionRuntime:
     def _generate_execution_candidates(self, task, bid, candidate_files: dict[str, str]):
         failure_context = self.state.failure_context.details if self.state.failure_context else None
         research_context = self.state.skill_outputs.get("knowledge_context")
-        preferred_providers = [bid.provider] if bid.provider and bid.provider not in {"system", "scripted"} else None
+        preferred_provider = bid.provider if bid.provider and bid.provider not in {"system", "scripted"} else None
+        router = getattr(self.strategy_backend, "router", None)
+        config = getattr(router, "config", None)
+        enabled_providers = list(getattr(config, "enabled_providers", []) or [])
+        if preferred_provider and preferred_provider in enabled_providers:
+            provider_order = [preferred_provider, *[provider for provider in enabled_providers if provider != preferred_provider]]
+        elif enabled_providers:
+            provider_order = enabled_providers
+        elif preferred_provider:
+            provider_order = [preferred_provider]
+        else:
+            provider_order = None
         candidates = self.strategy_backend.generate_edit_proposals(
             task=task,
             bid=bid,
@@ -1304,41 +1332,10 @@ class MissionRuntime:
             candidate_files=candidate_files,
             failure_context=failure_context,
             research_context=research_context,
-            providers=preferred_providers,
+            providers=provider_order,
             on_invocation=self._record_model_invocation,
         )
-        if self._has_usable_execution_candidate(candidates) or not preferred_providers:
-            return candidates
-        router = getattr(self.strategy_backend, "router", None)
-        config = getattr(router, "config", None)
-        enabled_providers = list(getattr(config, "enabled_providers", []) or [])
-        fallback_providers = [provider for provider in enabled_providers if provider != bid.provider]
-        if not fallback_providers:
-            return candidates
-        self.trace(
-            "proposal.widened",
-            "Execution widened beyond the winning provider",
-            f"The winning provider {bid.provider} did not return a usable execution proposal for {task.task_id}; widening to standby providers.",
-            task_id=task.task_id,
-            bid_id=bid.bid_id,
-            provider=bid.provider,
-            lane=bid.lane,
-            status="warning",
-            refresh_view=True,
-            preferred_provider=bid.provider,
-            fallback_providers=fallback_providers,
-        )
-        widened_candidates = self.strategy_backend.generate_edit_proposals(
-            task=task,
-            bid=bid,
-            mission_objective=self.spec.objective,
-            candidate_files=candidate_files,
-            failure_context=failure_context,
-            research_context=research_context,
-            providers=fallback_providers,
-            on_invocation=self._record_model_invocation,
-        )
-        return [*candidates, *widened_candidates]
+        return candidates
 
     def _sync_state(self, status: str) -> None:
         self._restore_runtime_context()
