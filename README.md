@@ -49,14 +49,16 @@ The app can still run without every provider configured, but the full bidding an
 
 ### Run
 
-Start the backend from the repo root:
+Run the backend and frontend in two terminals.
+
+Terminal 1, from the repo root:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m arbiter serve --host 127.0.0.1 --port 8000
 ```
 
-Start the frontend in another terminal:
+Terminal 2:
 
 ```powershell
 cd frontend
@@ -64,6 +66,8 @@ npm run dev
 ```
 
 Then open `http://127.0.0.1:5173`.
+
+The frontend runs on port `5173` and talks to the backend on port `8000`.
 
 ## Architecture
 
