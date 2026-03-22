@@ -17,6 +17,7 @@ from arbiter.core.contracts import (
     CivicAuditRecord,
     CivicCapability,
     CivicConnectionStatus,
+    FailureContext,
     GovernedActionRecord,
     GovernedBidEnvelope,
     MissionOutcome,
@@ -461,6 +462,242 @@ def test_start_mission_requires_initial_commit(tmp_path: Path) -> None:
             objective="Fix failing tests",
             strategy_backend=ScriptedStrategyBackend([]),
         )
+
+
+def test_synthesize_task_uses_advisory_landscape_candidate_files(tmp_path: Path) -> None:
+    repo = tmp_path / "strategy_repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    spec = build_mission_spec(
+        repo=str(repo),
+        objective="Fix dashboard reliability issues",
+        mission_id="strategy-landscape-candidates",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime.state.repo_snapshot = RepoSnapshot(
+            repo_path=str(repo),
+            tree_summary=["app.py"],
+            complexity_hotspots=["app.py"],
+            capabilities=CapabilitySet(runtime="python", risky_paths=["app.py"]),
+        )
+        runtime.state.strategy_round = 1
+        runtime.decomposer.last_tasks = [
+            TaskNode(
+                task_id="A1",
+                title="Localize SLA issue",
+                task_type=TaskType.LOCALIZE,
+                requirement_level=TaskRequirementLevel.REQUIRED,
+                success_criteria=SuccessCriteria(description="Root cause identified"),
+                candidate_files=[
+                    "backend/app/services/sla_service.py",
+                    "frontend/src/pages/DashboardPage.jsx",
+                ],
+            ),
+            TaskNode(
+                task_id="A2",
+                title="Fix webhook persistence",
+                task_type=TaskType.BUGFIX,
+                requirement_level=TaskRequirementLevel.REQUIRED,
+                success_criteria=SuccessCriteria(description="Persistence fixed"),
+                candidate_files=["backend/app/routes/settings.py"],
+            ),
+        ]
+
+        task = runtime._synthesize_task_for_round()
+    finally:
+        runtime.store.close()
+
+    assert task.candidate_files[:3] == [
+        "backend/app/services/sla_service.py",
+        "frontend/src/pages/DashboardPage.jsx",
+        "backend/app/routes/settings.py",
+    ]
+
+
+def test_recovery_focus_files_include_imported_route_dependencies(tmp_path: Path) -> None:
+    repo = tmp_path / "recovery_repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "backend" / "app" / "models").mkdir(parents=True)
+    (repo / "backend" / "app" / "routes").mkdir(parents=True)
+    (repo / "backend" / "app" / "services").mkdir(parents=True)
+    (repo / "backend" / "tests").mkdir(parents=True)
+    (repo / "backend" / "app" / "models" / "settings.py").write_text(
+        "from pydantic import BaseModel\n\n"
+        "class WebhookSettings(BaseModel):\n"
+        "    retry_delay_seconds: int\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "services" / "webhook_service.py").write_text(
+        "def load_settings():\n"
+        "    return {\"retry_delay_seconds\": 30}\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "routes" / "settings.py").write_text(
+        "from fastapi import APIRouter\n"
+        "from app.models.settings import WebhookSettings\n"
+        "from app.services.webhook_service import load_settings, save_settings\n\n"
+        "router = APIRouter()\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "tests" / "test_settings.py").write_text(
+        "def test_settings_round_trip_persists_retry_fields(client):\n"
+        "    assert client.get('/settings').status_code == 200\n",
+        encoding="utf-8",
+    )
+
+    spec = build_mission_spec(
+        repo=str(repo),
+        objective="Fix webhook retry persistence",
+        mission_id="recovery-focus-imports",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime.state.failure_context = FailureContext(
+            failure_type="validation_failure",
+            details="validation_failed",
+            validator_deltas=[
+                "FAILED tests/test_settings.py::test_settings_round_trip_persists_retry_fields - assert 30 == 45"
+            ],
+        )
+
+        focus = runtime._recovery_focus_files()
+    finally:
+        runtime.store.close()
+
+    assert focus[:4] == [
+        "backend/tests/test_settings.py",
+        "backend/app/models/settings.py",
+        "backend/app/routes/settings.py",
+        "backend/app/services/webhook_service.py",
+    ]
+
+
+def test_recovery_focus_files_promote_import_dependencies_ahead_of_passed_test_noise(tmp_path: Path) -> None:
+    repo = tmp_path / "recovery_repo_noise"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "backend" / "app" / "models").mkdir(parents=True)
+    (repo / "backend" / "app" / "routes").mkdir(parents=True)
+    (repo / "backend" / "app" / "services").mkdir(parents=True)
+    (repo / "backend" / "tests").mkdir(parents=True)
+    (repo / "frontend" / "src" / "pages").mkdir(parents=True)
+    (repo / "frontend" / "src" / "lib").mkdir(parents=True)
+    (repo / "frontend" / "src" / "components").mkdir(parents=True)
+    (repo / "backend" / "app" / "models" / "settings.py").write_text(
+        "from pydantic import BaseModel\n\n"
+        "class WebhookSettings(BaseModel):\n"
+        "    retry_delay_seconds: int\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "services" / "webhook_service.py").write_text(
+        "from app.models.settings import WebhookSettings\n\n"
+        "def load_settings():\n"
+        "    return {\"retry_delay_seconds\": 30}\n\n"
+        "def save_settings(payload: WebhookSettings):\n"
+        "    return payload.model_dump()\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "services" / "sla_service.py").write_text(
+        "def summarize_tickets(tickets, status=None, priority=None):\n"
+        "    return {\"open_tickets\": 0, \"overdue\": 0, \"at_risk\": 0}\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "services" / "ticket_service.py").write_text(
+        "def list_tickets():\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "models" / "ticket.py").write_text(
+        "class Ticket:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "routes" / "settings.py").write_text(
+        "from fastapi import APIRouter\n"
+        "from app.models.settings import WebhookSettings\n"
+        "from app.services.webhook_service import load_settings, save_settings\n\n"
+        "router = APIRouter()\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "routes" / "tickets.py").write_text(
+        "from fastapi import APIRouter\n"
+        "from app.models.ticket import Ticket\n"
+        "from app.services.ticket_service import list_tickets\n"
+        "from app.services.sla_service import summarize_tickets\n\n"
+        "router = APIRouter()\n",
+        encoding="utf-8",
+    )
+    (repo / "frontend" / "src" / "pages" / "SettingsPage.jsx").write_text(
+        "import { saveSettings } from '../lib/api';\n"
+        "export default function SettingsPage() { return null; }\n",
+        encoding="utf-8",
+    )
+    (repo / "frontend" / "src" / "lib" / "api.js").write_text(
+        "export function saveSettings(payload) { return payload; }\n",
+        encoding="utf-8",
+    )
+    (repo / "frontend" / "src" / "components" / "SlaSummaryCard.jsx").write_text(
+        "export default function SlaSummaryCard() { return null; }\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "tests" / "test_settings.py").write_text(
+        "def test_settings_round_trip_persists_retry_fields(client):\n"
+        "    assert client.get('/settings').status_code == 200\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "tests" / "test_sla.py").write_text(
+        "def test_summary_honors_resolved_filter(client):\n"
+        "    assert client.get('/tickets/summary').status_code == 200\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "tests" / "test_tickets.py").write_text(
+        "def test_tickets(client):\n"
+        "    assert client.get('/tickets').status_code == 200\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "tests" / "test_webhook_service.py").write_text(
+        "def test_retry_schedule():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+
+    spec = build_mission_spec(
+        repo=str(repo),
+        objective="Fix support dashboard reliability",
+        mission_id="recovery-focus-noise",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime.state.failure_context = FailureContext(
+            failure_type="validation_failure",
+            details="validation_failed",
+            validator_deltas=[
+                "tests\\test_settings.py F\n"
+                "tests\\test_sla.py F\n"
+                "tests\\test_tickets.py .\n"
+                "tests\\test_webhook_service.py .\n"
+                "FAILED tests/test_settings.py::test_settings_round_trip_persists_retry_fields - assert 30 == 45\n"
+                "FAILED tests/test_sla.py::test_summary_honors_resolved_filter - assert 16 == 0\n"
+            ],
+        )
+
+        focus = runtime._recovery_focus_files()
+    finally:
+        runtime.store.close()
+
+    assert focus[:4] == [
+        "backend/tests/test_settings.py",
+        "backend/app/models/settings.py",
+        "backend/app/routes/settings.py",
+        "backend/app/services/webhook_service.py",
+    ]
+    assert "backend/app/services/sla_service.py" in focus[:8]
+    assert "backend/tests/test_tickets.py" not in focus[:8]
+    assert "backend/tests/test_webhook_service.py" not in focus[:8]
 
 
 def test_execute_compares_all_enabled_provider_proposals_with_winner_first(python_bug_repo: Path) -> None:

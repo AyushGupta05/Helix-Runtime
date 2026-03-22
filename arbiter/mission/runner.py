@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from arbiter.agents.backend import DefaultStrategyBackend, ProviderModelRouter, load_candidate_files
+from arbiter.agents.backend import (
+    DefaultStrategyBackend,
+    ProviderModelRouter,
+    _js_import_context_candidates,
+    _python_import_context_candidates,
+    load_candidate_files,
+)
 from arbiter.civic.runtime import CivicRuntime
 from arbiter.core.contracts import (
     AcceptedCheckpoint,
@@ -1695,6 +1702,7 @@ class MissionRuntime:
         """Gather full mission context for the strategy market."""
         completed = [t for t in self.state.tasks if t.status == TaskStatus.COMPLETED]
         failed = [t for t in self.state.tasks if t.status == TaskStatus.FAILED]
+        recovery_focus_files = self._recovery_focus_files()
         return {
             "objective": self.spec.objective,
             "constraints": self.spec.constraints,
@@ -1709,6 +1717,7 @@ class MissionRuntime:
             "strategy_round": self.state.strategy_round,
             "mission_landscape": self.state.mission_landscape,
             "failure_context": self.state.failure_context.details if self.state.failure_context else None,
+            "recovery_focus_files": recovery_focus_files,
             "failed_families": {tid: sorted(fams) for tid, fams in self.failed_families.items()},
             "decision_history": self.state.decision_history[-8:],
             "requested_skills": list(self.spec.requested_skills),
@@ -1716,6 +1725,58 @@ class MissionRuntime:
             "skill_outputs": {key: value for key, value in self.state.skill_outputs.items()},
             "civic_connection": self.state.civic_connection.model_dump(mode="json"),
         }
+
+    def _recovery_focus_files(self) -> list[str]:
+        failure = self.state.failure_context
+        if failure is None:
+            return []
+        repo = Path(self.spec.repo_path)
+        candidates: list[str] = []
+        file_pattern = re.compile(r"([A-Za-z0-9_./\\-]+\.(?:py|js|jsx|ts|tsx))")
+        for delta in failure.validator_deltas:
+            for match in file_pattern.findall(str(delta)):
+                normalized = GoalDecomposer._normalize_candidate_path(repo, match)
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+                if normalized:
+                    for related in GoalDecomposer._related_source_files(repo, normalized):
+                        if related not in candidates:
+                            candidates.append(related)
+        for relative in list(candidates):
+            path = (repo / relative).resolve()
+            if not path.exists() or not path.is_file() or not (path == repo or repo in path.parents):
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            suffix = path.suffix.lower()
+            if suffix == ".py":
+                context_candidates = _python_import_context_candidates(repo, path, content)
+            elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+                context_candidates = _js_import_context_candidates(repo, path, content)
+            else:
+                continue
+            insert_at = candidates.index(relative) + 1
+            for context_path in context_candidates:
+                try:
+                    normalized = context_path.relative_to(repo).as_posix()
+                except ValueError:
+                    continue
+                if normalized in candidates:
+                    current_index = candidates.index(normalized)
+                    if current_index > insert_at:
+                        candidates.pop(current_index)
+                        candidates.insert(insert_at, normalized)
+                        insert_at += 1
+                    elif current_index == insert_at:
+                        insert_at += 1
+                    continue
+                candidates.insert(insert_at, normalized)
+                insert_at += 1
+        return candidates[:8]
 
     def _assess_mission_progress(self) -> str | None:
         """Return a finalize reason if the mission objective is met, or None to continue."""
@@ -1756,6 +1817,27 @@ class MissionRuntime:
             refresh_view=True,
         )
 
+    def _strategy_round_candidate_files(self) -> list[str]:
+        candidate_files: list[str] = []
+        for advisory_task in getattr(self.decomposer, "last_tasks", [])[:4]:
+            for path in advisory_task.candidate_files[:4]:
+                if path and path not in candidate_files:
+                    candidate_files.append(path)
+                    if len(candidate_files) >= 8:
+                        return candidate_files
+        if self.state.repo_snapshot:
+            fallback = (
+                self.state.repo_snapshot.changed_files[:4]
+                + self.state.repo_snapshot.complexity_hotspots[:3]
+                + self.state.repo_snapshot.capabilities.risky_paths[:2]
+            )
+            for path in fallback:
+                if path and path not in candidate_files:
+                    candidate_files.append(path)
+                    if len(candidate_files) >= 8:
+                        break
+        return candidate_files
+
     def _synthesize_task_for_round(self, task_type_hint: str | None = None) -> TaskNode:
         """Create a task node for this strategy round. The market drives what it becomes."""
         round_num = self.state.strategy_round
@@ -1786,14 +1868,7 @@ class MissionRuntime:
             else:
                 task_type = TaskType.BUGFIX
 
-        candidate_files = []
-        if self.state.repo_snapshot:
-            candidate_files = (
-                self.state.repo_snapshot.changed_files[:4]
-                + self.state.repo_snapshot.complexity_hotspots[:3]
-                + self.state.repo_snapshot.capabilities.risky_paths[:2]
-            )
-            candidate_files = list(dict.fromkeys(candidate_files))[:8]
+        candidate_files = self._strategy_round_candidate_files()
 
         task_id = f"S{round_num}_{task_type.value}"
         task = TaskNode(
@@ -2658,10 +2733,13 @@ class MissionRuntime:
             self.state.outcome = MissionOutcome.FAILED_EXECUTION
             self.state.governance.stop_reason = "recovery_budget_exceeded"
             return {"status": ActivePhase.FINALIZE.value}
+        recovery_focus_files = self._recovery_focus_files()
+        if recovery_focus_files:
+            task.candidate_files = list(dict.fromkeys(recovery_focus_files + task.candidate_files))[:8]
         task.status = TaskStatus.READY
         self._save_task(task)
-        self.emit("recovery.round_opened", "Strategy market reopening with failure evidence.", task_id=task.task_id, round=self.state.recovery_round, failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence)
-        self.trace("recovery.completed", "Strategy market reopened", f"Strategy market reopening for recovery after {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence)
+        self.emit("recovery.round_opened", "Strategy market reopening with failure evidence.", task_id=task.task_id, round=self.state.recovery_round, failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence, recovery_focus_files=recovery_focus_files)
+        self.trace("recovery.completed", "Strategy market reopened", f"Strategy market reopening for recovery after {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence, recovery_focus_files=recovery_focus_files)
         return {"status": ActivePhase.STRATEGIZE.value}
 
     def node_finalize(self) -> dict:

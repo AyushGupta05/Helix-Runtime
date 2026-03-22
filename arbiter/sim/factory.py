@@ -426,6 +426,8 @@ class SimulationFactory:
             completed = mc.get("completed_moves", [])
             failed = mc.get("failed_moves", [])
             landscape = mc.get("mission_landscape", [])
+            failure_context = str(mc.get("failure_context") or "").strip()
+            recovery_focus_files = mc.get("recovery_focus_files", [])
             runtime_cap = mc.get("max_runtime_seconds")
             research_brief = self._research_prompt_brief(mc.get("skill_outputs", {}))
             mission_section = (
@@ -436,6 +438,10 @@ class SimulationFactory:
                 f"Mission landscape: {'; '.join(landscape[:4]) if landscape else 'not yet mapped'}\n"
                 f"Constraints: {', '.join(mc.get('constraints', [])) or 'none'}\n"
             )
+            if failure_context:
+                mission_section += f"Latest failure: {failure_context}\n"
+            if recovery_focus_files:
+                mission_section += f"Recovery focus files: {', '.join(recovery_focus_files[:4])}\n"
             if runtime_cap is not None:
                 mission_section += (
                     "Runtime posture: keep the move efficient and bounded to the current task type.\n"

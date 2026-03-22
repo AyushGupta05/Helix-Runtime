@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
-from arbiter.agents.backend import DefaultStrategyBackend, EditOperation
+from arbiter.agents.backend import DefaultStrategyBackend, EditOperation, load_candidate_files
 from arbiter.core.contracts import Bid, SuccessCriteria, TaskNode, TaskRequirementLevel, TaskType
 from tests.fake_provider_backend import make_provider_backend
 
@@ -238,6 +239,50 @@ def test_generate_edit_proposal_uses_execution_timeout_for_real_edits() -> None:
     assert captured["timeout"] == 23.0
 
 
+def test_load_candidate_files_adds_framework_context_from_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "backend" / "app" / "routes").mkdir(parents=True)
+    (repo / "backend" / "app" / "models").mkdir(parents=True)
+    (repo / "backend" / "app" / "services").mkdir(parents=True)
+    (repo / "backend" / "requirements.txt").write_text("fastapi==0.115.8\n", encoding="utf-8")
+    (repo / "backend" / "app" / "main.py").write_text(
+        "from fastapi import FastAPI\n"
+        "from app.routes.settings import router as settings_router\n"
+        "app = FastAPI()\n"
+        "app.include_router(settings_router)\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "models" / "settings.py").write_text(
+        "from pydantic import BaseModel\n\n"
+        "class WebhookSettings(BaseModel):\n"
+        "    retry_enabled: bool\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "services" / "webhook_service.py").write_text(
+        "def load_settings():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+    (repo / "backend" / "app" / "routes" / "settings.py").write_text(
+        "from fastapi import APIRouter\n"
+        "from app.models.settings import WebhookSettings\n"
+        "from app.services.webhook_service import load_settings\n\n"
+        "router = APIRouter()\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_candidate_files(
+        str(repo),
+        ["backend/app/models/settings.py", "backend/app/routes/settings.py"],
+    )
+
+    assert "backend/app/models/settings.py" in loaded
+    assert "backend/app/routes/settings.py" in loaded
+    assert "backend/requirements.txt" in loaded
+    assert "backend/app/main.py" in loaded
+    assert "backend/app/services/webhook_service.py" in loaded
+
+
 def test_generate_edit_proposal_keeps_execution_scope_broader_than_bid_touched_files() -> None:
     captured: dict[str, object] = {}
     lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
@@ -305,6 +350,119 @@ def test_generate_edit_proposal_keeps_execution_scope_broader_than_bid_touched_f
     assert invocation.provider == "openai"
     assert "FILE: calc.py" in str(captured["prompt"])
     assert "FILE: tests/test_calc.py" in str(captured["prompt"])
+
+
+def test_generate_edit_proposal_prioritizes_task_recovery_files_in_prompt() -> None:
+    captured: dict[str, object] = {}
+    lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
+
+    class _Router:
+        def __init__(self) -> None:
+            self.replay = SimpleNamespace(mode="off")
+            self.config = SimpleNamespace(
+                enabled_providers=["openai"],
+                default_provider="openai",
+                preview_request_timeout_seconds=11.0,
+                proposal_request_timeout_seconds=23.0,
+                model_lanes={"proposal_gen": lane_config, "proposal_gen.openai": lane_config},
+            )
+
+        def invoke(
+            self,
+            lane: str,
+            prompt: dict[str, str],
+            *,
+            request_timeout_seconds: float | None = None,
+        ):
+            del lane, request_timeout_seconds
+            captured["prompt"] = prompt["user"]
+            from arbiter.agents.backend import ModelInvocationResult
+
+            content = json.dumps(
+                {
+                    "summary": "Apply a compact runtime fix.",
+                    "operations": [
+                        {
+                            "type": "replace",
+                            "path": "backend/app/services/webhook_service.py",
+                            "target": "return {}",
+                            "content": "return {'retry_delay_seconds': 45}",
+                        }
+                    ],
+                    "notes": ["execution"],
+                }
+            )
+            return ModelInvocationResult(
+                content=content,
+                provider="openai",
+                model_id="gpt-5-mini",
+                lane="proposal_gen.openai",
+                prompt_preview=prompt["user"],
+                response_preview=content,
+                token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                cost_usage={"usd": 0.001},
+            )
+
+    backend = DefaultStrategyBackend(_Router())
+    task = TaskNode(
+        task_id="T2",
+        title="Fix webhook retry persistence",
+        task_type=TaskType.BUGFIX,
+        requirement_level=TaskRequirementLevel.REQUIRED,
+        success_criteria=SuccessCriteria(description="settings persist"),
+        candidate_files=[
+            "backend/tests/test_settings.py",
+            "backend/app/routes/settings.py",
+            "backend/app/services/webhook_service.py",
+            "backend/app/models/settings.py",
+        ],
+    )
+    bid = Bid(
+        bid_id="b2",
+        task_id="T2",
+        role="Speed",
+        provider="openai",
+        lane="bid_fast.openai",
+        model_id="gpt-5-mini",
+        invocation_id="inv-2",
+        variant_id="speed-base",
+        strategy_family="speed-localized",
+        strategy_summary="Fix webhook retry persistence in the backend settings flow.",
+        exact_action="Inspect the settings route and service, then fix the persistence bug.",
+        expected_benefit=0.8,
+        utility=0.82,
+        confidence=0.9,
+        risk=0.18,
+        cost=0.05,
+        estimated_runtime_seconds=45,
+        touched_files=["backend/app/models/settings.py", "backend/app/routes/settings.py"],
+        rollback_plan="Revert the settings patch.",
+    )
+    candidate_files = {
+        "backend/app/models/settings.py": "from pydantic import BaseModel\n",
+        "backend/app/routes/settings.py": "from app.services.webhook_service import load_settings, save_settings\n",
+        "backend/app/services/webhook_service.py": "def load_settings():\n    return {}\n",
+        "backend/tests/test_settings.py": "def test_settings_round_trip_persists_retry_fields():\n    assert True\n",
+        "frontend/src/pages/SettingsPage.jsx": "export default function SettingsPage() {\n  return null\n}\n",
+        "backend/app/main.py": "from app.routes.settings import router\n",
+    }
+
+    proposal, invocation = backend.generate_edit_proposal(
+        task=task,
+        bid=bid,
+        mission_objective="Fix webhook retry persistence",
+        candidate_files=candidate_files,
+        preview=False,
+    )
+
+    prompt = str(captured["prompt"])
+
+    assert proposal.operations
+    assert invocation.provider == "openai"
+    assert "FILE: backend/tests/test_settings.py" in prompt
+    assert "FILE: backend/app/services/webhook_service.py" in prompt
+    assert prompt.index("FILE: backend/tests/test_settings.py") < prompt.index("FILE: backend/app/models/settings.py")
+    assert "Do not request additional files or permissions" in prompt
 
 
 def test_generate_edit_proposal_retries_with_compact_prompt_after_unusable_payload() -> None:

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -79,6 +80,34 @@ class ProposalCandidate(BaseModel):
     score: float = 0.0
     selected: bool = False
     rejection_reason: str | None = None
+
+
+_CONTEXT_DEPENDENCY_FILES = (
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "tsconfig.json",
+)
+_PYTHON_ENTRYPOINT_FILES = ("main.py", "app.py", "__init__.py")
+_JS_ENTRYPOINT_FILES = (
+    "main.js",
+    "main.jsx",
+    "main.ts",
+    "main.tsx",
+    "App.jsx",
+    "App.tsx",
+    "index.js",
+    "index.jsx",
+    "index.ts",
+    "index.tsx",
+    "vite.config.js",
+    "vitest.config.js",
+)
+_JS_FILE_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".json")
+_MAX_CONTEXT_FILES = 8
 
 
 @dataclass(frozen=True)
@@ -631,9 +660,7 @@ class DefaultStrategyBackend:
             if preview
             else getattr(self.router.config, "proposal_request_timeout_seconds", None)
         )
-        preferred_files = [path for path in (bid.touched_files or []) if path in candidate_files]
-        remaining_files = [path for path in candidate_files if path not in preferred_files]
-        ordered_files = preferred_files + remaining_files
+        ordered_files = _ordered_prompt_files(task, bid, candidate_files)
         if preview:
             file_limit = 2
         else:
@@ -657,6 +684,11 @@ class DefaultStrategyBackend:
                 "replace/insert_before/insert_after operations must also include target. Supported operation types are: "
                 "replace, insert_after, insert_before, append, prepend, create_file. "
                 "Use files only when a full replacement is genuinely required. Keep edits minimal and respect the bid strategy. "
+                "Preserve the repository's existing frameworks, dependencies, and public interfaces. "
+                "Infer the stack from the provided source files, manifests, and entrypoints, and extend the current implementation instead of migrating it. "
+                "Do not swap frameworks, introduce a different persistence layer, or rename API shapes unless the provided context already shows that migration is underway. "
+                "The provided candidate files are the available repository context for this work unit; do not ask for more files, permissions, or execution access. "
+                "Use the supplied code context to produce the best executable patch you can. "
                 "Do not include markdown fences or analysis."
             )
             if preview:
@@ -684,6 +716,7 @@ class DefaultStrategyBackend:
                 f"{research_block + '\n' if research_block else ''}"
                 f"Candidate files:\n{file_blob}\n"
                 "This is an executable bounded work unit chosen by Arbiter. "
+                "Do not request additional files or permissions; the candidate files above are your working repository context. "
                 "Do not change the task type or return analysis-only output. "
                 "For bugfix, test, refactor, and perf_optimize tasks, return at least one operation or file update. "
                 "For existing files, prefer minimal operations over full replacement content. "
@@ -949,12 +982,180 @@ class ScriptedStrategyBackend(DefaultStrategyBackend):
             )
         ]
 
+def _candidate_key(repo: Path, path: Path) -> str:
+    return path.relative_to(repo).as_posix()
+
+
+def _safe_read(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _ancestor_chain(repo: Path, path: Path) -> list[Path]:
+    ancestors: list[Path] = []
+    current = path.parent
+    while current == repo or repo in current.parents:
+        ancestors.append(current)
+        if current == repo:
+            break
+        current = current.parent
+    return ancestors
+
+
+def _dependency_context_candidates(repo: Path, path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for ancestor in _ancestor_chain(repo, path):
+        for name in _CONTEXT_DEPENDENCY_FILES:
+            candidate = ancestor / name
+            if candidate.is_file() and candidate != path and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _entrypoint_context_candidates(repo: Path, path: Path) -> list[Path]:
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        filenames = _PYTHON_ENTRYPOINT_FILES
+    elif suffix in _JS_FILE_SUFFIXES:
+        filenames = _JS_ENTRYPOINT_FILES
+    else:
+        return []
+    candidates: list[Path] = []
+    for ancestor in _ancestor_chain(repo, path):
+        for name in filenames:
+            candidate = ancestor / name
+            if candidate.is_file() and candidate != path and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _resolve_python_import(repo: Path, source_path: Path, module: str) -> Path | None:
+    module = module.strip()
+    if not module:
+        return None
+    if module.startswith("."):
+        dot_count = len(module) - len(module.lstrip("."))
+        module_tail = module.lstrip(".")
+        base_dir = source_path.parent
+        for _ in range(max(0, dot_count - 1)):
+            if base_dir == repo:
+                break
+            base_dir = base_dir.parent
+        module_parts = [part for part in module_tail.split(".") if part]
+        candidate_base = base_dir.joinpath(*module_parts) if module_parts else base_dir
+        for candidate in (candidate_base.with_suffix(".py"), candidate_base / "__init__.py"):
+            if candidate.is_file() and (candidate == repo or repo in candidate.parents):
+                return candidate
+        return None
+    module_root = Path(*[part for part in module.split(".") if part])
+    search_dir = source_path.parent
+    while search_dir == repo or repo in search_dir.parents:
+        candidate_base = search_dir / module_root
+        for candidate in (candidate_base.with_suffix(".py"), candidate_base / "__init__.py"):
+            if candidate.is_file() and (candidate == repo or repo in candidate.parents):
+                return candidate
+        if search_dir == repo:
+            break
+        search_dir = search_dir.parent
+    return None
+
+
+def _python_import_context_candidates(repo: Path, path: Path, content: str) -> list[Path]:
+    candidates: list[Path] = []
+    for match in re.finditer(r"^\s*(?:from\s+([.\w]+)\s+import|import\s+([.\w.]+))", content, flags=re.MULTILINE):
+        module = (match.group(1) or match.group(2) or "").split(",")[0].strip()
+        candidate = _resolve_python_import(repo, path, module)
+        if candidate is not None and candidate != path and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _resolve_js_import(path: Path, specifier: str) -> list[Path]:
+    base = (path.parent / specifier).resolve()
+    candidates: list[Path] = []
+    suffixes = ("", *_JS_FILE_SUFFIXES)
+    index_suffixes = tuple(f"/index{suffix}" for suffix in _JS_FILE_SUFFIXES)
+    for suffix in suffixes:
+        candidate = Path(f"{base}{suffix}")
+        if candidate.is_file() and candidate not in candidates:
+            candidates.append(candidate)
+    for suffix in index_suffixes:
+        candidate = Path(f"{base}{suffix}")
+        if candidate.is_file() and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _js_import_context_candidates(repo: Path, path: Path, content: str) -> list[Path]:
+    candidates: list[Path] = []
+    pattern = r"""(?:from\s+["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)|require\(\s*["']([^"']+)["']\s*\))"""
+    for match in re.finditer(pattern, content):
+        specifier = (match.group(1) or match.group(2) or match.group(3) or "").strip()
+        if not specifier.startswith("."):
+            continue
+        for candidate in _resolve_js_import(path, specifier):
+            if (candidate == repo or repo in candidate.parents) and candidate != path and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _context_candidates(repo: Path, path: Path, content: str) -> list[Path]:
+    candidates = _dependency_context_candidates(repo, path) + _entrypoint_context_candidates(repo, path)
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        candidates.extend(_python_import_context_candidates(repo, path, content))
+    elif suffix in _JS_FILE_SUFFIXES:
+        candidates.extend(_js_import_context_candidates(repo, path, content))
+    ordered: list[Path] = []
+    for candidate in candidates:
+        if candidate != path and candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
+def _ordered_prompt_files(task: TaskNode, bid: Bid, candidate_files: dict[str, str]) -> list[str]:
+    ordered: list[str] = []
+    priority_groups = [
+        list(task.candidate_files or []),
+        list(bid.touched_files or []),
+        list(candidate_files.keys()),
+    ]
+    for group in priority_groups:
+        for path in group:
+            if path in candidate_files and path not in ordered:
+                ordered.append(path)
+    return ordered
+
 
 def load_candidate_files(repo_path: str, files: list[str]) -> dict[str, str]:
-    repo = Path(repo_path)
+    repo = Path(repo_path).resolve()
     loaded: dict[str, str] = {}
+    seen_paths: set[Path] = set()
+    explicit_files: list[tuple[str, Path, str]] = []
+
     for relative in files:
-        path = repo / relative
-        if path.exists() and path.is_file():
-            loaded[relative] = path.read_text(encoding="utf-8", errors="ignore")
+        path = (repo / relative).resolve()
+        if not path.exists() or not path.is_file() or not (path == repo or repo in path.parents):
+            continue
+        if path in seen_paths:
+            continue
+        content = _safe_read(path)
+        loaded[relative] = content
+        explicit_files.append((relative, path, content))
+        seen_paths.add(path)
+
+    context_paths: list[Path] = []
+    for _, path, content in explicit_files:
+        for candidate in _context_candidates(repo, path, content):
+            resolved = candidate.resolve()
+            if resolved in seen_paths:
+                continue
+            context_paths.append(resolved)
+            seen_paths.add(resolved)
+            if len(context_paths) >= _MAX_CONTEXT_FILES:
+                break
+        if len(context_paths) >= _MAX_CONTEXT_FILES:
+            break
+
+    for candidate in context_paths:
+        loaded[_candidate_key(repo, candidate)] = _safe_read(candidate)
     return loaded

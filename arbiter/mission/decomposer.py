@@ -43,6 +43,7 @@ class GoalDecomposer:
         self.last_plan_source: str = "heuristic"
         self.last_plan_reason: str = "heuristic_only"
         self.last_candidate_scores: list[dict[str, Any]] = []
+        self.last_tasks: list[TaskNode] = []
 
     def decompose(
         self,
@@ -84,6 +85,7 @@ class GoalDecomposer:
             }
             for item in sorted(candidates, key=lambda item: item.score, reverse=True)
         ]
+        self.last_tasks = [task.model_copy(deep=True) for task in best.tasks]
         return best.tasks
 
     def _provider_candidates(

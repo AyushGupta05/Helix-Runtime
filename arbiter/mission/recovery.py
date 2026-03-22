@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 
 from arbiter.core.contracts import Bid, FailureContext
+
+
+_SOURCE_FILE_PATTERN = re.compile(r"([A-Za-z0-9_./\\-]+\.(?:py|js|jsx|ts|tsx))")
 
 
 @dataclass
@@ -15,6 +19,14 @@ class RecoveryPlan:
 
 
 class RecoveryEngine:
+    @staticmethod
+    def _validator_referenced_files(failure: FailureContext) -> set[str]:
+        files: set[str] = set()
+        for delta in failure.validator_deltas:
+            for match in _SOURCE_FILE_PATTERN.findall(str(delta)):
+                files.add(match.replace("\\", "/"))
+        return files
+
     def family_penalty(self, failure: FailureContext) -> tuple[str | None, float]:
         if not failure.strategy_family:
             return None, 0.0
@@ -50,12 +62,17 @@ class RecoveryEngine:
         if failure.rollback_result == "rollback_succeeded":
             evidence.append("rollback_succeeded")
 
-        attempted_scope = set(failure.attempted_file_scope)
-        standby_scope = set(standby.touched_files)
+        attempted_scope = {path.replace("\\", "/") for path in failure.attempted_file_scope}
+        standby_scope = {path.replace("\\", "/") for path in standby.touched_files}
+        validator_scope = self._validator_referenced_files(failure)
         if attempted_scope and standby_scope and standby_scope == attempted_scope:
             evidence.append("same_file_scope")
         if attempted_scope and standby_scope and len(standby_scope) < len(attempted_scope):
             evidence.append("smaller_scope")
+        if validator_scope and attempted_scope and validator_scope.isdisjoint(attempted_scope):
+            evidence.append("validator_scope_outside_attempted")
+        if validator_scope and standby_scope and validator_scope.isdisjoint(standby_scope):
+            evidence.append("validator_scope_outside_standby")
         if standby.risk <= (current.risk if current else standby.risk):
             evidence.append("lower_or_equal_risk")
         if failure.failure_type in standby.promotion_hints:
@@ -65,7 +82,14 @@ class RecoveryEngine:
         if "file_churn_exceeded" in failure.validator_deltas and len(standby_scope) >= len(attempted_scope):
             evidence.append("file_churn_not_reduced")
 
-        disqualifiers = {"same_strategy_family", "standby_rejected", "api_guard_overlap", "file_churn_not_reduced"}
+        disqualifiers = {
+            "same_strategy_family",
+            "standby_rejected",
+            "api_guard_overlap",
+            "file_churn_not_reduced",
+            "validator_scope_outside_attempted",
+            "validator_scope_outside_standby",
+        }
         if not any(item in disqualifiers for item in evidence):
             if (
                 "promotion_hint_match" in evidence
