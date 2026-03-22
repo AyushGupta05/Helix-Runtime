@@ -1780,8 +1780,12 @@ class MissionRuntime:
 
     def _assess_mission_progress(self) -> str | None:
         """Return a finalize reason if the mission objective is met, or None to continue."""
-        required = [t for t in self.state.tasks if t.required]
-        if required and all(t.status == TaskStatus.COMPLETED for t in required):
+        required = [
+            task
+            for task in self.state.tasks
+            if task.required and task.status not in {TaskStatus.FAILED, TaskStatus.SKIPPED}
+        ]
+        if required and all(task.status == TaskStatus.COMPLETED for task in required):
             return "all_required_tasks_completed"
         stop = self.governance.evaluate_stop(self.state)
         if stop.should_stop:
@@ -2036,14 +2040,14 @@ class MissionRuntime:
                 )
                 self.trace("bid.retired", "Strategy rejected", f"{bid.bid_id} was rejected before scoring.", task_id=task.task_id, bid_id=bid.bid_id, provider=bid.provider, lane=bid.lane, status="danger", reason=bid.rejection_reason)
                 continue
-            bid.score = score_bid(bid)
+            bid.score = score_bid(bid, task=task, failure_context=self.state.failure_context)
             valid.append(bid)
 
         self.state.active_bids = cluster_and_select(valid, per_family=1, max_candidates=7)
         self._preflight_governed_bids(task)
         self._set_bidding_metrics(self.state.active_bids, provider_invocation_ids=batch.provider_invocation_ids)
         for bid in self.state.active_bids:
-            bid.score = score_bid(bid)
+            bid.score = score_bid(bid, task=task, failure_context=self.state.failure_context)
             self._save_bid(bid, self.state.active_bid_round)
             payload = self._bid_event_payload(bid)
             trace_payload = {
@@ -2187,7 +2191,7 @@ class MissionRuntime:
                 f"cap={diagnostics['capability_availability_probability']} policy={diagnostics['policy_friction_cost']}"
             )
             bid.status = BidStatus.SIMULATED
-            bid.score = score_bid(bid)
+            bid.score = score_bid(bid, task=task, failure_context=self.state.failure_context)
             self._save_bid(bid, self.state.active_bid_round)
             self.emit(
                 "simulation.bid_scored",
@@ -2635,6 +2639,7 @@ class MissionRuntime:
                 self.emit("checkpoint.accepted", "Accepted checkpoint committed.", task_id=task.task_id, commit_sha=commit_sha)
                 self._refresh_worktree_state("Changes were committed to the Helix-managed branch; the worktree is now clean.")
                 self.trace("checkpoint.accepted", "Checkpoint accepted", f"Accepted checkpoint committed for {task.task_id}.", task_id=task.task_id, bid_id=bid.bid_id if bid else None, status="success", commit_sha=commit_sha, checkpoint_id=checkpoint.checkpoint_id)
+            self.state.failure_context = None
             task.status = TaskStatus.COMPLETED
             self._save_task(task)
             self.state.decision_history.append(f"{task.task_id}: completed")
@@ -2698,6 +2703,9 @@ class MissionRuntime:
             )
             self.trace("diff.updated", "Worktree reverted", self.state.worktree_state["reason"], task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", worktree_state=self.state.worktree_state)
         plan = self.recovery.plan_recovery(self.state.current_bid, self.state.standby_bid, self.state.failure_context)
+        if plan.action != "promote_standby":
+            task.status = TaskStatus.FAILED
+            self._save_task(task)
         if plan.action == "stop":
             self.state.outcome = MissionOutcome.FAILED_SAFE_STOP
             self.state.governance.stop_reason = plan.reason
@@ -2736,8 +2744,6 @@ class MissionRuntime:
         recovery_focus_files = self._recovery_focus_files()
         if recovery_focus_files:
             task.candidate_files = list(dict.fromkeys(recovery_focus_files + task.candidate_files))[:8]
-        task.status = TaskStatus.READY
-        self._save_task(task)
         self.emit("recovery.round_opened", "Strategy market reopening with failure evidence.", task_id=task.task_id, round=self.state.recovery_round, failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence, recovery_focus_files=recovery_focus_files)
         self.trace("recovery.completed", "Strategy market reopened", f"Strategy market reopening for recovery after {task.task_id}.", task_id=task.task_id, bid_id=self.state.current_bid.bid_id if self.state.current_bid else None, status="warning", failed_families=sorted(self.failed_families.get(task.task_id, set())), reason=plan.reason, evidence=plan.evidence, recovery_focus_files=recovery_focus_files)
         return {"status": ActivePhase.STRATEGIZE.value}
@@ -2747,7 +2753,12 @@ class MissionRuntime:
         if stop.should_stop:
             self.state.governance.stop_reason = stop.reason
             self.state.outcome = stop.outcome or self.state.outcome
-        required_tasks = [task for task in self.state.tasks if task.requirement_level == TaskRequirementLevel.REQUIRED]
+        required_tasks = [
+            task
+            for task in self.state.tasks
+            if task.requirement_level == TaskRequirementLevel.REQUIRED
+            and task.status not in {TaskStatus.FAILED, TaskStatus.SKIPPED}
+        ]
         optional_tasks = [task for task in self.state.tasks if task.requirement_level == TaskRequirementLevel.OPTIONAL]
         if self.state.outcome is None:
             if required_tasks and all(task.status == TaskStatus.COMPLETED for task in required_tasks):

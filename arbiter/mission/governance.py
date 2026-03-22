@@ -16,6 +16,7 @@ from arbiter.core.contracts import (
     TaskStatus,
     ValidationReport,
 )
+from arbiter.market.scoring import effective_file_scope_limit
 
 
 @dataclass
@@ -83,7 +84,7 @@ class GovernanceEngine:
         )
         if bid.strategy_family in failed_families:
             reasons.append("failed_family_banned")
-        if len(bid.touched_files) > spec.stop_policy.max_file_scope:
+        if len({path.replace("\\", "/") for path in bid.touched_files}) > effective_file_scope_limit(bid, task, spec):
             reasons.append("file_scope_exceeded")
         if any(path in spec.protected_paths for path in bid.touched_files):
             reasons.append("touches_protected_path")
@@ -159,7 +160,11 @@ class GovernanceEngine:
             task.status in {TaskStatus.READY, TaskStatus.RUNNING} for task in state.tasks
         ):
             # Check if the objective appears satisfied by completed moves
-            required_tasks = [task for task in state.tasks if task.required]
+            required_tasks = [
+                task
+                for task in state.tasks
+                if task.required and task.status not in {TaskStatus.FAILED, TaskStatus.SKIPPED}
+            ]
             if required_tasks and all(task.status == TaskStatus.COMPLETED for task in required_tasks):
                 return StopDecision(True, "mission_objective_met", MissionOutcome.SUCCESS)
         if state.governance.current_risk_score > state.mission.risk_policy.max_risk_score:

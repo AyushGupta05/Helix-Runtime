@@ -30,6 +30,7 @@ from arbiter.core.contracts import (
     SuccessCriteria,
     TaskNode,
     TaskRequirementLevel,
+    TaskStatus,
     TaskType,
     utc_now,
 )
@@ -557,11 +558,14 @@ def test_recovery_focus_files_include_imported_route_dependencies(tmp_path: Path
     runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
     try:
         runtime.state.failure_context = FailureContext(
+            task_id="S1_bugfix",
             failure_type="validation_failure",
             details="validation_failed",
+            diff_summary="tests failed",
             validator_deltas=[
                 "FAILED tests/test_settings.py::test_settings_round_trip_persists_retry_fields - assert 30 == 45"
             ],
+            recommended_recovery_scope="settings persistence",
         )
 
         focus = runtime._recovery_focus_files()
@@ -673,8 +677,10 @@ def test_recovery_focus_files_promote_import_dependencies_ahead_of_passed_test_n
     runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
     try:
         runtime.state.failure_context = FailureContext(
+            task_id="S1_bugfix",
             failure_type="validation_failure",
             details="validation_failed",
+            diff_summary="settings and sla tests failed",
             validator_deltas=[
                 "tests\\test_settings.py F\n"
                 "tests\\test_sla.py F\n"
@@ -683,6 +689,7 @@ def test_recovery_focus_files_promote_import_dependencies_ahead_of_passed_test_n
                 "FAILED tests/test_settings.py::test_settings_round_trip_persists_retry_fields - assert 30 == 45\n"
                 "FAILED tests/test_sla.py::test_summary_honors_resolved_filter - assert 16 == 0\n"
             ],
+            recommended_recovery_scope="settings persistence and sla summary",
         )
 
         focus = runtime._recovery_focus_files()
@@ -1025,6 +1032,208 @@ def test_governance_keeps_unbounded_runtime_missions_running(python_bug_repo: Pa
     assert "runtime_budget_exceeded" not in decision.reasons
     assert progress["budget_remaining_pct"] is None
     assert stop.should_stop is False
+
+
+def test_assess_mission_progress_ignores_failed_superseded_required_tasks(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests",
+        mission_id="progress-ignores-failed-required",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime._prepare_run()
+        runtime.state.tasks = [
+            TaskNode(
+                task_id="S1_bugfix",
+                title="Initial failed move",
+                task_type=TaskType.BUGFIX,
+                requirement_level=TaskRequirementLevel.REQUIRED,
+                success_criteria=SuccessCriteria(description="Fix the bug"),
+                status=TaskStatus.FAILED,
+            ),
+            TaskNode(
+                task_id="S2_bugfix",
+                title="Recovered successful move",
+                task_type=TaskType.BUGFIX,
+                requirement_level=TaskRequirementLevel.REQUIRED,
+                success_criteria=SuccessCriteria(description="Fix the bug"),
+                status=TaskStatus.COMPLETED,
+            ),
+        ]
+
+        stop_reason = runtime._assess_mission_progress()
+    finally:
+        runtime.store.close()
+
+    assert stop_reason == "all_required_tasks_completed"
+
+
+def test_evaluate_bid_allows_recovery_scope_spillover_for_focused_bugfixes(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix the dashboard reliability regressions",
+        mission_id="recovery-scope-spillover",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime._prepare_run()
+        task = TaskNode(
+            task_id="S2_bugfix",
+            title="Recovery round",
+            task_type=TaskType.BUGFIX,
+            requirement_level=TaskRequirementLevel.REQUIRED,
+            success_criteria=SuccessCriteria(description="All validators pass"),
+            candidate_files=[
+                "backend/app/services/sla_service.py",
+                "backend/app/models/settings.py",
+                "backend/app/routes/settings.py",
+                "frontend/src/pages/DashboardPage.jsx",
+                "frontend/src/components/FilterBar.jsx",
+                "frontend/src/pages/SettingsPage.jsx",
+                "frontend/src/lib/api.js",
+            ],
+            validator_requirements=["tests"],
+        )
+        bid = Bid(
+            bid_id="bid-recovery-combined",
+            task_id=task.task_id,
+            role="Quality",
+            variant_id="quality-base",
+            strategy_family="quality-coverage",
+            strategy_summary="Fix both dashboard issues with tests.",
+            exact_action="Patch the SLA and settings paths, then run tests.",
+            expected_benefit=0.9,
+            utility=0.85,
+            confidence=0.78,
+            risk=0.28,
+            cost=0.18,
+            estimated_runtime_seconds=180,
+            touched_files=[
+                "backend/app/services/sla_service.py",
+                "backend/app/models/settings.py",
+                "backend/app/routes/settings.py",
+                "frontend/src/pages/DashboardPage.jsx",
+                "frontend/src/components/FilterBar.jsx",
+                "frontend/src/pages/SettingsPage.jsx",
+                "frontend/src/lib/api.js",
+                "backend/tests/test_sla_service.py",
+                "backend/tests/test_settings.py",
+            ],
+            validator_plan=["tests"],
+            rollback_plan="revert",
+        )
+
+        decision = runtime.governance.evaluate_bid(task, bid, spec, failed_families=set())
+    finally:
+        runtime.store.close()
+
+    assert decision.allowed is True
+    assert "file_scope_exceeded" not in decision.reasons
+
+
+def test_node_recover_marks_rebid_task_failed_before_reopening_market(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests",
+        mission_id="recover-marks-task-failed",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime._prepare_run()
+        runtime.state.repo_snapshot = runtime.collector.collect(run_commands=False, objective=spec.objective)
+        task = TaskNode(
+            task_id="S1_bugfix",
+            title="Bugfix move",
+            task_type=TaskType.BUGFIX,
+            requirement_level=TaskRequirementLevel.REQUIRED,
+            success_criteria=SuccessCriteria(description="Fix the bug"),
+            candidate_files=["calc.py"],
+            status=TaskStatus.RUNNING,
+        )
+        runtime.state.tasks = [task]
+        runtime.state.active_task_id = task.task_id
+        runtime.state.current_bid = Bid(
+            bid_id="bid-current",
+            task_id=task.task_id,
+            role="Safe",
+            provider="openai",
+            lane="bid_deep.openai",
+            model_id="gpt-5-mini",
+            invocation_id="inv-current",
+            variant_id="safe-base",
+            strategy_family="checkpoint-first",
+            strategy_summary="Retry the bugfix safely.",
+            exact_action="Patch calc.py and rerun tests.",
+            expected_benefit=0.8,
+            utility=0.8,
+            confidence=0.8,
+            risk=0.2,
+            cost=0.1,
+            estimated_runtime_seconds=60,
+            touched_files=["calc.py"],
+            rollback_plan="revert",
+            status=BidStatus.WINNER,
+        )
+        runtime.state.failure_context = FailureContext(
+            task_id=task.task_id,
+            failure_type="validation_failure",
+            details="tests failed",
+            diff_summary="calc.py changed",
+            validator_deltas=["tests/test_calc.py::test_add failed"],
+            recommended_recovery_scope="standby_or_rebid",
+            strategy_family=runtime.state.current_bid.strategy_family,
+            attempted_file_scope=["calc.py"],
+            rollout_evidence=[],
+            rollback_result="rollback_succeeded",
+        )
+
+        result = runtime.node_recover()
+    finally:
+        runtime.store.close()
+
+    assert result == {"status": ActivePhase.STRATEGIZE.value}
+    assert task.status == TaskStatus.FAILED
+
+
+def test_node_finalize_treats_failed_required_tasks_as_superseded(python_bug_repo: Path) -> None:
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests",
+        mission_id="finalize-ignores-failed-required",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
+    try:
+        runtime._prepare_run()
+        runtime.state.tasks = [
+            TaskNode(
+                task_id="S1_bugfix",
+                title="Initial failed move",
+                task_type=TaskType.BUGFIX,
+                requirement_level=TaskRequirementLevel.REQUIRED,
+                success_criteria=SuccessCriteria(description="Fix the bug"),
+                status=TaskStatus.FAILED,
+            ),
+            TaskNode(
+                task_id="S2_bugfix",
+                title="Recovered successful move",
+                task_type=TaskType.BUGFIX,
+                requirement_level=TaskRequirementLevel.REQUIRED,
+                success_criteria=SuccessCriteria(description="Fix the bug"),
+                status=TaskStatus.COMPLETED,
+            ),
+        ]
+
+        result = runtime.node_finalize()
+    finally:
+        runtime.store.close()
+
+    assert result == {"status": "done"}
+    assert runtime.state.outcome == MissionOutcome.SUCCESS
 
 
 def test_preflight_governed_bids_rejects_blocked_strategy(python_bug_repo: Path) -> None:
