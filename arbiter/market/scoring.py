@@ -87,6 +87,7 @@ def score_bid(bid: Bid, *, task: TaskNode | None = None, failure_context: Failur
     rationale_bonus = 0.04 if bid.mission_rationale and len(bid.mission_rationale) > 20 else 0.0
     touched = set(_normalize_paths(bid.touched_files))
     task_focus_bonus = 0.0
+    task_focus = set()
     if task is not None and touched:
         task_focus = set(_normalize_paths(task.candidate_files))
         if task_focus:
@@ -112,5 +113,11 @@ def score_bid(bid: Bid, *, task: TaskNode | None = None, failure_context: Failur
                 recovery_bonus -= 0.05
             elif touches_complementary_focus:
                 recovery_bonus += 0.03
+        if task_focus and len(task_focus) >= 5:
+            overlap = len(touched & task_focus)
+            if overlap >= 4:
+                recovery_bonus += min(0.16, (overlap - 3) * 0.05)
+            elif overlap <= 3:
+                recovery_bonus -= 0.05
 
     return round(base + search + policy + capability + friction + revocation + rationale_bonus + task_focus_bonus + recovery_bonus, 4)

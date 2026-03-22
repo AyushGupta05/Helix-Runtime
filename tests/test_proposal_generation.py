@@ -465,6 +465,130 @@ def test_generate_edit_proposal_prioritizes_task_recovery_files_in_prompt() -> N
     assert "Do not request additional files or permissions" in prompt
 
 
+def test_generate_edit_proposal_expands_prompt_scope_for_required_multi_area_bugfix() -> None:
+    captured: dict[str, object] = {}
+    lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
+
+    class _Router:
+        def __init__(self) -> None:
+            self.replay = SimpleNamespace(mode="off")
+            self.config = SimpleNamespace(
+                enabled_providers=["openai"],
+                default_provider="openai",
+                preview_request_timeout_seconds=11.0,
+                proposal_request_timeout_seconds=23.0,
+                model_lanes={"proposal_gen": lane_config, "proposal_gen.openai": lane_config},
+            )
+
+        def invoke(
+            self,
+            lane: str,
+            prompt: dict[str, str],
+            *,
+            request_timeout_seconds: float | None = None,
+        ):
+            del lane, request_timeout_seconds
+            captured["prompt"] = prompt["user"]
+            from arbiter.agents.backend import ModelInvocationResult
+
+            content = json.dumps(
+                {
+                    "summary": "Apply a compact runtime fix.",
+                    "operations": [
+                        {
+                            "type": "replace",
+                            "path": "backend/app/routes/settings.py",
+                            "target": "return current",
+                            "content": "return saved",
+                        }
+                    ],
+                    "notes": ["execution"],
+                }
+            )
+            return ModelInvocationResult(
+                content=content,
+                provider="openai",
+                model_id="gpt-5-mini",
+                lane="proposal_gen.openai",
+                prompt_preview=prompt["user"],
+                response_preview=content,
+                token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                cost_usage={"usd": 0.001},
+            )
+
+    backend = DefaultStrategyBackend(_Router())
+    task = TaskNode(
+        task_id="T3",
+        title="Fix dashboard reliability issues",
+        task_type=TaskType.BUGFIX,
+        requirement_level=TaskRequirementLevel.REQUIRED,
+        success_criteria=SuccessCriteria(description="SLA summary and webhook settings are correct"),
+        candidate_files=[
+            "backend/app/services/sla_service.py",
+            "frontend/src/pages/DashboardPage.jsx",
+            "frontend/src/components/FilterBar.jsx",
+            "frontend/src/lib/api.js",
+            "backend/app/services/webhook_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "frontend/src/pages/SettingsPage.jsx",
+        ],
+    )
+    bid = Bid(
+        bid_id="b3",
+        task_id="T3",
+        role="Test",
+        provider="openai",
+        lane="bid_fast.openai",
+        model_id="gpt-5-mini",
+        invocation_id="inv-3",
+        variant_id="test-base",
+        strategy_family="coverage-first",
+        strategy_summary="Fix the SLA summary and webhook settings persistence with targeted validation.",
+        exact_action="Update the SLA service and the settings persistence flow, then validate both issues.",
+        expected_benefit=0.9,
+        utility=0.85,
+        confidence=0.88,
+        risk=0.18,
+        cost=0.07,
+        estimated_runtime_seconds=90,
+        touched_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "backend/app/services/webhook_service.py",
+        ],
+        rollback_plan="Revert the bugfix patch.",
+    )
+    candidate_files = {
+        "backend/app/services/sla_service.py": "def summarize_tickets(tickets, status=None, priority=None):\n    return {}\n",
+        "frontend/src/pages/DashboardPage.jsx": "export default function DashboardPage() { return null }\n",
+        "frontend/src/components/FilterBar.jsx": "export default function FilterBar() { return null }\n",
+        "frontend/src/lib/api.js": "export async function saveSettings(payload) { return payload }\n",
+        "backend/app/services/webhook_service.py": "def load_settings():\n    return {'retry_delay_seconds': 30}\n",
+        "backend/app/models/settings.py": "from pydantic import BaseModel\n",
+        "backend/app/routes/settings.py": "def update_settings():\n    return current\n",
+        "frontend/src/pages/SettingsPage.jsx": "export default function SettingsPage() { return null }\n",
+    }
+
+    proposal, invocation = backend.generate_edit_proposal(
+        task=task,
+        bid=bid,
+        mission_objective="Fix dashboard reliability issues",
+        candidate_files=candidate_files,
+        preview=False,
+    )
+
+    prompt = str(captured["prompt"])
+
+    assert proposal.operations
+    assert invocation.provider == "openai"
+    assert "FILE: backend/app/services/sla_service.py" in prompt
+    assert "FILE: backend/app/models/settings.py" in prompt
+    assert "FILE: backend/app/routes/settings.py" in prompt
+    assert "FILE: frontend/src/pages/SettingsPage.jsx" in prompt
+
+
 def test_generate_edit_proposal_retries_with_compact_prompt_after_unusable_payload() -> None:
     captured_prompts: list[str] = []
     lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)

@@ -21,6 +21,7 @@ from arbiter.core.contracts import (
     GovernedActionRecord,
     GovernedBidEnvelope,
     MissionOutcome,
+    MissionSpec,
     MissionSummary,
     PolicyState,
     RepoSnapshot,
@@ -34,6 +35,7 @@ from arbiter.core.contracts import (
     TaskType,
     utc_now,
 )
+from arbiter.mission.governance import GovernanceEngine
 from arbiter.mission.runner import MissionRuntime, build_mission_spec, mission_status, start_mission
 from arbiter.runtime.paths import build_managed_branch_name, build_mission_paths
 from arbiter.repo.worktree import WorktreeSetupError
@@ -840,6 +842,126 @@ def test_execute_compares_all_enabled_provider_proposals_with_winner_first(pytho
     assert any(candidate.provider == "openai" and candidate.proposal.files for candidate in candidates)
 
 
+def test_proposal_score_prefers_bid_coverage_over_same_provider_partial_patch() -> None:
+    task = TaskNode(
+        task_id="task-coverage",
+        title="Fix dashboard reliability issues",
+        task_type=TaskType.BUGFIX,
+        requirement_level=TaskRequirementLevel.REQUIRED,
+        success_criteria=SuccessCriteria(description="Both issues are fixed"),
+        candidate_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "backend/app/services/webhook_service.py",
+        ],
+    )
+    bid = Bid(
+        bid_id="bid-coverage",
+        task_id="task-coverage",
+        role="Test",
+        provider="anthropic",
+        lane="bid_deep.anthropic",
+        model_id="claude-sonnet-4",
+        variant_id="coverage-first",
+        strategy_family="coverage-first",
+        strategy_summary="Fix the SLA summary and webhook settings persistence together.",
+        exact_action="Update the SLA service, settings model, settings route, and webhook service.",
+        expected_benefit=0.9,
+        utility=0.85,
+        confidence=0.9,
+        risk=0.18,
+        cost=0.07,
+        estimated_runtime_seconds=120,
+        touched_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "backend/app/services/webhook_service.py",
+        ],
+        rollback_plan="Revert the patch.",
+    )
+    narrow_candidate = ProposalCandidate(
+        candidate_id="narrow",
+        task_id=task.task_id,
+        bid_id=bid.bid_id,
+        provider="anthropic",
+        lane="proposal_gen.anthropic",
+        model_id="claude-sonnet-4",
+        proposal=EditProposal(
+            summary="Fix the SLA filter bug for now.",
+            operations=[
+                EditOperation(
+                    type="replace",
+                    path="backend/app/services/sla_service.py",
+                    target="return {}",
+                    content="return {'fixed': True}",
+                )
+            ],
+            notes=["webhook persistence deferred pending route/model inspection"],
+        ),
+        invocation=ModelInvocationResult(
+            content="{}",
+            provider="anthropic",
+            model_id="claude-sonnet-4",
+            lane="proposal_gen.anthropic",
+            token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            cost_usage={"usd": 0.001},
+        ),
+    )
+    broad_candidate = ProposalCandidate(
+        candidate_id="broad",
+        task_id=task.task_id,
+        bid_id=bid.bid_id,
+        provider="openai",
+        lane="proposal_gen.openai",
+        model_id="gpt-5-mini",
+        proposal=EditProposal(
+            summary="Fix the SLA filter and webhook persistence flow together.",
+            operations=[
+                EditOperation(
+                    type="replace",
+                    path="backend/app/services/sla_service.py",
+                    target="return {}",
+                    content="return {'sla': 'fixed'}",
+                ),
+                EditOperation(
+                    type="replace",
+                    path="backend/app/models/settings.py",
+                    target="class Settings:",
+                    content="class Settings:\n    retry_delay_seconds: int",
+                ),
+                EditOperation(
+                    type="replace",
+                    path="backend/app/routes/settings.py",
+                    target="return current",
+                    content="return saved",
+                ),
+                EditOperation(
+                    type="replace",
+                    path="backend/app/services/webhook_service.py",
+                    target="return current",
+                    content="return saved",
+                ),
+            ],
+            notes=["covers both issue areas"],
+        ),
+        invocation=ModelInvocationResult(
+            content="{}",
+            provider="openai",
+            model_id="gpt-5-mini",
+            lane="proposal_gen.openai",
+            token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            cost_usage={"usd": 0.001},
+        ),
+    )
+
+    narrow_score = MissionRuntime._proposal_score(narrow_candidate, bid, task)
+    broad_score = MissionRuntime._proposal_score(broad_candidate, bid, task)
+
+    assert broad_score > narrow_score
+
+
 def test_collect_defers_baseline_commands_for_fast_market_open(python_bug_repo: Path) -> None:
     spec = build_mission_spec(
         repo=str(python_bug_repo),
@@ -1070,65 +1192,59 @@ def test_assess_mission_progress_ignores_failed_superseded_required_tasks(python
     assert stop_reason == "all_required_tasks_completed"
 
 
-def test_evaluate_bid_allows_recovery_scope_spillover_for_focused_bugfixes(python_bug_repo: Path) -> None:
-    spec = build_mission_spec(
-        repo=str(python_bug_repo),
-        objective="Fix the dashboard reliability regressions",
+def test_evaluate_bid_allows_recovery_scope_spillover_for_focused_bugfixes() -> None:
+    spec = MissionSpec(
         mission_id="recovery-scope-spillover",
+        repo_path="C:/repo",
+        objective="Fix the dashboard reliability regressions",
     )
-    paths = build_mission_paths(spec.repo_path, spec.mission_id)
-    runtime = MissionRuntime(spec, paths, strategy_backend=ScriptedStrategyBackend([]))
-    try:
-        runtime._prepare_run()
-        task = TaskNode(
-            task_id="S2_bugfix",
-            title="Recovery round",
-            task_type=TaskType.BUGFIX,
-            requirement_level=TaskRequirementLevel.REQUIRED,
-            success_criteria=SuccessCriteria(description="All validators pass"),
-            candidate_files=[
-                "backend/app/services/sla_service.py",
-                "backend/app/models/settings.py",
-                "backend/app/routes/settings.py",
-                "frontend/src/pages/DashboardPage.jsx",
-                "frontend/src/components/FilterBar.jsx",
-                "frontend/src/pages/SettingsPage.jsx",
-                "frontend/src/lib/api.js",
-            ],
-            validator_requirements=["tests"],
-        )
-        bid = Bid(
-            bid_id="bid-recovery-combined",
-            task_id=task.task_id,
-            role="Quality",
-            variant_id="quality-base",
-            strategy_family="quality-coverage",
-            strategy_summary="Fix both dashboard issues with tests.",
-            exact_action="Patch the SLA and settings paths, then run tests.",
-            expected_benefit=0.9,
-            utility=0.85,
-            confidence=0.78,
-            risk=0.28,
-            cost=0.18,
-            estimated_runtime_seconds=180,
-            touched_files=[
-                "backend/app/services/sla_service.py",
-                "backend/app/models/settings.py",
-                "backend/app/routes/settings.py",
-                "frontend/src/pages/DashboardPage.jsx",
-                "frontend/src/components/FilterBar.jsx",
-                "frontend/src/pages/SettingsPage.jsx",
-                "frontend/src/lib/api.js",
-                "backend/tests/test_sla_service.py",
-                "backend/tests/test_settings.py",
-            ],
-            validator_plan=["tests"],
-            rollback_plan="revert",
-        )
+    task = TaskNode(
+        task_id="S2_bugfix",
+        title="Recovery round",
+        task_type=TaskType.BUGFIX,
+        requirement_level=TaskRequirementLevel.REQUIRED,
+        success_criteria=SuccessCriteria(description="All validators pass"),
+        candidate_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "frontend/src/pages/DashboardPage.jsx",
+            "frontend/src/components/FilterBar.jsx",
+            "frontend/src/pages/SettingsPage.jsx",
+            "frontend/src/lib/api.js",
+        ],
+        validator_requirements=["tests"],
+    )
+    bid = Bid(
+        bid_id="bid-recovery-combined",
+        task_id=task.task_id,
+        role="Quality",
+        variant_id="quality-base",
+        strategy_family="quality-coverage",
+        strategy_summary="Fix both dashboard issues with tests.",
+        exact_action="Patch the SLA and settings paths, then run tests.",
+        expected_benefit=0.9,
+        utility=0.85,
+        confidence=0.78,
+        risk=0.28,
+        cost=0.18,
+        estimated_runtime_seconds=180,
+        touched_files=[
+            "backend/app/services/sla_service.py",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "frontend/src/pages/DashboardPage.jsx",
+            "frontend/src/components/FilterBar.jsx",
+            "frontend/src/pages/SettingsPage.jsx",
+            "frontend/src/lib/api.js",
+            "backend/tests/test_sla_service.py",
+            "backend/tests/test_settings.py",
+        ],
+        validator_plan=["tests"],
+        rollback_plan="revert",
+    )
 
-        decision = runtime.governance.evaluate_bid(task, bid, spec, failed_families=set())
-    finally:
-        runtime.store.close()
+    decision = GovernanceEngine().evaluate_bid(task, bid, spec, failed_families=set())
 
     assert decision.allowed is True
     assert "file_scope_exceeded" not in decision.reasons

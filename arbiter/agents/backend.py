@@ -663,9 +663,18 @@ class DefaultStrategyBackend:
         ordered_files = _ordered_prompt_files(task, bid, candidate_files)
         if preview:
             file_limit = 2
+            char_limit = 6000
         else:
             file_limit = max(2, min(len(ordered_files), 5))
-        char_limit = 6000 if preview else 12000
+            char_limit = 12000
+            if (
+                task.required
+                and task.task_type.value in {"bugfix", "test"}
+                and len(ordered_files) > file_limit
+            ):
+                file_limit = min(len(ordered_files), _MAX_CONTEXT_FILES)
+                if file_limit > 5:
+                    char_limit = 4000
         research_block = _research_prompt_block(research_context)
 
         def build_prompt(*, compact_retry: bool = False) -> tuple[str, str]:

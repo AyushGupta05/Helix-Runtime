@@ -186,3 +186,78 @@ def test_hard_filter_allows_tightly_focused_bugfix_scope_spillover_for_tests() -
     )
 
     assert hard_filter_reason(bid, task, spec, {"edit", "run_tests"}, set()) is None
+
+
+def test_score_bid_prefers_broader_recovery_coverage_when_multiple_focus_areas_remain() -> None:
+    task = TaskNode(
+        task_id="T1",
+        title="Recover dashboard bugfix",
+        task_type=TaskType.BUGFIX,
+        requirement_level=TaskRequirementLevel.REQUIRED,
+        success_criteria=SuccessCriteria(description="done"),
+        candidate_files=[
+            "backend/app/services/sla_service.py",
+            "frontend/src/lib/api.js",
+            "frontend/src/components/FilterBar.jsx",
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "backend/app/services/webhook_service.py",
+            "frontend/src/pages/SettingsPage.jsx",
+        ],
+        validator_requirements=["tests"],
+    )
+    failure = FailureContext(
+        task_id="T1",
+        failure_type="validation_failure",
+        details="validation_failed",
+        diff_summary="",
+        validator_deltas=["tests/test_settings.py", "tests/test_sla.py"],
+        recommended_recovery_scope="rebid",
+        attempted_file_scope=[
+            "backend/app/services/sla_service.py",
+            "frontend/src/lib/api.js",
+            "frontend/src/components/FilterBar.jsx",
+            "backend/app/routes/settings.py",
+        ],
+    )
+    narrow_followup = Bid(
+        bid_id="b-settings-only",
+        task_id="T1",
+        role="Speed",
+        variant_id="speed-base",
+        strategy_family="speed-localized",
+        strategy_summary="Fix only the webhook persistence path.",
+        exact_action="edit file",
+        expected_benefit=0.78,
+        utility=0.82,
+        confidence=0.78,
+        risk=0.22,
+        cost=0.14,
+        estimated_runtime_seconds=60,
+        touched_files=[
+            "backend/app/models/settings.py",
+            "backend/app/routes/settings.py",
+            "backend/app/services/webhook_service.py",
+        ],
+        validator_plan=["tests"],
+        rollback_plan="revert",
+        search_score=0.6,
+    )
+    broader_recovery = narrow_followup.model_copy(
+        update={
+            "bid_id": "b-combined",
+            "strategy_family": "quality-coverage",
+            "strategy_summary": "Repair the SLA path and the webhook persistence path together.",
+            "touched_files": [
+                "backend/app/services/sla_service.py",
+                "frontend/src/lib/api.js",
+                "backend/app/models/settings.py",
+                "backend/app/routes/settings.py",
+                "backend/app/services/webhook_service.py",
+                "frontend/src/pages/SettingsPage.jsx",
+            ],
+            "search_score": 0.49,
+        }
+    )
+
+    assert score_bid(broader_recovery, task=task, failure_context=failure) > score_bid(narrow_followup, task=task, failure_context=failure)

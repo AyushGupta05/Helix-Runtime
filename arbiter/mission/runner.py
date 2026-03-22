@@ -1303,12 +1303,36 @@ class MissionRuntime:
         files = candidate.proposal.affected_paths
         if not files:
             return -1.0
+        unique_files = list(dict.fromkeys(files))
+        file_set = set(unique_files)
+        bid_focus = set(bid.touched_files or [])
+        task_focus = set(task.candidate_files or [])
+        notes_blob = " ".join(
+            value
+            for value in [candidate.proposal.summary, *(candidate.proposal.notes or [])]
+            if value
+        ).lower()
         score = 1.0
         if candidate.provider == bid.provider and bid.provider not in {None, "system"}:
-            score += 0.08
-        if len(files) <= max(1, len(bid.touched_files or task.candidate_files or files)):
-            score += 0.2
-        score -= max(0, len(files) - task.risk_level * 10) * 0.03
+            score += 0.02
+        if bid_focus:
+            overlap = len(file_set & bid_focus)
+            score += min(0.32, overlap * 0.08)
+            if overlap == 0:
+                score -= 0.18
+            elif overlap < min(2, len(bid_focus)):
+                score -= 0.05
+        if task.required and task_focus:
+            overlap = len(file_set & task_focus)
+            coverage_ratio = overlap / max(1, len(task_focus))
+            score += min(0.18, coverage_ratio * 0.24)
+            if len(task_focus) >= 4 and overlap <= 1:
+                score -= 0.12
+        if any(token in notes_blob for token in ("defer", "deferred", "follow-up", "pending", "next round", "later")):
+            score -= 0.16
+        if len(unique_files) <= max(1, len(bid.touched_files or task.candidate_files or unique_files)):
+            score += 0.12
+        score -= max(0, len(unique_files) - task.risk_level * 10) * 0.03
         score -= min(0.12, float((candidate.invocation.cost_usage or {}).get("usd", 0.0)) * 10.0)
         score += min(0.25, len(candidate.invocation.token_usage or {}) * 0.02)
         return score
