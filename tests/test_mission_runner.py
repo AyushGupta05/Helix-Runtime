@@ -1051,6 +1051,46 @@ def test_successful_github_mission_publishes_pull_request_via_civic(python_bug_r
     assert "github-remote-create_pull_request" in runtime.civic.actions
 
 
+def test_successful_plain_github_mission_autopublishes_pull_request_without_prior_civic_context(python_bug_repo: Path) -> None:
+    from tests.fake_provider_backend import FakeProviderRouter
+
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/python_bug_repo.git"],
+        cwd=str(python_bug_repo),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    backend = DefaultStrategyBackend(FakeProviderRouter(providers=("openai",)))
+    spec = build_mission_spec(
+        repo=str(python_bug_repo),
+        objective="Fix failing tests in the local repo",
+        mission_id="github-pr-autopublish",
+    )
+    paths = build_mission_paths(spec.repo_path, spec.mission_id)
+    runtime = MissionRuntime(spec, paths, strategy_backend=backend)
+    runtime.civic = FakeGovernedCivic(
+        available_skills=["github_context", "github_publish"],
+        connected=True,
+        configured=True,
+    )
+    try:
+        state = runtime.run()
+    finally:
+        runtime.store.close()
+
+    assert state.outcome is not None
+    assert state.outcome.value == "success"
+    assert "github_context" not in state.skill_outputs
+    publish = state.skill_outputs["github_publish"]
+    assert publish["published"] is True
+    assert publish["pull_request"]["number"] == 42
+    assert "fetch_ci_status" not in runtime.civic.actions
+    assert "github-remote-create_branch" in runtime.civic.actions
+    assert "github-remote-push_files" in runtime.civic.actions
+    assert "github-remote-create_pull_request" in runtime.civic.actions
+
+
 def test_collect_ignores_unavailable_civic_when_no_skills_are_requested(python_bug_repo: Path) -> None:
     spec = build_mission_spec(
         repo=str(python_bug_repo),

@@ -48,7 +48,7 @@ def test_openai_router_uses_request_timeout(monkeypatch, tmp_path: Path) -> None
     assert "timeout" not in captured
 
 
-def test_openai_proposal_router_uses_low_reasoning_verbosity(monkeypatch, tmp_path: Path) -> None:
+def test_openai_proposal_router_uses_low_reasoning_without_forcing_extra_hints(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     class _DummyOpenAI:
@@ -73,8 +73,8 @@ def test_openai_proposal_router_uses_low_reasoning_verbosity(monkeypatch, tmp_pa
     finally:
         replay.store.close()
 
-    assert captured["reasoning"] == {"effort": "low", "summary": "concise"}
-    assert captured["verbosity"] == "low"
+    assert captured["reasoning"] == {"effort": "low"}
+    assert "verbosity" not in captured
 
 
 def test_anthropic_router_uses_default_request_timeout(monkeypatch, tmp_path: Path) -> None:

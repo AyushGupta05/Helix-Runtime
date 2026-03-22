@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
-from shutil import rmtree
+from shutil import copytree, rmtree
 
 
 class WorktreeSetupError(RuntimeError):
@@ -10,6 +11,19 @@ class WorktreeSetupError(RuntimeError):
 
 
 class WorktreeManager:
+    _DEPENDENCY_DIR_CANDIDATES = (
+        "node_modules",
+        "frontend/node_modules",
+        "backend/node_modules",
+        ".venv",
+        "venv",
+        "env",
+        "frontend/.venv",
+        "frontend/venv",
+        "backend/.venv",
+        "backend/venv",
+    )
+
     def __init__(self, repo_path: str, worktree_path: str, branch_name: str) -> None:
         self.repo_path = Path(repo_path).resolve()
         self.worktree_path = Path(worktree_path).resolve()
@@ -19,6 +33,7 @@ class WorktreeManager:
         self.worktree_path.parent.mkdir(parents=True, exist_ok=True)
         if self.worktree_path.exists() and (self.worktree_path / ".git").exists():
             if self._is_expected_worktree():
+                self._hydrate_dependency_dirs(self.worktree_path)
                 return
             self.remove_path(str(self.worktree_path))
             rmtree(self.worktree_path, ignore_errors=True)
@@ -65,6 +80,7 @@ class WorktreeManager:
                 capture_output=True,
                 text=True,
             )
+            self._hydrate_dependency_dirs(self.worktree_path)
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or "").strip()
             stdout = (exc.stdout or "").strip()
@@ -78,6 +94,7 @@ class WorktreeManager:
                         capture_output=True,
                         text=True,
                     )
+                    self._hydrate_dependency_dirs(self.worktree_path)
                     return
                 except subprocess.CalledProcessError as inner_exc:
                     details = ((inner_exc.stderr or inner_exc.stdout) or details).strip()
@@ -153,6 +170,7 @@ class WorktreeManager:
     def ensure_detached(self, target_path: str, ref: str = "HEAD") -> None:
         path = Path(target_path).resolve()
         if path.exists() and (path / ".git").exists():
+            self._hydrate_dependency_dirs(path)
             return
         if path.exists() and not (path / ".git").exists():
             rmtree(path, ignore_errors=True)
@@ -172,6 +190,38 @@ class WorktreeManager:
                 capture_output=True,
                 text=True,
             )
+            self._hydrate_dependency_dirs(path)
         except subprocess.CalledProcessError as exc:
             details = (exc.stderr or exc.stdout or "git worktree add --detach failed").strip()
             raise WorktreeSetupError(f"Failed to create scratch worktree for {self.repo_path}: {details}") from exc
+
+    def _hydrate_dependency_dirs(self, target_root: Path) -> None:
+        for relative_dir in self._DEPENDENCY_DIR_CANDIDATES:
+            source = self.repo_path / relative_dir
+            target = target_root / relative_dir
+            if not source.is_dir() or target.exists() or not self._dependency_dir_is_reusable(source):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._link_dependency_dir(source, target)
+
+    @staticmethod
+    def _dependency_dir_is_reusable(source: Path) -> bool:
+        try:
+            next(source.iterdir())
+        except (OSError, StopIteration):
+            return False
+        return True
+
+    def _link_dependency_dir(self, source: Path, target: Path) -> None:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(target), str(source)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                target.symlink_to(source, target_is_directory=True)
+        except (OSError, subprocess.CalledProcessError):
+            copytree(source, target)

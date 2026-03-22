@@ -203,10 +203,6 @@ export default function MissionOutcomeView({
           <div className="outcome-hero-copy">
             <p className="eyebrow">Outcome View</p>
             <h1>{summary}</h1>
-            <p className="workspace-section-copy">
-              Arbiter should leave this screen with a simple answer: what changed, what passed,
-              and how much trust the repo owner should place in the result.
-            </p>
           </div>
           <div className="trust-strip">
             {trustIndicators.map((indicator) => (
@@ -262,7 +258,6 @@ export default function MissionOutcomeView({
           <section className="panel outcome-panel">
             <div className="section-title">
               <h2>What Helix did</h2>
-              <p>A plain-English path through the mission so the delivery flow is understandable without operator context.</p>
             </div>
             <div className="outcome-step-list">
               <article className="outcome-step">
@@ -291,7 +286,6 @@ export default function MissionOutcomeView({
           <section className="panel outcome-panel">
             <div className="section-title">
               <h2>Executive summary</h2>
-              <p>The most important result signals stay visible here for fast decision-making.</p>
             </div>
             <div className="intelligence-card-grid">
               <article className="insight-card">
@@ -325,7 +319,6 @@ export default function MissionOutcomeView({
           <section className="panel outcome-panel">
             <div className="section-title">
               <h2>Review-ready changes</h2>
-              <p>Changed files and patch context stay easy to scan before dropping into a deeper diff view.</p>
             </div>
             <div className="review-file-list">
               {changedFiles.length ? (
@@ -344,7 +337,6 @@ export default function MissionOutcomeView({
           <section className="panel outcome-panel">
             <div className="section-title">
               <h2>Risk and confidence</h2>
-              <p>Trust signals, remaining uncertainty, and fallback context are kept explicit.</p>
             </div>
             <div className="risk-stack">
               <article className="confidence-card">
@@ -364,7 +356,6 @@ export default function MissionOutcomeView({
           <section className="panel outcome-panel">
             <div className="section-title">
               <h2>Recommended next actions</h2>
-              <p>Every mission should leave the user with a short, actionable follow-through list.</p>
             </div>
             <div className="next-action-list">
               {actions.map((action) => (
@@ -379,7 +370,6 @@ export default function MissionOutcomeView({
           <section className="panel outcome-panel">
             <div className="section-title">
               <h2>Governed capability influence</h2>
-              <p>Only the external evidence that shaped the mission stays here, so the outcome view does not repeat the live timeline.</p>
             </div>
             <div className="ledger-list">
               {capabilityRows.length ? (

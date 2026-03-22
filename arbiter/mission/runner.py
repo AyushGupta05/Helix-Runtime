@@ -963,6 +963,25 @@ class MissionRuntime:
             f"{changed_lines}\n"
         )
 
+    def _github_publish_available(self) -> bool:
+        if "github_publish" in self.state.available_skills:
+            return True
+        repo = self.state.repo_snapshot
+        if repo is None or repo.remote_provider != "github" or not repo.remote_slug:
+            return False
+        refreshed = self.civic.refresh_capability_state(repo, force=True)
+        self.state.civic_connection = refreshed["connection"]
+        self.state.civic_capabilities = refreshed["capabilities"]
+        if "github_publish" in refreshed.get("skill_health", {}):
+            self.state.skill_health = {
+                **self.state.skill_health,
+                "github_publish": refreshed["skill_health"]["github_publish"],
+            }
+        if "github_publish" in refreshed.get("available_skills", []):
+            self.state.available_skills = list(dict.fromkeys([*self.state.available_skills, "github_publish"]))
+            return True
+        return False
+
     def _publish_github_pull_request(self, *, refresh_view: bool = False) -> dict[str, object] | None:
         repo = self.state.repo_snapshot
         if repo is None or repo.remote_provider != "github" or not repo.remote_slug:
@@ -975,7 +994,7 @@ class MissionRuntime:
                 "detail": "A pull request can only be created after a validated checkpoint is accepted.",
                 "repo": repo.remote_slug,
             }
-        if "github_publish" not in self.state.available_skills:
+        if not self._github_publish_available():
             return {
                 "published": False,
                 "summary": "GitHub publication skipped because Civic publish tools are unavailable.",
@@ -1298,6 +1317,14 @@ class MissionRuntime:
     @staticmethod
     def _proposal_has_changes(proposal) -> bool:
         return bool(getattr(proposal, "has_changes", bool(proposal.files)))
+
+    @staticmethod
+    def _proposal_candidate_scope(task, bid) -> list[str]:
+        ordered: list[str] = []
+        for path in [*(bid.touched_files or []), *(task.candidate_files or [])]:
+            if path and path not in ordered:
+                ordered.append(path)
+        return ordered
 
     @staticmethod
     def _proposal_payload(proposal) -> dict:
@@ -2022,7 +2049,7 @@ class MissionRuntime:
                 self.worktree.ensure_detached(str(scratch), ref=base_ref)
                 try:
                     scratch_tools = LocalToolset(str(scratch))
-                    files = load_candidate_files(str(scratch), bid.touched_files or task.candidate_files)
+                    files = load_candidate_files(str(scratch), self._proposal_candidate_scope(task, bid))
                     if hasattr(self.strategy_backend, "scripted"):
                         evidence.append("sandbox:heuristic")
                     else:
@@ -2239,7 +2266,7 @@ class MissionRuntime:
             self._refresh_worktree_state("Evidence-only phase completed without modifying repo files.")
             self.trace("diff.updated", "Worktree refreshed", self.state.worktree_state["reason"], task_id=task.task_id, bid_id=bid.bid_id, status="info", worktree_state=self.state.worktree_state)
             return {"status": ActivePhase.VALIDATE.value}
-        candidate_files = load_candidate_files(self.paths.worktree_dir, bid.touched_files or task.candidate_files)
+        candidate_files = load_candidate_files(self.paths.worktree_dir, self._proposal_candidate_scope(task, bid))
         candidates = self._generate_execution_candidates(task, bid, candidate_files)
         for candidate in candidates:
             self._merge_usage(candidate.invocation.token_usage, candidate.invocation.cost_usage)

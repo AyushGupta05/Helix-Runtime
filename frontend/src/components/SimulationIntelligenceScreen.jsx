@@ -160,7 +160,6 @@ export default React.memo(function SimulationIntelligenceScreen({
           <div className="section-title">
             <p className="eyebrow">Screen 2</p>
             <h2>Strategy Simulation</h2>
-            <p>The current Helix visual system stays intact while the information shifts into the reference’s three-column story.</p>
           </div>
 
           <div className="screen-ref-inline-toolbar">
@@ -212,7 +211,6 @@ export default React.memo(function SimulationIntelligenceScreen({
           <section className="panel screen-ref-explanation-panel">
             <div className="section-title">
               <h2>Simulation Explanation Strip</h2>
-              <p>Decision rationale stays adjacent to the chart, so the winner can be understood without changing modes.</p>
             </div>
             <div className="screen-ref-note-stack">
               <article className="screen-ref-note-card">
@@ -233,7 +231,6 @@ export default React.memo(function SimulationIntelligenceScreen({
         <aside className="panel screen-ref-sim-insights">
           <div className="section-title">
             <h2>Simulation Insights</h2>
-            <p>Winner context, tradeoffs, and governance signals occupy the right rail just like the reference.</p>
           </div>
 
           <article className="screen-ref-highlight-card">

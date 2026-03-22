@@ -238,6 +238,75 @@ def test_generate_edit_proposal_uses_execution_timeout_for_real_edits() -> None:
     assert captured["timeout"] == 23.0
 
 
+def test_generate_edit_proposal_keeps_execution_scope_broader_than_bid_touched_files() -> None:
+    captured: dict[str, object] = {}
+    lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)
+
+    class _Router:
+        def __init__(self) -> None:
+            self.replay = SimpleNamespace(mode="off")
+            self.config = SimpleNamespace(
+                enabled_providers=["openai"],
+                default_provider="openai",
+                preview_request_timeout_seconds=11.0,
+                proposal_request_timeout_seconds=23.0,
+                model_lanes={"proposal_gen": lane_config, "proposal_gen.openai": lane_config},
+            )
+
+        def invoke(
+            self,
+            lane: str,
+            prompt: dict[str, str],
+            *,
+            request_timeout_seconds: float | None = None,
+        ):
+            del lane, request_timeout_seconds
+            captured["prompt"] = prompt["user"]
+            from arbiter.agents.backend import ModelInvocationResult
+
+            content = json.dumps(
+                {
+                    "summary": "Apply a compact runtime fix.",
+                    "operations": [
+                        {"type": "replace", "path": "calc.py", "target": "return a - b", "content": "return a + b"}
+                    ],
+                    "notes": ["execution"],
+                }
+            )
+            return ModelInvocationResult(
+                content=content,
+                provider="openai",
+                model_id="gpt-5-mini",
+                lane="proposal_gen.openai",
+                prompt_preview=prompt["user"],
+                response_preview=content,
+                token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                cost_usage={"usd": 0.001},
+            )
+
+    backend = DefaultStrategyBackend(_Router())
+    bid = _bid(provider="openai")
+    bid.touched_files = ["calc.py"]
+    candidate_files = {
+        "calc.py": "def add(a, b):\n    return a - b\n",
+        "tests/test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        "docs/notes.md": "# notes\n" * 10,
+    }
+
+    proposal, invocation = backend.generate_edit_proposal(
+        task=_task(),
+        bid=bid,
+        mission_objective="Fix failing tests",
+        candidate_files=candidate_files,
+        preview=False,
+    )
+
+    assert proposal.operations
+    assert invocation.provider == "openai"
+    assert "FILE: calc.py" in str(captured["prompt"])
+    assert "FILE: tests/test_calc.py" in str(captured["prompt"])
+
+
 def test_generate_edit_proposal_retries_with_compact_prompt_after_unusable_payload() -> None:
     captured_prompts: list[str] = []
     lane_config = SimpleNamespace(provider="openai", model_id="gpt-5-mini", temperature=0.0, max_tokens=2048)

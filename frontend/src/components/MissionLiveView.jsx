@@ -83,10 +83,6 @@ export default function MissionLiveView({
         <div className="section-title">
           <p className="eyebrow">Live Control Room</p>
           <h2>Strategy market, simulation, and governance in one pass</h2>
-          <p>
-            Arbiter should feel autonomous here: it plans, compares, simulates, selects, and
-            keeps recovery state visible without hiding the losing paths.
-          </p>
         </div>
 
         <div className="mission-overview-grid">

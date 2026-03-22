@@ -266,7 +266,6 @@ export default React.memo(function StrategyBiddingScreen({
             <div className="section-title">
               <p className="eyebrow">Screen 1</p>
               <h2>Strategy Bidding Board</h2>
-              <p>All live contenders stay visible, but the hierarchy now follows the board-first layout from the reference.</p>
             </div>
             <div className="screen-ref-view-switch" aria-hidden="true">
               <span className="screen-ref-view-pill">List</span>
@@ -332,7 +331,6 @@ export default React.memo(function StrategyBiddingScreen({
           <section className="panel screen-ref-side-panel">
             <div className="section-title">
               <h2>Usage Signal</h2>
-              <p>Mission spend and research activity stay in view without taking over the board.</p>
             </div>
             <p className="screen-ref-inline-copy">Spend: {formatUsageCost(missionUsage)}</p>
             {spendDetail ? <p className="screen-ref-inline-copy">{spendDetail}</p> : null}
@@ -361,7 +359,6 @@ export default React.memo(function StrategyBiddingScreen({
           <section className="panel screen-ref-side-panel">
             <div className="section-title">
               <h2>Civic &amp; Policy Panel</h2>
-              <p>Connection health, skills, envelopes, and policy effects are grouped into a single side rail.</p>
             </div>
             <p className="screen-ref-inline-copy">
               Top 3 Civic Review: {formatInteger(reviewedBids.length)}

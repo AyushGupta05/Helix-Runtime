@@ -40,6 +40,11 @@ const FEATURE_COLUMNS = [
   }
 ];
 
+function missionPullRequestUrl(mission) {
+  const pullRequest = mission?.mission_output?.pull_request ?? mission?.pull_request ?? null;
+  return pullRequest?.html_url ?? pullRequest?.url ?? null;
+}
+
 function repoLabel(repoPath) {
   const segments = String(repoPath || "")
     .split(/[\\/]/)
@@ -217,6 +222,28 @@ function MissionRoute() {
     window.scrollTo(0, 0);
   }, [activeTab]);
 
+  const mission = missionQuery.data ?? null;
+  const pullRequestUrl = missionPullRequestUrl(mission);
+
+  useEffect(() => {
+    if (!mission || mission.run_state !== "finalized" || !mission.mission_id || !pullRequestUrl) {
+      return;
+    }
+    try {
+      const storageKey = `helix:opened-pr:${mission.mission_id}`;
+      if (window.sessionStorage.getItem(storageKey) === pullRequestUrl) {
+        return;
+      }
+      window.sessionStorage.setItem(storageKey, pullRequestUrl);
+      const nextWindow = window.open(pullRequestUrl, "_blank", "noopener,noreferrer");
+      if (nextWindow && typeof nextWindow.focus === "function") {
+        nextWindow.focus();
+      }
+    } catch {
+      // Best-effort behavior only; the PR link is still exposed in the header.
+    }
+  }, [mission, pullRequestUrl]);
+
   if (missionQuery.isLoading) {
     return <div className="empty-panel">Hydrating the Helix mission workspace...</div>;
   }
@@ -232,7 +259,6 @@ function MissionRoute() {
     );
   }
 
-  const mission = missionQuery.data;
   const trace = traceQuery.data ?? mission.recent_trace ?? [];
   const diffState = diffQuery.data ?? { worktree_state: mission.worktree_state ?? {} };
   const usageSummary = usageQuery.data ?? mission.usage_summary ?? {};

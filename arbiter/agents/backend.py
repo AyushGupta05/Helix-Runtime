@@ -479,8 +479,7 @@ class ProviderModelRouter:
 
                 extra_openai_args: dict[str, Any] = {}
                 if lane_key.startswith("proposal_gen."):
-                    extra_openai_args["reasoning"] = {"effort": "low", "summary": "concise"}
-                    extra_openai_args["verbosity"] = "low"
+                    extra_openai_args["reasoning"] = {"effort": "low"}
 
                 self._models[cache_key] = ChatOpenAI(
                     model=lane_config.model_id,
@@ -638,7 +637,7 @@ class DefaultStrategyBackend:
         if preview:
             file_limit = 2
         else:
-            file_limit = max(1, min(len(preferred_files) if preferred_files else len(ordered_files), 3))
+            file_limit = max(2, min(len(ordered_files), 5))
         char_limit = 6000 if preview else 12000
         research_block = _research_prompt_block(research_context)
 
@@ -647,11 +646,9 @@ class DefaultStrategyBackend:
             prompt_char_limit = char_limit
             prompt_ordered_files = ordered_files
             if compact_retry:
-                prompt_file_limit = min(2, max(1, len(preferred_files) if preferred_files else len(ordered_files)))
+                prompt_file_limit = min(3, max(1, len(ordered_files)))
                 prompt_char_limit = 4000
-                prompt_ordered_files = (preferred_files or ordered_files) + [
-                    path for path in ordered_files if path not in preferred_files
-                ]
+                prompt_ordered_files = ordered_files
             scoped_files = prompt_ordered_files[: max(1, prompt_file_limit)]
             scoped_candidate_files = {path: candidate_files[path] for path in scoped_files}
             system = (

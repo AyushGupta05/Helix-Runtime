@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+import arbiter.tools.local as local_tools
 from arbiter.tools.local import LocalToolset
+from arbiter.core.contracts import CommandResult
 
 
 def test_apply_edit_operations_supports_compact_replacements(tmp_path: Path) -> None:
@@ -166,3 +168,40 @@ def test_run_tests_returns_failure_when_command_is_missing(tmp_path: Path) -> No
 
     assert result.exit_code == 1
     assert "not found" in result.stderr.lower() or "cannot find" in result.stderr.lower()
+
+
+def test_run_tests_bootstraps_missing_frontend_dependencies_once(tmp_path: Path, monkeypatch) -> None:
+    worktree = tmp_path / "repo"
+    frontend = worktree / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text(
+        '{"name":"frontend","scripts":{"test":"vitest run","build":"vite build"}}',
+        encoding="utf-8",
+    )
+    (frontend / "package-lock.json").write_text("{}", encoding="utf-8")
+
+    calls: list[list[str]] = []
+    package_manager = "npm.cmd" if local_tools.os.name == "nt" else "npm"
+
+    def _fake_run(command: list[str], cwd: str, timeout: int = 120) -> CommandResult:
+        del cwd, timeout
+        calls.append(command)
+        if command[:4] == [package_manager, "--prefix", "frontend", "ci"]:
+            (frontend / "node_modules" / ".bin").mkdir(parents=True, exist_ok=True)
+            (frontend / "node_modules" / ".bin" / "vitest").write_text("", encoding="utf-8")
+            return CommandResult(command=command, exit_code=0, stdout="installed", stderr="", duration_seconds=0.0)
+        return CommandResult(command=command, exit_code=0, stdout="ok", stderr="", duration_seconds=0.0)
+
+    monkeypatch.setattr(local_tools, "_run", _fake_run)
+
+    toolset = LocalToolset(str(worktree))
+    first = toolset.run_tests([package_manager, "--prefix", "frontend", "run", "test"])
+    second = toolset.static_analysis([package_manager, "--prefix", "frontend", "run", "build"])
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert calls == [
+        [package_manager, "--prefix", "frontend", "ci", "--no-audit", "--no-fund"],
+        [package_manager, "--prefix", "frontend", "run", "test"],
+        [package_manager, "--prefix", "frontend", "run", "build"],
+    ]

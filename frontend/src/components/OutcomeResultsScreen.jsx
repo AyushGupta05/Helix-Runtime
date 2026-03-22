@@ -257,7 +257,6 @@ export default React.memo(function OutcomeResultsScreen({ mission, usageSummary 
 
           <div className="screen-ref-heading-block">
             <h1>{selectedBid?.role ?? selectedBid?.strategy_family ?? "Mission result"} selected</h1>
-            <p>Result keeps the decision path, changed files, and trust evidence in one pane.</p>
           </div>
 
           <section className="screen-ref-main-section">

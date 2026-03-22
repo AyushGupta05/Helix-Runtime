@@ -13,6 +13,7 @@ from arbiter.repo.collector import IGNORED_DIRECTORIES, _platform_command, _run
 class LocalToolset:
     def __init__(self, worktree_path: str) -> None:
         self.worktree = Path(worktree_path).resolve()
+        self._js_bootstrap_attempts: dict[str, CommandResult] = {}
 
     def read_file(self, relative_path: str) -> str:
         return (self.worktree / relative_path).read_text(encoding="utf-8", errors="ignore")
@@ -202,6 +203,74 @@ class LocalToolset:
             duration_seconds=0.0,
         )
 
+    def _project_dir_for_package_manager_command(self, command: list[str]) -> Path | None:
+        if not command:
+            return None
+        executable = Path(command[0]).name.lower()
+        if executable not in {"npm", "npm.cmd"}:
+            return None
+        if "--prefix" in command:
+            prefix_index = command.index("--prefix")
+            if prefix_index + 1 < len(command):
+                candidate = (self.worktree / command[prefix_index + 1]).resolve()
+                return candidate if candidate.exists() else None
+        return self.worktree if (self.worktree / "package.json").exists() else None
+
+    @staticmethod
+    def _has_js_dependencies(project_dir: Path) -> bool:
+        node_modules = project_dir / "node_modules"
+        if not node_modules.is_dir():
+            return False
+        bin_dir = node_modules / ".bin"
+        if bin_dir.is_dir():
+            try:
+                next(bin_dir.iterdir())
+                return True
+            except (OSError, StopIteration):
+                pass
+        try:
+            return any(child.name != ".bin" for child in node_modules.iterdir())
+        except OSError:
+            return False
+
+    def _dependency_install_command(self, command: list[str], project_dir: Path) -> list[str] | None:
+        if not command:
+            return None
+        executable = command[0]
+        try:
+            relative_dir = project_dir.relative_to(self.worktree).as_posix()
+        except ValueError:
+            return None
+        prefix_args = ["--prefix", relative_dir] if relative_dir != "." else []
+        if (project_dir / "package-lock.json").exists():
+            return [executable, *prefix_args, "ci", "--no-audit", "--no-fund"]
+        return [executable, *prefix_args, "install", "--no-audit", "--no-fund"]
+
+    def _ensure_js_dependencies(self, command: list[str]) -> CommandResult | None:
+        project_dir = self._project_dir_for_package_manager_command(command)
+        if project_dir is None or not (project_dir / "package.json").exists():
+            return None
+        if self._has_js_dependencies(project_dir):
+            return None
+        cache_key = str(project_dir)
+        previous_attempt = self._js_bootstrap_attempts.get(cache_key)
+        if previous_attempt is not None:
+            return None if previous_attempt.exit_code == 0 else previous_attempt
+        install_command = self._dependency_install_command(command, project_dir)
+        if install_command is None:
+            return None
+        result = _run(install_command, cwd=str(self.worktree), timeout=600)
+        if result.exit_code == 0 and not self._has_js_dependencies(project_dir):
+            result = CommandResult(
+                command=result.command,
+                exit_code=1,
+                stdout=result.stdout,
+                stderr="Dependency bootstrap completed but the package manager binaries are still unavailable.",
+                duration_seconds=result.duration_seconds,
+            )
+        self._js_bootstrap_attempts[cache_key] = result
+        return None if result.exit_code == 0 else result
+
     def _include_path(self, relative_path: str) -> bool:
         path = Path(relative_path)
         if any(part in IGNORED_DIRECTORIES for part in path.parts):
@@ -222,15 +291,24 @@ class LocalToolset:
         return paths
 
     def run_tests(self, command: list[str]) -> CommandResult:
+        bootstrap = self._ensure_js_dependencies(command)
+        if bootstrap is not None:
+            return bootstrap
         joined = " ".join(command).lower()
         if "pytest" in joined:
             return self._run_tool_with_env(command, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"})
         return self._run_tool(command)
 
     def run_lint(self, command: list[str]) -> CommandResult:
+        bootstrap = self._ensure_js_dependencies(command)
+        if bootstrap is not None:
+            return bootstrap
         return self._run_tool(command)
 
     def static_analysis(self, command: list[str]) -> CommandResult:
+        bootstrap = self._ensure_js_dependencies(command)
+        if bootstrap is not None:
+            return bootstrap
         return self._run_tool(command)
 
     def benchmark(self, command: list[str]) -> tuple[CommandResult, float | None]:

@@ -24,6 +24,11 @@ function findGithubAuthChallenge(mission) {
   );
 }
 
+function pullRequestUrlForMission(mission) {
+  const pullRequest = mission?.mission_output?.pull_request ?? mission?.pull_request ?? null;
+  return pullRequest?.html_url ?? pullRequest?.url ?? null;
+}
+
 export default function MissionHeader({
   mission,
   busy,
@@ -49,6 +54,7 @@ export default function MissionHeader({
     civicChallenge?.output_payload?.authorization_url ??
     civicChallenge?.payload?.output_payload?.authorization_url ??
     null;
+  const pullRequestUrl = pullRequestUrlForMission(mission);
   const activeSkills = Array.isArray(mission.available_skills) ? mission.available_skills.length : 0;
   const metaItems = [
     repoLabel(mission.repo_path),
@@ -66,6 +72,16 @@ export default function MissionHeader({
         </div>
 
         <div className="mission-topbar-actions">
+          {pullRequestUrl ? (
+            <a
+              className="primary-button"
+              href={pullRequestUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open PR
+            </a>
+          ) : null}
           {civicAuthUrl ? (
             <a
               className="ghost-button"

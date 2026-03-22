@@ -185,7 +185,6 @@ function SimulationSection({ mission, trace }) {
       <section className="panel intelligence-panel">
         <div className="section-title">
           <h2>Monte Carlo state</h2>
-          <p>The simulation engine is shown as a live decision system instead of a post-hoc score dump.</p>
         </div>
         <div className="intelligence-card-grid">
           {cards.map((card) => (
@@ -202,7 +201,6 @@ function SimulationSection({ mission, trace }) {
       <section className="panel intelligence-panel">
         <div className="section-title">
           <h2>Live simulation tape</h2>
-          <p>Rollouts, scoring passes, and search updates stream here as the market is evaluated.</p>
         </div>
         <div className="ledger-list">
           {entries.length ? (
@@ -231,7 +229,6 @@ function SimulationSection({ mission, trace }) {
       <section className="panel intelligence-panel intelligence-panel-full">
         <div className="section-title">
           <h2>Candidate score frontier</h2>
-          <p>Each contender keeps its policy, runtime, and simulation profile in one place.</p>
         </div>
         <div className="simulation-bid-grid">
           {bids.length ? (
@@ -286,7 +283,6 @@ function ValidationSection({ mission }) {
     <section className="panel intelligence-panel">
       <div className="section-title">
         <h2>Validation reports</h2>
-        <p>Checks are grouped into readable outcome cards first, with raw summaries tucked underneath.</p>
       </div>
       <div className="validation-report-grid">
         {rows.length ? (
@@ -318,7 +314,6 @@ function DiffSection({ mission, diffState }) {
       <section className="panel intelligence-panel">
         <div className="section-title">
           <h2>Changed files</h2>
-          <p>Review-ready file grouping comes first, with the raw patch below only when you need it.</p>
         </div>
         <div className="diff-file-list">
           {changedFiles.length ? (
@@ -337,7 +332,6 @@ function DiffSection({ mission, diffState }) {
       <section className="panel intelligence-panel">
         <div className="section-title">
           <h2>Patch preview</h2>
-          <p>The raw diff remains available, but it sits behind a calmer surface.</p>
         </div>
         <pre className="code-block">{patch}</pre>
       </section>
@@ -357,7 +351,6 @@ function CivicSection({ mission, trace }) {
     <section className="panel intelligence-panel">
       <div className="section-title">
         <h2>Civic capability plane</h2>
-        <p>Governed external context, envelopes, and auth state stay together instead of bleeding into every screen.</p>
       </div>
 
       <div className="intelligence-card-grid">
@@ -397,7 +390,6 @@ function CivicSection({ mission, trace }) {
 
       <div className="section-title" style={{ marginTop: "1rem" }}>
         <h2>Skill outputs</h2>
-        <p>Read-only evidence packets stay grouped by skill so you can see exactly what influenced the market.</p>
       </div>
       <div className="intelligence-card-grid">
         {skillOutputs.length ? (
@@ -418,7 +410,6 @@ function CivicSection({ mission, trace }) {
 
       <div className="section-title" style={{ marginTop: "1rem" }}>
         <h2>Governed ledger</h2>
-        <p>Envelopes, actions, and policy decisions stay readable as a chronological ledger.</p>
       </div>
       <div className="ledger-list">
         {(mission.governed_bid_envelopes ?? []).map((envelope, index) => (
@@ -465,7 +456,6 @@ function HistorySection({ history, onSelectMission }) {
     <section className="panel intelligence-panel">
       <div className="section-title">
         <h2>Mission history</h2>
-        <p>Past runs stay close by so comparison and replay do not clutter the primary mission view.</p>
       </div>
       <div className="history-comparison-list">
         {history.length ? (
@@ -590,10 +580,6 @@ export default function MissionIntelligenceView({
         <div className="section-title">
           <p className="eyebrow">Mission Intelligence</p>
           <h1>Why this strategy won</h1>
-          <p className="workspace-section-copy">
-            Screen 2 keeps the winning explanation, validation, diffs, Civic evidence, and
-            mission history together so the decision is legible in under a minute.
-          </p>
         </div>
 
         <div className="intelligence-card-grid">
@@ -614,7 +600,6 @@ export default function MissionIntelligenceView({
       <div className="panel intelligence-jumpbar">
         <div className="section-title">
           <h2>Jump to evidence</h2>
-          <p>Each section keeps one job: decision logic, validation, code changes, governed context, or history.</p>
         </div>
         <nav className="intelligence-nav intelligence-nav-inline" aria-label="Mission intelligence sections">
           {SECTIONS.map((section) => (
@@ -643,10 +628,6 @@ export default function MissionIntelligenceView({
               <div>
                 <p className="eyebrow">Evidence View</p>
                 <h1>{section.label}</h1>
-                <p className="workspace-section-copy">
-                  This section is visible alongside the rest of the mission record so nothing critical
-                  gets hidden behind a mode switch.
-                </p>
               </div>
             </div>
             {renderSection(section.id)}

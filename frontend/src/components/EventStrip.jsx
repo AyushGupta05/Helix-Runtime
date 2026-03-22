@@ -151,9 +151,6 @@ export default function EventStrip({ mission, events = [], trace = [] }) {
         <div>
           <p className="eyebrow">Mission Timeline</p>
           <h2>Live governance feed</h2>
-          <p className="timeline-copy">
-            Every material transition is recorded here, with stage, task, bid, provider, and checkpoint context.
-          </p>
         </div>
         <div className="timeline-headline">
           <span className="timeline-headline-label">Current phase</span>

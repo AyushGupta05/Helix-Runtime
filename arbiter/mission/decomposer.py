@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +19,10 @@ from arbiter.core.contracts import (
     TaskType,
     utc_now,
 )
+from arbiter.repo.collector import IGNORED_DIRECTORIES
 from arbiter.runtime.model_payloads import extract_plan_payload
+
+_SOURCE_FILE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx"}
 
 
 @dataclass
@@ -621,11 +625,19 @@ class GoalDecomposer:
                 normalized = GoalDecomposer._normalize_candidate_path(repo, match)
                 if normalized and normalized not in candidates:
                     candidates.append(normalized)
+                if normalized:
+                    for related in GoalDecomposer._related_source_files(repo, normalized):
+                        if related not in candidates:
+                            candidates.append(related)
         for failure_signal in snapshot.failure_signals:
             for match in file_pattern.findall(failure_signal):
                 normalized = GoalDecomposer._normalize_candidate_path(repo, match)
                 if normalized and normalized not in candidates:
                     candidates.append(normalized)
+                if normalized:
+                    for related in GoalDecomposer._related_source_files(repo, normalized):
+                        if related not in candidates:
+                            candidates.append(related)
         return candidates[:8]
 
     def _normalize_candidate_paths(self, snapshot: RepoSnapshot, values: Any) -> list[str]:
@@ -653,7 +665,56 @@ class GoalDecomposer:
         repo_candidate = (repo / normalized).resolve()
         if repo_candidate.exists() and repo_candidate.is_file():
             return repo_candidate.relative_to(repo.resolve()).as_posix()
+        matches: list[str] = []
+        normalized_lower = normalized.lower()
+        for path in GoalDecomposer._iter_repo_source_files(repo):
+            relative = path.relative_to(repo).as_posix()
+            if relative.lower().endswith(normalized_lower):
+                matches.append(relative)
+        matches = list(dict.fromkeys(matches))
+        if len(matches) == 1:
+            return matches[0]
+        if matches and "/" in normalized:
+            matches.sort(key=lambda value: (value.count("/"), len(value)))
+            return matches[0]
         return None
+
+    @staticmethod
+    def _iter_repo_source_files(repo: Path):
+        for root, directories, files in os.walk(repo):
+            directories[:] = [name for name in directories if name not in IGNORED_DIRECTORIES]
+            for file_name in files:
+                path = Path(root) / file_name
+                if path.suffix.lower() in _SOURCE_FILE_SUFFIXES:
+                    yield path
+
+    @staticmethod
+    def _related_source_files(repo: Path, normalized_path: str) -> list[str]:
+        candidate = Path(normalized_path)
+        parts = {part.lower() for part in candidate.parts}
+        stem = candidate.stem.lower()
+        is_test_path = "tests" in parts or stem.startswith("test_") or stem.endswith(".test") or stem.endswith(".spec")
+        if not is_test_path:
+            return []
+        base_stem = stem
+        if base_stem.startswith("test_"):
+            base_stem = base_stem[5:]
+        for suffix in (".test", ".spec"):
+            if base_stem.endswith(suffix):
+                base_stem = base_stem[: -len(suffix)]
+        tokens = [token for token in re.split(r"[_\-.]+", base_stem) if token and token != "test"]
+        if not tokens:
+            return []
+        matches: list[str] = []
+        for path in GoalDecomposer._iter_repo_source_files(repo):
+            relative = path.relative_to(repo).as_posix()
+            lowered = relative.lower()
+            if "/tests/" in lowered or lowered.startswith("tests/") or path.name.lower().startswith("test_"):
+                continue
+            if all(token in lowered or token in path.stem.lower() for token in tokens):
+                matches.append(relative)
+        matches.sort(key=lambda value: (value.count("/"), len(value)))
+        return matches[:3]
 
     @staticmethod
     def _parse_json_payload(content: str) -> dict[str, Any]:

@@ -188,7 +188,6 @@ export default function MonteCarloPanel({ mission, bids, winnerBidId }) {
     <section className="panel screen-ref-chart-panel">
       <div className="section-title">
         <h2>Dynamic Simulation Graph</h2>
-        <p>The chart stays live and animated, but it now occupies the reference’s central focus area.</p>
       </div>
 
       <div className="screen-ref-chip-row">

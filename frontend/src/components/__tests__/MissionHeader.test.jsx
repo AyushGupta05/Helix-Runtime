@@ -62,4 +62,37 @@ describe("MissionHeader", () => {
     expect(screen.getByRole("button", { name: /Live Market/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Outcome/i })).toBeInTheDocument();
   });
+
+  it("shows an Open PR link when the mission has a published pull request", () => {
+    render(
+      <MissionHeader
+        mission={{
+          mission_id: "abc123",
+          objective: "Fix tests",
+          repo_path: "C:\\repo",
+          run_state: "finalized",
+          active_phase: "finalize",
+          outcome: "success",
+          mission_output: {
+            pull_request: {
+              html_url: "https://github.com/example/repo/pull/42"
+            }
+          },
+          civic_connection: {},
+          available_skills: [],
+          recent_civic_actions: []
+        }}
+        busy={false}
+        activeTab="outcome"
+        onTabChange={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("link", { name: /Open PR/i })).toHaveAttribute(
+      "href",
+      "https://github.com/example/repo/pull/42"
+    );
+  });
 });
