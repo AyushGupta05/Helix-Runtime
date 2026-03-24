@@ -30,3 +30,4 @@ pytest-temp/
 tmp*/
 tmp_manual_checks/
 .mcp.json
+.vscode/
